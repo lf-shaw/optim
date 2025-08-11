@@ -3,6 +3,9 @@
 =============
 
 支持求解 `预期收益最大化问题` 与 `风险调整后收益最大化问题`。
+
+**输入数据不能包含 nan**
+
 """
 
 # import libs
@@ -372,6 +375,62 @@ class Solver:
         self.__model.constraint(
             fusion.Expr.mul(exposure.T, ax), fusion.Domain.lessThan(ub)
         )
+
+    def set_extra_attr_constrain(
+        self, lb: float | None, ub: float | None, extra_attr: np.ndarray, is_active=True
+    ):
+        r"""设置额外属性敞口约束，即
+
+        $lb \leq \sum_{i=1}^{n} x_i a_i \leq ub$
+
+        Notes
+        ------
+        lb 和 ub 同时为 None 时该约束不生效
+
+        Parameters
+        ----------
+        lb : float or None
+            敞口下限，为 None 时不设置下限
+        ub : float or None
+            敞口上限，为 None 时不设置上限
+        extra : 1d np.ndarray
+            额外的属性值
+        is_active : bool
+            是否是主动约束，默认为 True，如果为 False 则为绝对约束
+        """
+        if lb is None and ub is None:
+            return
+
+        if lb is not None and ub is not None and lb > ub:
+            raise ValueError(f"下限 {lb} 不能超过上限 {ub}")
+
+        if extra_attr.ndim != 1 or len(extra_attr) != self.__n:
+            raise ValueError(f"extra_attr must be 1-d array with length {self.__n}")
+
+        if is_active:
+            ax = self.__active_weight
+        else:
+            ax = self.__xs
+
+        # 下限
+        if lb is not None:
+            self.__model.constraint(
+                fusion.Expr.mul(
+                    np.expand_dims(extra_attr, 0),  # shape (1, n)
+                    ax,  # shape (n, 1)
+                ),
+                fusion.Domain.greaterThan(lb),
+            )
+
+        # 上限
+        if ub is not None:
+            self.__model.constraint(
+                fusion.Expr.mul(
+                    np.expand_dims(extra_attr, 0),  # shape (1, n)
+                    ax,  # shape (n, 1)
+                ),
+                fusion.Domain.lessThan(ub),
+            )
 
     def set_turnover_constaint(self, ub: float | None):
         r"""双边换手率约束 **上限**，如果初始持仓为 None 则不设置此约束
