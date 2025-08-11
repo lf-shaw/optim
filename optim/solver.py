@@ -249,11 +249,11 @@ class Solver:
         )
 
     def set_total_active_constaint(self, ub: float | None):
-        """双边主动偏离,个股偏离基准绝对值之和
+        r"""双边主动偏离,个股偏离基准绝对值之和
 
         Notes
         ------
-        $\sum |dx_i| \leq c$ 等价于 $-z \leq dx \leq z; \sum z_i = c$
+        $\sum |x_i| \leq c$ 等价于 $-z \leq x \leq z; \sum z_i = c$
 
         Parameters
         -----------
@@ -374,11 +374,11 @@ class Solver:
         )
 
     def set_turnover_constaint(self, ub: float | None):
-        """双边换手率约束 **上限**，如果初始持仓为 None 则不设置此约束
+        r"""双边换手率约束 **上限**，如果初始持仓为 None 则不设置此约束
 
         Notes
         ------
-        $\sum |dx_i| \leq c$ 等价于 $-z \leq dx \leq z; \sum z_i = c$
+        $\sum |x_i| \leq c$ 等价于 $-z \leq x \leq z 且 \sum z_i = c$
 
         Parameters
         -----------
