@@ -56,7 +56,7 @@ def check_license():
 
                     except ValueError:
                         warnings.warn(
-                            f"无法解析授权文件日期: {date_str}", RuntimeWarning
+                            f"mosek: 无法解析授权文件日期: {date_str}", RuntimeWarning
                         )
                         return
 
