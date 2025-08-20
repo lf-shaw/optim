@@ -105,8 +105,6 @@ def __validate_init_portfolio(
 ) -> pd.Series | None:
     """验证初始持仓"""
     if init_portfolio is None:
-        if turnover_limit is not None:
-            raise ValueError("指定了换手率约束时必须提供 init_portfolio")
         return None
 
     if not isinstance(init_portfolio, pd.Series):
@@ -305,7 +303,7 @@ def optimize(
     constraint_extra_attrs_active: dict[str, tuple[float, float]] | None = None,
     constraint_extra_attrs_abs: dict[str, tuple[float, float]] | None = None,
     enable_parameter_validation=True,
-    tolerance: float = 1e-6,
+    weight_tolerance: float = 1e-6,
 ):
     """
     执行单期优化
@@ -412,6 +410,13 @@ def optimize(
         额外属性绝对敞口约束，默认为 None 即不设置。当设置时，key 为属性，value 为 (lower, upper)。
         所设置的属性必须在 extra_attrs 中存在。不管是否设置 benchmark 都只考虑绝对敞口约束。
 
+    enable_parameter_validation : bool, default is True
+        是否开启参数检查，多期优化时外层会校验参数，建议关闭，单期优化建议开启
+
+    weight_tolerance : float, default is 1e-4
+        在将初始持仓和基准权重对齐到 universe 时允许缺失的权重
+
+
     Returns
     -------
     pd.Series
@@ -451,9 +456,11 @@ def optimize(
         )  # 对齐额外属性
 
         init_portfolio = __validate_init_portfolio(
-            init_portfolio, universe, turnover_limit, tolerance
+            init_portfolio, universe, turnover_limit, weight_tolerance
         )
-        benchmark = __align_benchmark_with_universe(benchmark, universe, 1, tolerance)
+        benchmark = __align_benchmark_with_universe(
+            benchmark, universe, 1, weight_tolerance
+        )
 
     # 样本空间股票列表
     sids = list(universe.loc[dt].index)
@@ -675,7 +682,8 @@ def multioptimize(
     extra_attrs=None,
     constraint_extra_attrs_active=None,
     constraint_extra_attrs_abs=None,
-    tolerance: float = 1e-6,
+    weight_tolerance: float = 1e-4,
+    turnover_limit_relax_range: tuple[float, int] | None = None,
     show_progress=True,
     **kwargs,
 ):
@@ -690,7 +698,6 @@ def multioptimize(
     ----------
     universe : pd.DataFrame
         整体样本空间。
-
         - 使用 ``tuda2.get_universe`` 获取，勿指定 type
         - 必须包含样本空间 member 列和交易空间 tradable 列
         - 必须包含预测 alpha
@@ -698,7 +705,6 @@ def multioptimize(
 
     benchmark : pd.DataFrame or string
         基准指数或者基金指数代码，用于设置主动敞口等。如果是 DataFrame 必须满足如下要求
-
         - 可以使用 ``tuda2.get_index_weight`` 获取
         - 证券必须是 universe 的子集
         - 必须包含 weight 列
@@ -727,7 +733,6 @@ def multioptimize(
     constraint_industry : dict, default is None
         申万一级行业敞口约束，默认为 None 即不设置。当设置时，key 为行业名，value 为 (lower, upper)。
         不在行业列表里的会被忽略
-
         **当要统一设置所有行业因子的敞口时，请设置 key 为 'all'的约束。**
 
     turnover_limit : float, default is None
@@ -756,12 +761,17 @@ def multioptimize(
         额外属性绝对敞口约束，默认为 None 即不设置。当设置时，key 为属性，value 为 (lower, upper)。
         所设置的属性必须在 extra_attrs 中存在。不管是否设置 benchmark 都只考虑绝对敞口约束。
 
+    weight_tolerance : float, default is 1e-4
+        在将初始持仓和基准权重对齐到 universe 时允许缺失的权重
+
+    turnover_limit_relax_range : tuple[float, int], default is None
+        在优化求解不可行时，放松换手率约束的范围，第一个参数是单次放松的步长，第二个参数是最大放松的次数，None 表示不放松
+
     show_progress : bool, default is True
         是否显示进度条，默认为 True，只在 jupyter 环境下有效。
 
     kwargs : dict
         其他参数
-
         - exposure 风险模型敞口数据 DataFrame
         - rtn 多期优化时计算期初持仓权重的收益率 DataFrame，需要交易日连续且覆盖所有优化日期
 
@@ -770,6 +780,20 @@ def multioptimize(
     Series
         优化之后的权重 weight，index 为 [dt, sid]
     """
+
+    if turnover_limit_relax_range is not None:
+        if not isinstance(turnover_limit_relax_range, (tuple, list)):
+            raise ValueError("turnover_limit_relax_range must be a tuple or list")
+
+        if len(turnover_limit_relax_range) != 2:
+            raise ValueError(
+                "turnover_limit_relax_range must be a tuple or list with length 2"
+            )
+
+        if not isinstance(turnover_limit_relax_range[0], float):
+            raise ValueError("turnover_limit_relax_range[0] must be a float")
+        if not isinstance(turnover_limit_relax_range[1], int):
+            raise ValueError("turnover_limit_relax_range[1] must be a int")
 
     # 验证样本空间
     __validate_universe(universe)
@@ -790,7 +814,7 @@ def multioptimize(
 
     # 检查 基准 与 universe 的匹配度
     benchmark = __align_benchmark_with_universe(
-        benchmark, universe, len(opt_dts), tolerance
+        benchmark, universe, len(opt_dts), weight_tolerance
     )
 
     # 按需读取 barra 数据
@@ -871,7 +895,7 @@ def multioptimize(
 
     # 初始持仓
     init_portfolio = __validate_init_portfolio(
-        init_portfolio, universe, turnover_limit, tolerance
+        init_portfolio, universe, turnover_limit, weight_tolerance
     )
 
     # 个股上界与主动上限参数检查
@@ -1002,7 +1026,43 @@ def multioptimize(
 
         except ProblemInfeasible:
             opted_daily = None
-            warnings.warn(f"{dt} Problem is infeasible")
+            if __turnover_limit is not None and turnover_limit_relax_range is not None:
+                # 自动增加换手率约束进行再次优化
+                for i in range(turnover_limit_relax_range[1]):
+                    __turnover_limit += turnover_limit_relax_range[0]
+
+                    try:
+                        opted_daily = optimize(
+                            dt,
+                            __univ,
+                            __bench,
+                            styles=__styles,
+                            industries=__industries,
+                            init_portfolio=init_portfolio,
+                            constraint_style=constraint_style,
+                            constraint_industry=constraint_industry,
+                            turnover_limit=__turnover_limit,
+                            budget_weight=budget_weight,
+                            asset_ub=asset_ub,
+                            active_ub=active_ub,
+                            total_active_ub=total_active_ub,
+                            extra_attrs=__extra_attrs,
+                            constraint_extra_attrs_active=constraint_extra_attrs_active,
+                            constraint_extra_attrs_abs=constraint_extra_attrs_abs,
+                            enable_parameter_validation=False,
+                        )
+
+                        warnings.warn(
+                            f"{dt} Model became feasible only after relaxing the turnover limit "
+                            f"to {__turnover_limit:.2%}."
+                        )
+
+                        break  # 跳出
+                    except:
+                        pass
+
+            if opted_daily is None:
+                warnings.warn(f"{dt} Problem is infeasible")
         except Exception as e:
             opted_daily = None
             warnings.warn(f"{dt} Something is wrong: {e}")
