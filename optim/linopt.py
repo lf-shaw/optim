@@ -775,8 +775,9 @@ def multioptimize(
     weight_tolerance : float, default is 1e-4
         在将初始持仓和基准权重对齐到 universe 时允许缺失的权重
 
-    turnover_limit_relax_range : tuple[float, int], default is None
-        在优化求解不可行时，放松换手率约束的范围，第一个参数是单次放松的步长，第二个参数是最大放松的次数，None 表示不放松
+    turnover_limit_relax_range : tuple[float|int, int], default is None
+        在优化求解不可行时，放松换手率约束的范围，默认为 None 表示求解失败直接跳过当前求解日期；
+        第一个参数是单次放松的步长，第二个参数是最大放松的次数，如果设如果第一个参数设置为 0，则直接放弃换手率约束进行求解
 
     show_progress : bool, default is True
         是否显示进度条，默认为 True，只在 jupyter 环境下有效。
@@ -794,17 +795,17 @@ def multioptimize(
 
     if turnover_limit_relax_range is not None:
         if not isinstance(turnover_limit_relax_range, (tuple, list)):
-            raise ValueError("turnover_limit_relax_range must be a tuple or list")
+            raise ValueError("turnover_limit_relax_range 必须是一个 list 或者 tuple")
 
         if len(turnover_limit_relax_range) != 2:
             raise ValueError(
-                "turnover_limit_relax_range must be a tuple or list with length 2"
+                "turnover_limit_relax_range 必须是一个 2 个元素的 list 或者 tuple"
             )
 
-        if not isinstance(turnover_limit_relax_range[0], float):
-            raise ValueError("turnover_limit_relax_range[0] must be a float")
+        if not isinstance(turnover_limit_relax_range[0], (float, int)):
+            raise ValueError("turnover_limit_relax_range[0] 必须是 float/int 类型")
         if not isinstance(turnover_limit_relax_range[1], int):
-            raise ValueError("turnover_limit_relax_range[1] must be a int")
+            raise ValueError("turnover_limit_relax_range[1] 必须是 int 类型")
 
     # 验证样本空间
     __validate_universe(universe)
@@ -973,10 +974,12 @@ def multioptimize(
                     # 归一化
                     init_portfolio = init_portfolio / init_portfolio.sum()
                 else:
-                    raise ValueError("init_portfolio net value is zero")
+                    raise ValueError("对齐后的 init_portfolio 净值为 0")
 
                 __turnover_limit = turnover_limit
             else:
+                # 初始持仓为 None 时也不指定换手率
+                # 不给定初始持仓，或者优化失败时，走到此情形
                 __turnover_limit = None
 
         # 单期优化，rtn 为 None
@@ -1039,9 +1042,8 @@ def multioptimize(
         except ProblemInfeasible:
             opted_daily = None
             if __turnover_limit is not None and turnover_limit_relax_range is not None:
-                # 自动增加换手率约束进行再次优化
-                for i in range(turnover_limit_relax_range[1]):
-                    __turnover_limit += turnover_limit_relax_range[0]
+                # 放弃换手率约束
+                if turnover_limit_relax_range[0] == 0:
 
                     try:
                         opted_daily = optimize(
@@ -1050,10 +1052,10 @@ def multioptimize(
                             __bench,
                             styles=__styles,
                             industries=__industries,
-                            init_portfolio=init_portfolio,
+                            init_portfolio=None,
                             constraint_style=constraint_style,
                             constraint_industry=constraint_industry,
-                            turnover_limit=__turnover_limit,
+                            turnover_limit=None,
                             budget_weight=budget_weight,
                             asset_ub=asset_ub,
                             active_ub=active_ub,
@@ -1064,26 +1066,64 @@ def multioptimize(
                             enable_parameter_validation=False,
                         )
 
+                        warnings.warn(f"{dt} 问题不可行，丢弃换手率约束后完成求解")
+                    except ProblemInfeasible:
                         warnings.warn(
-                            f"{dt} Model became feasible only after relaxing the turnover limit "
-                            f"to {__turnover_limit:.2%}."
+                            f"{dt} 问题不可行，丢弃换手率约束后仍无法求解，跳过"
                         )
+                    except Exception as e:
+                        warnings.warn(f"{dt} 糟糕，出错了: {e}")
+                        raise e
+                else:
+                    # 自动增加换手率约束进行再次优化
+                    for i in range(turnover_limit_relax_range[1]):
+                        __turnover_limit += turnover_limit_relax_range[0]
 
-                        break  # 跳出
-                    except:
-                        pass
+                        try:
+                            opted_daily = optimize(
+                                dt,
+                                __univ,
+                                __bench,
+                                styles=__styles,
+                                industries=__industries,
+                                init_portfolio=init_portfolio,
+                                constraint_style=constraint_style,
+                                constraint_industry=constraint_industry,
+                                turnover_limit=__turnover_limit,
+                                budget_weight=budget_weight,
+                                asset_ub=asset_ub,
+                                active_ub=active_ub,
+                                total_active_ub=total_active_ub,
+                                extra_attrs=__extra_attrs,
+                                constraint_extra_attrs_active=constraint_extra_attrs_active,
+                                constraint_extra_attrs_abs=constraint_extra_attrs_abs,
+                                enable_parameter_validation=False,
+                            )
+
+                            warnings.warn(
+                                f"{dt} 问题在放松 turnover_limit 约束到 {__turnover_limit:.2%} 完成求解"
+                            )
+
+                            break  # 跳出
+                        except:
+                            # 不处理异常
+                            pass
 
             if opted_daily is None:
-                warnings.warn(f"{dt} Problem is infeasible")
+                warnings.warn(
+                    f"{dt} 问题不可行, 直接跳过当期，下期优化也将忽略初始权重和换手率。希望尝试求解请设置 turnover_limit_relax_range"
+                )
         except Exception as e:
             opted_daily = None
-            warnings.warn(f"{dt} Something is wrong: {e}")
+            warnings.warn(f"{dt} 糟糕，出错了: {e}")
             raise e
 
         # 有结果返回时
         if opted_daily is not None:
             opted_weight[dt] = opted_daily
             init_portfolio = opted_daily
+        else:
+            init_portfolio = None  # 求解失败，不设定初始持仓
 
     # 合并结果
     if opted_weight:
