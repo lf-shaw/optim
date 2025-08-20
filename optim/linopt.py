@@ -162,8 +162,8 @@ def __align_benchmark_with_universe(
 
     Returns
     -------
-    pd.DataFrame | None
-        与 universe 对齐过的 benchmark，缺失值已填 0
+    pd.DataFrame
+        与 universe 对齐过的 benchmark，weight 为权重，缺失值已填 0
     """
     # 检查 基准 与 universe 的匹配度
     benchmark = carry.utils.reindex(benchmark, index=universe.index)
@@ -299,6 +299,7 @@ def optimize(
     asset_ub: float | None = None,
     active_ub: float | None = None,
     total_active_ub: float | None = None,
+    weight_in_bench_lb: float | None = None,
     extra_attrs: pd.DataFrame | None = None,
     constraint_extra_attrs_active: dict[str, tuple[float, float]] | None = None,
     constraint_extra_attrs_abs: dict[str, tuple[float, float]] | None = None,
@@ -398,6 +399,9 @@ def optimize(
 
     total_active_ub : float, default is None
         个股主动权重绝对值之和的上限，None 表示不设置
+
+    weight_in_bench_lb : float, default is None
+        组合中属于 benchmark 成分股的权重合计下限，None 表示不设置
 
     extra_attrs : pd.DataFrame, default is None
         额外属性，每列一个属性
@@ -569,14 +573,12 @@ def optimize(
         _asset_ub_ = np.ones(len(mu)) * 1.0  # 未指定时上限为 1.0
 
     # 10 设置交易空间限制
-    for i, k in enumerate(universe["tradable"].values):
-        # 不可交易标的
-        if k == 0:
-            _asset_ub_[i] = 0  # 个股权重上限为 0
+    tradable = universe["tradable"].to_numpy()
+    _asset_ub_[tradable == 0] = 0  # 不可交易的个股权重上限为 0
 
-            if active_ub is not None:
-                # 更新不可交易的主动权重绝对值上限，不低于基准权重（完全不持有时）
-                _active_ub_[i] = bench_arr[i]
+    if active_ub is not None:
+        # 更新不可交易的主动权重的绝对值上限，不低于基准权重（完全不持有时，主动权重为负的基准权重）
+        _active_ub_[tradable == 0] = bench_arr[tradable == 0]
 
     # 11 如果指定了黑名单
     if blacklist:
@@ -656,6 +658,11 @@ def optimize(
     if active_ub is not None:
         s.set_asset_active_ub(_active_ub_)
 
+    # 16 设置成分股内权重占比
+    if weight_in_bench_lb is not None:
+        in_bench_flag = (bench_arr > 0) * 1.0
+        s.set_weight_in_bench_lb(weight_in_bench_lb, in_bench_flag)
+
     # 解模型
     x = s.solve()
 
@@ -672,16 +679,17 @@ def multioptimize(
     benchmark: pd.Series | pd.DataFrame | str,
     *,
     init_portfolio: pd.Series | None = None,
-    constraint_style=None,
-    constraint_industry=None,
-    turnover_limit=None,
-    budget_weight=1,
-    asset_ub=None,
-    active_ub=None,
-    total_active_ub=None,
-    extra_attrs=None,
-    constraint_extra_attrs_active=None,
-    constraint_extra_attrs_abs=None,
+    constraint_style: dict[str, tuple[float, float]] | None = None,
+    constraint_industry: dict[str, tuple[float, float]] | None = None,
+    turnover_limit: float | None = None,
+    budget_weight: float = 1,
+    asset_ub: float | None = None,
+    active_ub: float | None = None,
+    total_active_ub: float | None = None,
+    weight_in_bench_lb: float | None = None,
+    extra_attrs: pd.DataFrame | None = None,
+    constraint_extra_attrs_active: dict[str, tuple[float, float]] | None = None,
+    constraint_extra_attrs_abs: dict[str, tuple[float, float]] | None = None,
     weight_tolerance: float = 1e-4,
     turnover_limit_relax_range: tuple[float, int] | None = None,
     show_progress=True,
@@ -749,6 +757,9 @@ def multioptimize(
 
     total_active_ub : float, default is None
         个股主动权重绝对值之和的上限，None 表示不设置
+
+    weight_in_bench_lb : float, default is None
+        组合中属于 benchmark 成分股的权重合计下限，None 表示不设置
 
     extra_attrs : pd.DataFrame, default is None
         额外属性，每列一个属性
@@ -1018,6 +1029,7 @@ def multioptimize(
                 asset_ub=asset_ub,
                 active_ub=active_ub,
                 total_active_ub=total_active_ub,
+                weight_in_bench_lb=weight_in_bench_lb,
                 extra_attrs=__extra_attrs,
                 constraint_extra_attrs_active=constraint_extra_attrs_active,
                 constraint_extra_attrs_abs=constraint_extra_attrs_abs,
