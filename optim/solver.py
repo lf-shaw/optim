@@ -122,7 +122,7 @@ class Solver:
                 )
             if x0.size != self.__n:
                 raise ValueError(
-                    f"x0 must be 1-d array with size equals to mu's size {self.__n}"
+                    f"x0 must be 1-d array with size equals to mu's size {self.__n}: {x0.size}"
                 )
             self.__x0 = x0
         else:
@@ -225,7 +225,7 @@ class Solver:
             if weight is not None:
                 raise ValueError("benchmark weight must be None or an 1-d array")
 
-    def set_asset_active_ub(self, ub):
+    def set_asset_active_ub(self, ub: float | np.ndarray):
         """设置个股主动权重上限
 
         Paramters
@@ -241,7 +241,7 @@ class Solver:
                 raise ValueError(f"active ub must be positive but {ub} < 0")
             ub = np.full(self.__n, ub, dtype=np.float64)
         else:
-            if not (ub.ndim == 1 and ub.size == self.__n):
+            if not (ub.ndim == 1 and ub.size == self.__n):  # type: ignore
                 raise ValueError(f"ub must be an 1-d array with size {self.__n}")
 
         self.__model.constraint(
