@@ -84,7 +84,7 @@ class CustomBuildExt(build_ext_orig):
 # ----------------------------
 setup(
     name="optim",
-    version="1.2.0",
+    version="2.0.2",
     ext_modules=cythonize(
         "optim/*.py",
         exclude=["optim/__init__.py"],
