@@ -777,7 +777,8 @@ def multioptimize(
 
     turnover_limit_relax_range : tuple[float|int, int], default is None
         在优化求解不可行时，放松换手率约束的范围，默认为 None 表示求解失败直接跳过当前求解日期；
-        第一个参数是单次放松的步长，第二个参数是最大放松的次数，如果设如果第一个参数设置为 0，则直接放弃换手率约束进行求解
+        第一个参数是单次放松的步长，第二个参数是最大放松的次数，
+        如果设如果第一个参数设置为 0，则直接放弃换手率约束进行求解，但此解可能在后续继续触发不可行警告。
 
     show_progress : bool, default is True
         是否显示进度条，默认为 True，只在 jupyter 环境下有效。
