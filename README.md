@@ -1,29 +1,877 @@
 # optim
 
-`optim` 是面向 A 股因子风险模型的统一组合优化器。3.0.0 起，公共接口使用不可变的
-`PortfolioProblem` 描述数据、目标与约束，由 `PortfolioOptimizer` 统一处理单期、多期、
-结果验收、失败路线和显式不可行诊断。
+`optim` 是面向 A 股因子风险模型和指数增强策略的统一组合优化器。自 `v3.0.0` 起，公共接口
+不再区分 `opt`/`linopt`，而是使用不可变的 `PortfolioProblem` 描述数据、目标和约束，由
+`PortfolioOptimizer` 统一处理：
+
+- 线性 alpha 最大化（LP）；
+- 因子风险惩罚目标（凸 QP）；
+- 带年化跟踪误差预算的 Factor-QCQP；
+- 换手率、主动权重、风格/行业敞口、基准成员覆盖和逐资产交易指令；
+- 单期实盘优化、链式多期优化和独立冷启动研究；
+- 标准化结果、最优性证书、求解路线审计和显式不可行诊断；
+- 手工数组、已加载内存数据，以及可选的 tuda2 批量数据适配。
+
+用户只负责表达业务问题。具体数值路径和必要回退由优化器自动处理，并通过结果对象报告实际
+行为。
+
+---
+
+## 1. 安装
+
+运行要求：
+
+- Python `>=3.10`；
+- Linux x86-64；
+- NumPy、SciPy、pandas；
+- HiGHS、PIQP、Clarabel；
+- MOSEK Python 包。MOSEK license 是可选的，没有 license 时仍可使用免费回退路径。
+
+安装内部平台发布的 wheel：
+
+```bash
+python -m pip install optim-3.0.0-cp311-cp311-linux_x86_64.whl
+```
+
+wheel 带 CPython ABI 和平台标记。不同 Python 次版本或操作系统需要分别构建对应 wheel。
+
+从仓库安装开发和构建依赖：
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+`tuda2` 是可选内部数据适配，不属于 optim 的强制运行依赖；需要时从其独立项目安装。
+
+---
+
+## 2. 最小单期示例
+
+如果已经获得严格对齐的 `PortfolioData`：
 
 ```python
-from optim import MaximizeAlpha, PortfolioOptimizer
+from optim import (
+    MaximizeAlpha,
+    PortfolioConstraints,
+    PortfolioOptimizer,
+)
 
-result = PortfolioOptimizer().optimize(
+optimizer = PortfolioOptimizer()
+result = optimizer.optimize(
     data=today_data,
+    objective=MaximizeAlpha(),
+    constraints=PortfolioConstraints(),
+)
+
+if result.status.has_solution:
+    weights = result.require_weights()
+else:
+    print(result.status.value, result.message)
+    for attempt in result.route:
+        print(attempt.backend, attempt.status.value, attempt.native_status)
+```
+
+`PortfolioOptimizer` 可以跨请求复用，但只保存不可变的 `SolverPolicy`，不会保存样本空间、
+持仓、黑名单、冻结名单或上一期求解状态。
+
+---
+
+## 3. 公共入口
+
+| 使用场景 | 推荐入口 |
+|---|---|
+| 已有完整单日问题 | `optimizer.solve(problem)` |
+| 单日数据或实盘临时名单 | `optimizer.optimize(...)` |
+| 数据源驱动的多期优化 | `optimizer.optimize_range(...)` |
+| 已显式构造每日问题 | `optimizer.solve_sequence(...)` |
+| 只检查静态输入 | `optimizer.validate(problem)` |
+| 复用已准备的单日问题 | `optimizer.prepare(problem)` + `solve_prepared(prepared)` |
+| 深度诊断指定失败问题 | `optimizer.diagnose(problem, prior_result=result)` |
+
+推荐层级：
+
+```text
+普通单期用户              optimize(...)
+普通多期用户              optimize_range(...)
+需要完整模型控制          solve(PortfolioProblem(...))
+框架或低延迟重复调用      prepare(...) / solve_prepared(...)
+```
+
+旧的 `opt`、`linopt` 和 `solver` 模块仅在迁移期间保留延迟导入，后续将废弃。新代码不应继续
+依赖旧入口。
+
+---
+
+## 4. 数据模型与严格对齐
+
+### 4.1 `PortfolioProblem`
+
+一个单期问题由三个不可变对象完整定义：
+
+```python
+from optim import PortfolioProblem
+
+problem = PortfolioProblem(
+    data=portfolio_data,
+    objective=objective,
+    constraints=constraints,
+)
+```
+
+求解器实例没有隐式可变建模状态，因此调用顺序不会改变问题。
+
+### 4.2 `PortfolioData`
+
+`PortfolioData.assets` 是所有资产维数组唯一的权威位置坐标：
+
+```text
+alpha                              (n_assets,) 或 None
+benchmark                          (n_assets,) 或 None
+initial_weight                     (n_assets,) 或 None
+tradable                           (n_assets,)
+risk_model.exposure                (n_assets, n_factors)
+risk_model.covariance              (n_factors, n_factors)
+risk_model.specific_volatility     (n_assets,)
+```
+
+手工传入 NumPy 数组时，优化器不会根据证券标签再次重排。带标签数据必须先由数据适配层严格
+对齐，或者使用 `InMemoryDataSource`/`Tuda2DataSource`。
+
+### 4.3 日期规则
+
+优化日 $t$ 使用：
+
+- $t$ 日风险模型；
+- $t$ 日基准权重；
+- $t$ 日 alpha；
+- $t$ 日盘后实际可得的交易状态和期初持仓。
+
+这些信息在 $t$ 日收盘后、下一执行机会前可知，不构成未来信息。公共数据层要求严格同日；
+不会用前一个可用日期补风险、基准或 alpha，也不会静默丢弃缺失日期。
+
+### 4.4 风险单位
+
+风险单位固定为 annualized decimal：
+
+| 字段 | 单位 | 例子 |
+|---|---|---|
+| `FactorRiskModel.covariance` | 年化小数收益协方差 | 对角线 `0.04` 对应 20% 年化波动率 |
+| `specific_volatility` | 年化小数波动率 | `0.20` 表示 20% |
+| `TrackingErrorLimit` | 年化小数波动率 | 2% 写作 `0.02` |
+| `exposure` | 无量纲 | 不缩放 |
+| `alpha` | 用户声明的业务单位 | 由 `AlphaSpec` 说明 |
+
+不要再次乘除 `100`、`10_000` 或 `252`。优化器不会根据数值大小猜测单位。
+
+---
+
+## 5. 因子风险模型
+
+令目标权重为 $x$、基准权重为 $b$、主动权重为 $a=x-b$、资产因子暴露矩阵为 $E$、因子
+协方差为 $F$、特异波动率为 $d$。主动因子暴露为：
+
+$$
+f=E^{\mathsf T}a.
+$$
+
+年化跟踪误差满足：
+
+$$
+\operatorname{TE}(x)^2
+=f^{\mathsf T}Ff+\lVert d\odot a\rVert_2^2.
+$$
+
+手工构造单日风险模型：
+
+```python
+import numpy as np
+import pandas as pd
+
+from optim import FactorRiskModel
+
+risk_model = FactorRiskModel(
+    asof=pd.Timestamp("2026-08-31"),
+    exposure=np.asarray(exposure, dtype=float),
+    covariance=np.asarray(factor_covariance, dtype=float),
+    specific_volatility=np.asarray(specific_volatility, dtype=float),
+    factor_names=tuple(factor_names),
+    factor_types=tuple(factor_types),  # 例如 style / industry
+)
+```
+
+`exposure` 列、`covariance` 两个轴、`factor_names` 和 `factor_types` 必须使用完全一致的因子顺序。
+
+---
+
+## 6. 支持的目标
+
+### 6.1 最大化 alpha
+
+```python
+from optim import MaximizeAlpha
+
+objective = MaximizeAlpha()
+```
+
+目标为：
+
+$$
+\max_x\ \alpha^{\mathsf T}x.
+$$
+
+没有 TE 预算时属于 LP；增加 `TrackingErrorLimit` 后属于 Factor-QCQP。
+
+### 6.2 风险调整 alpha
+
+```python
+from optim import RiskAdjustedAlpha
+
+objective = RiskAdjustedAlpha(
+    factor_aversion=0.75,
+    specific_aversion=0.75,
+)
+```
+
+目标同时惩罚因子和特异方差。风险厌恶系数的经济意义取决于 alpha 的尺度和年化小数方差
+口径，优化器不会自动统一二者量纲。
+
+当前 `RiskAdjustedAlpha` 不支持同时再配置 `TrackingErrorLimit`。
+
+### 6.3 最小化跟踪误差
+
+```python
+from optim import MinimizeTrackingError
+
+objective = MinimizeTrackingError(alpha_floor=None)
+```
+
+这是当前唯一允许 `PortfolioData.alpha=None`、`alpha_spec=None` 的目标。如果配置
+`alpha_floor`，仍必须提供 alpha 和 `AlphaSpec`。
+
+---
+
+## 7. 组合约束
+
+下面是一个接近指数增强实际应用的约束集合：
+
+```python
+from optim import (
+    ExposureBounds,
+    LowerBound,
+    PortfolioConstraints,
+    SymmetricBound,
+    TrackingErrorLimit,
+    TurnoverLimit,
+    WeightBounds,
+)
+
+constraints = PortfolioConstraints(
+    long_only=True,
+    budget=1.0,
+    asset_weight=WeightBounds(lower=0.0, upper=1.0),
+    active_weight=SymmetricBound(0.01),
+    total_active=1.8,
+    turnover=TurnoverLimit(0.05),
+    benchmark_member_weight=LowerBound(0.81),
+    style=ExposureBounds(
+        default=(-0.60, 0.60),
+        overrides={"size": (-0.30, 0.30)},
+    ),
+    industry=ExposureBounds(default=(-0.05, 0.05)),
+    tracking_error=TrackingErrorLimit(0.02),
+)
+```
+
+约束含义：
+
+| 字段 | 数学含义 |
+|---|---|
+| `budget=1.0` | $\mathbf 1^{\mathsf T}x=1$ |
+| `asset_weight` | 每只证券绝对目标权重上下限 |
+| `active_weight` | $|x_i-b_i|\le c$ |
+| `total_active` | $\lVert x-b\rVert_1\le L$ |
+| `turnover` | $\lVert x-x_0\rVert_1\le T$ |
+| `benchmark_member_weight` | 基准成员目标权重合计下限 |
+| `style`/`industry` | 相对基准的因子主动敞口 |
+| `tracking_error` | $\operatorname{TE}(x)\le B$ |
+| `freeze_nontradable` | 不可交易证券固定在实际期初权重 |
+
+换手率采用完整 L1 口径，不除以 2。`TurnoverLimit(0.05)` 就表示：
+
+$$
+\lVert x-x_0\rVert_1\le0.05.
+$$
+
+换手率与跟踪误差是两个独立约束，二者不存在固定大小关系。
+
+---
+
+## 8. 完整手工单期示例
+
+```python
+import numpy as np
+import pandas as pd
+
+from optim import (
+    AlphaSpec,
+    FactorRiskModel,
+    MaximizeAlpha,
+    PortfolioData,
+    PortfolioOptimizer,
+    PortfolioProblem,
+)
+
+assets = pd.Index(asset_ids, name="sid")
+risk_model = FactorRiskModel(
+    asof=pd.Timestamp("2026-08-31"),
+    exposure=np.asarray(exposure, dtype=float),
+    covariance=np.asarray(factor_covariance, dtype=float),
+    specific_volatility=np.asarray(specific_volatility, dtype=float),
+    factor_names=tuple(factor_names),
+    factor_types=tuple(factor_types),
+)
+data = PortfolioData(
+    date=pd.Timestamp("2026-08-31"),
+    assets=assets,
+    alpha=np.asarray(alpha, dtype=float),
+    alpha_spec=AlphaSpec(
+        units="standardized_score",
+        scale=1.0,
+    ),
+    benchmark=np.asarray(benchmark_weight, dtype=float),
+    initial_weight=np.asarray(pretrade_weight, dtype=float),
+    tradable=np.asarray(tradable, dtype=bool),
+    risk_model=risk_model,
+)
+problem = PortfolioProblem(
+    data=data,
     objective=MaximizeAlpha(),
     constraints=constraints,
 )
+
+optimizer = PortfolioOptimizer()
+report = optimizer.validate(problem)
+report.raise_for_errors()
+
+result = optimizer.solve(problem)
 weights = result.require_weights()
 ```
 
-主要能力：
+`validate()` 不建立求解器，会尽量一次返回所有可以独立发现的输入错误。直接调用 `solve()`
+也会先执行同样的前置校验。
 
-- 线性 alpha、风险惩罚 QP 和带因子模型 TE 预算的 Factor-QCQP；
-- 换手率、主动权重、风格/行业敞口、基准覆盖及单期交易名单；
-- close-to-close 持仓自然漂移和统一多期入口；
-- 结构化结果、目标证书、fallback 审计和手动 deep infeasibility diagnosis；
-- 手动数据、严格内存数据源及可选 tuda2 批量适配。
+---
 
-当前实现与审阅入口见
-[`docs/current_implementation_architecture.md`](docs/current_implementation_architecture.md)，
-发布规则见 [`docs/core_wheel_distribution.md`](docs/core_wheel_distribution.md)。
+## 9. 单期实盘交易指令
+
+黑名单、冻结名单、不可买入/卖出名单通常只对一次实盘优化有效，可以直接使用便利参数：
+
+```python
+result = optimizer.optimize(
+    data=today_data,
+    objective=MaximizeAlpha(),
+    constraints=constraints,
+    blacklist=["delist_candidate"],
+    frozen=["suspended_sid"],
+    not_buyable=["sell_only_sid"],
+    not_sellable=["buy_only_sid"],
+    weight_overrides={
+        "special_sid": (0.001, 0.003),
+    },
+)
+```
+
+语义如下：
+
+- `blacklist`：目标权重固定为零；
+- `frozen`：固定为当前实际期初权重；
+- `not_buyable`：目标权重不得高于期初权重；
+- `not_sellable`：目标权重不得低于期初权重；
+- `weight_overrides`：标量表示精确权重，二元组表示闭区间。
+
+名单会被写入当前不可变问题，不会泄漏到下一次调用。默认情况下，名单包含样本空间之外的证券
+会在求解前报错。
+
+`optimize_range()` 不支持把同一静态 `asset_trade` 广播到未来日期，因为未来真实持仓、停牌、
+黑名单和冻结状态通常无法在回测开始前准确预知。
+
+---
+
+## 10. 使用 tuda2 单期取数
+
+```python
+from optim import AlphaSpec, MaximizeAlpha, PortfolioOptimizer
+from optim.integrations.tuda2 import Tuda2DataSource
+
+source = Tuda2DataSource(
+    risk_model="datayes",
+    benchmark_weight_type="daily",
+)
+
+result = PortfolioOptimizer().optimize(
+    data_source=source,
+    date=trade_date,
+    universe=today_universe,       # sid 索引，包含 alpha 列
+    benchmark_sid="000852.SH",
+    initial_weight=pretrade_weight,
+    objective=MaximizeAlpha(),
+    constraints=constraints,
+    alpha_spec=AlphaSpec(
+        units="standardized_score",
+        scale=1.0,
+    ),
+)
+```
+
+单期入口只读取指定日期，不额外获取持仓漂移收益。数据适配器负责把 tuda2 的风险模型和指数
+权重转换为严格同日、统一资产坐标的 `PortfolioData`。
+
+---
+
+## 11. 链式多期优化
+
+### 11.1 构造调仓计划
+
+`PortfolioSchedule.universe` 必须使用名称严格等于 `("dt", "sid")` 的唯一 `MultiIndex`。
+每个日期可以拥有不同的样本空间。
+
+```python
+from optim import PortfolioSchedule
+
+schedule = PortfolioSchedule(
+    universe=universe.sort_index(),
+    alpha_column="alpha",
+    tradable_column="tradable",
+)
+```
+
+### 11.2 tuda2 链式求解
+
+```python
+from optim import (
+    AlphaSpec,
+    MaximizeAlpha,
+    PortfolioOptimizer,
+    SequencePolicy,
+)
+from optim.integrations.tuda2 import Tuda2DataSource
+
+sequence = PortfolioOptimizer().optimize_range(
+    data_source=Tuda2DataSource(risk_model="datayes"),
+    schedule=schedule,
+    benchmark_sid="000852.SH",
+    objective=MaximizeAlpha(),
+    constraints=constraints,
+    alpha_spec=AlphaSpec(),
+    initial_weight=first_day_weight,
+    sequence_policy=SequencePolicy(
+        mode="chained",
+        theta_seed="auto",
+        on_failure="stop",
+        output_weights="sparse",
+    ),
+)
+```
+
+tuda2 风险模型、基准权重和日度收益按完整区间一次取足；逐日优化循环不会反复发起 I/O。
+
+如果风险模型和基准已经以 pandas 对象常驻内存，使用相同的多期入口，不需要逐日
+构造 `PortfolioProblem`：
+
+```python
+from optim import FactorRiskFrames, InMemoryDataSource
+
+risk_frames = FactorRiskFrames(
+    exposure=exposure_frame,                  # (dt, sid) 行索引
+    covariance=factor_covariance_frame,       # (dt, factor) 行索引
+    specific_volatility=specific_risk_frame,  # (dt, sid) 行索引
+    factor_types=factor_type_by_name,
+)
+memory_source = InMemoryDataSource(
+    risk_data=risk_frames,
+    benchmark=daily_benchmark_weight,          # (dt, sid) 行索引
+)
+
+sequence = optimizer.optimize_range(
+    data_source=memory_source,
+    schedule=schedule,
+    objective=objective,
+    constraints=constraints,
+    alpha_spec=alpha_spec,
+    initial_weight=first_day_weight,
+    holding_period_returns=close_to_close_returns,
+    sequence_policy=SequencePolicy(mode="chained"),
+)
+```
+
+`InMemoryDataSource` 不实施日期回退、forward-fill 或隐式单位转换。链式模式下，
+`holding_period_returns` 以“当前调仓日”为键，其值是上一调仓日到当日的逐资产 C2C
+复合收益。
+
+### 11.3 持仓自然漂移
+
+链式模式在第 $t$ 日求解前，将上一期目标组合按相邻调仓区间 close-to-close 收益推进：
+
+$$
+x_t^{\mathrm{pre}}
+=
+\frac{x_{t-1}^{\mathrm{target}}\odot(1+r_{t-1,t})}
+{\mathbf 1^{\mathsf T}\left[x_{t-1}^{\mathrm{target}}\odot(1+r_{t-1,t})\right]}.
+$$
+
+随后用 $x_t^{\mathrm{pre}}$ 计算当日换手率。不能把上一期目标权重原样当作下一期期初权重。
+当前接口不存在 `open` 执行模式。
+
+### 11.4 默认序列策略
+
+```text
+mode                 chained
+holding_update       mark_to_market
+on_failure           stop
+theta_seed           auto
+turnover_recovery    None
+output_weights       sparse
+```
+
+链式 `theta_seed="auto"` 会使用上一成功日期的 theta；独立模式则使用固定初值。只传播一个
+标量初值，不传播求解器 workspace。
+
+---
+
+## 12. 独立冷启动序列
+
+独立模式下，每个日期使用调用者提供的独立期初权重，不承接前一天优化结果，也不需要持仓漂移
+收益：
+
+```python
+from optim import SequencePolicy
+
+sequence = optimizer.optimize_range(
+    data_source=data_source,
+    schedule=schedule,
+    objective=objective,
+    constraints=constraints,
+    alpha_spec=alpha_spec,
+    initial_weight=first_initial_weight,
+    independent_initial_weights={
+        date: initial_weight_by_date[date]
+        for date in schedule.dates
+    },
+    sequence_policy=SequencePolicy(
+        mode="independent",
+        theta_seed="fixed",
+        output_weights="none",
+    ),
+)
+```
+
+冷启动组合应具备合理的基准覆盖和敞口。随机从全部股票中任取少量证券，可能天然违反换手率、
+基准成员覆盖或因子敞口约束。
+
+多期返回值保留每个已尝试日期的输入状态和求解结果：
+
+```python
+for step in sequence.steps:
+    result = step.result
+    print(
+        step.date.date(),
+        result.status.value,
+        result.backend,
+        result.timings.total_s,
+        result.metrics.tracking_error,
+        result.metrics.turnover_l1,
+    )
+
+one_day = sequence.result_for_date(target_date)
+print(sequence.stopped_date, sequence.final_weight)
+```
+
+`output_weights="none"` 不保存每日目标、交易前和最终权重 payload；状态、路由、证书、
+违约和耗时仍会保留，适合长区间可靠性与性能测试。
+
+---
+
+## 13. 基准覆盖策略
+
+优化样本空间遗漏任何实质性基准权重时，默认直接报错，不会自动归一化。若业务明确允许极小
+缺口，必须显式配置：
+
+```python
+from optim import BenchmarkCoveragePolicy
+
+benchmark_policy = BenchmarkCoveragePolicy(
+    action="renormalize_within_tolerance",
+    missing_mass_tolerance=1e-5,
+)
+```
+
+超过阈值仍然报错。发生获准归一化时，结果会记录：
+
+```python
+result.alignment.benchmark_missing_mass
+result.alignment.benchmark_renormalization_factor
+```
+
+---
+
+## 14. 结果对象
+
+普通不可行、无界、迭代上限或数值失败返回结构化 `OptimizationResult`，不会自动抛异常。输入
+shape、单位、日期或模型定义错误则会在求解前抛出异常。
+
+主要字段：
+
+| 字段 | 含义 |
+|---|---|
+| `status` | 标准化最终状态 |
+| `weights` | 目标权重；没有可用解时为 `None` |
+| `objective_value` | 以原始业务单位复算的目标值 |
+| `backend` | 最终产生已验收结果的后端 |
+| `route` | 所有实际尝试及原生状态、耗时和元数据 |
+| `metrics` | 独立复算的目标、TE、换手和风险分解 |
+| `certificate` | 可用的目标上界、绝对 gap 和归一化 gap |
+| `violations` | 独立验收发现的具名约束违约 |
+| `alignment` | 基准缺口、持仓缺口和实际来源日期 |
+| `timings` | 准备、建立、求解、验收和总耗时 |
+| `fingerprint` | 业务问题及最终数学问题的确定性身份 |
+| `message` | 简短状态说明 |
+
+推荐读取方式：
+
+```python
+if result.status.has_solution:
+    weights = result.require_weights()
+    print(result.metrics.tracking_error)
+    print(result.metrics.turnover_l1)
+else:
+    print(result.status.value, result.message)
+```
+
+`require_weights()` 为要求“无解即异常”的调用方提供显式异常语义。
+
+默认尝试清理绝对值小于 `1e-5` 的权重；只有清理后仍满足约束和目标证书时才采用清理结果。
+
+---
+
+## 15. alpha 单位与目标证书
+
+多数业务 alpha 是标准化分数，而不是直接收益率。必须用 `AlphaSpec` 明确说明：
+
+```python
+from optim import AlphaSpec
+
+alpha_spec = AlphaSpec(
+    units="standardized_score",
+    scale=1.0,
+)
+```
+
+目标容差由 `SolverPolicy.objective_tolerance` 控制。原始 alpha 目标单位下的允许 gap 为：
+
+$$
+\epsilon_{\mathrm{raw}}
+=
+\epsilon_{\mathrm{abs}}
++
+\epsilon_{\mathrm{normalized}}\times\operatorname{AlphaSpec.scale}.
+$$
+
+默认 `normalized=1e-4`。它表示 $\alpha^{\mathsf T}x$ 的目标损失，不表示：
+
+- 单股权重差小于 `1e-4`；
+- 组合 L1 差小于 `1e-4`；
+- TE 差小于 `1e-4`；
+- 收益损失固定为 1 bp。
+
+alpha 的预处理或 scale 改变后，必须重新确认该容差的经济含义。
+
+---
+
+## 16. 不可行诊断
+
+深度诊断可能包含额外 LP/QP，因此不会在普通失败路径自动运行。对一个准确的失败问题显式
+调用：
+
+```python
+result = optimizer.solve(problem)
+
+if not result.status.has_solution:
+    report = optimizer.diagnose(
+        problem,
+        prior_result=result,
+        level="deep",
+    )
+    print(report.summary_text)
+    print(report.turnover_linear_lower_bound)
+    print(report.minimum_tracking_error)
+
+    for item in report.relaxations[:10]:
+        print(item.group, item.key, item.side, item.amount)
+```
+
+deep 诊断会按问题结构尝试：
+
+1. 线性 Phase-I，报告需要放宽的具名约束；
+2. 删除总换手率上限后，计算满足其余线性约束的最小 L1 换手率；
+3. 线性域可行且有风险模型时，计算最小 TE；
+4. 保留所有诊断尝试及原生状态。
+
+`prior_result` 必须来自完全相同的 `PortfolioProblem`，fingerprint 不一致会被拒绝。
+
+---
+
+## 17. 指数调整日与换手率恢复
+
+指数成分调整可能使严格换手率与基准覆盖、主动权重或因子约束发生结构性冲突。默认策略为停止，
+不会自动放宽约束。
+
+业务明确授权时：
+
+```python
+from optim import SequencePolicy, TurnoverRecoveryPolicy
+
+sequence_policy = SequencePolicy(
+    on_failure="stop",
+    turnover_recovery=TurnoverRecoveryPolicy(
+        max_turnover=0.20,
+        buffer=1e-5,
+    ),
+)
+```
+
+恢复满足以下原则：
+
+- 必须由用户显式提供最大允许换手率；
+- 不把基准自身换手率直接当作组合最小换手率；
+- 只对当前异常日期有效；
+- 下一日期自动恢复原配置；
+- 结果记录配置上限、诊断下界和实际有效上限。
+
+简单设置 `on_failure="hold"` 可能把一次结构性冲突传播到后续很多日期，因此默认仍为 `stop`。
+
+---
+
+## 18. 求解行为与默认策略
+
+当前已经验证的主路径：
+
+| 问题 | 默认数值路径 |
+|---|---|
+| LP | HiGHS |
+| 凸 QP | direct PIQP |
+| Factor-QCQP | PIQP 参数 QP 前沿搜索 |
+| QP/QCQP 回退 | MOSEK license 可用时优先，否则 Clarabel |
+
+调用方通常不应根据问题类型手工选择后端；通过 `result.backend` 和 `result.route` 审计实际路线。
+
+Factor-QCQP 的 LP 预筛默认关闭：
+
+```python
+from optim import PortfolioOptimizer, SolverPolicy
+
+optimizer = PortfolioOptimizer(
+    SolverPolicy(lp_prescreen=True)
+)
+```
+
+只有当 LP 全局最优点同时满足 TE 预算时，LP 结果才是 Factor-QCQP 的严格全局最优解。若历史
+通过率未知，预筛会增加一次 LP 成本，因此必须由用户显式开启。
+
+---
+
+## 19. 性能原则
+
+组合优化通常会在十年回测中运行约 2,500 次，前端处理同样属于关键路径：
+
+- tuda2 按完整区间、每种数据类型一次取足；
+- 每个日期在昂贵求解前完成严格预检；
+- 多期全区间预检完成后，逐日不重复完整静态校验；
+- 日循环和风险边界搜索内部不执行 pandas merge/groupby 或外部 I/O；
+- NumPy/CSC 数值结构进入求解路径后不转换回表格；
+- 多期默认保存稀疏权重，避免输出完整的 `date × universe` dense 历史；
+- 深度诊断只对选定问题手工执行。
+
+开发机参考结果，不能替代目标生产机基准：
+
+| 场景 | 35 日中位数 |
+|---|---:|
+| LP / HiGHS | 约 0.098 s/日 |
+| 风险惩罚 QP / PIQP | 约 0.095 s/日 |
+| 2% Factor-QCQP / PIQP frontier | 约 0.258 s/日 |
+
+5200 资产 × 47 因子的合成 Factor-QCQP，当前前置 `prepare()` 开发机中位数约 0.041 秒。
+生产判断应使用相同数据、依赖版本和硬件上的 p50/p95/P99，并分别统计数据 I/O、准备、后端
+求解、验收和结果输出。
+
+详细性能记录见 [`docs/v5_unified_optimizer_real_benchmark.md`](docs/v5_unified_optimizer_real_benchmark.md)。
+
+---
+
+## 20. 当前能力边界
+
+当前版本明确不包含：
+
+1. `RiskAdjustedAlpha + TrackingErrorLimit` 的联合问题；
+2. `FullCovarianceRiskModel` 的生产编译路径；
+3. 任意通用 SOCP/锥约束建模接口；
+4. 近似 alpha 最优集合内最小化 $\lVert x-x_0\rVert_2$ 的二阶段持仓稳定性目标；
+5. 多期未来日期的动态黑名单/冻结名单声明；
+6. 自动使用前一个日期补齐风险、基准或 alpha；
+7. GPU 路径。
+
+遇到未实现的模型组合会在求解前明确报错，不会静默改变数学问题。
+
+---
+
+## 21. 构建与发布
+
+项目采用公共 Python facade 和选择性 Cython 数值核心，只发布平台 wheel，不发布 sdist。
+
+版本由 Git tag 和 `setuptools-scm` 自动生成：
+
+```bash
+git tag v3.0.1
+./build.sh
+```
+
+正式上传：
+
+```bash
+./build.sh --push -r local
+```
+
+发布约束：
+
+- tag 必须严格为 `vX.Y.Z`；
+- `--push` 要求已跟踪工作树和暂存区干净；
+- `HEAD` 必须正好具有发布 tag；
+- wheel 版本、`optim.__version__` 和包内 `LIBRARY.toml` 必须一致；
+- wheel 不得包含数值核心 `.py/.pyi/.c/.cpp` 实现文件；
+- LP、QP 和 Factor-QCQP 安装后 smoke 必须通过。
+
+tag 之间的本地构建会自动生成带提交距离和 commit id 的开发版本。
+
+详细发布规则见 [`docs/core_wheel_distribution.md`](docs/core_wheel_distribution.md)。
+
+---
+
+## 22. 进一步文档
+
+- [当前实现架构](docs/current_implementation_architecture.md)
+- [统一接口设计](docs/portfolio_optimizer_api_design.md)
+- [当前 API 使用与审计示例](docs/current_api_usage_audit_example.md)
+- [前端性能契约](docs/frontend_performance_contract.md)
+- [求解器后端决策](docs/solver_backend_decision.md)
+- [Factor-QCQP / PIQP benchmark](docs/factor_model_qcqp_piqp_benchmark.md)
+- [不可行与模块校验审计](docs/current_module_validation_audit.md)
+- [构建与 wheel 分发](docs/core_wheel_distribution.md)
+
+安装后的包还包含适合离线知识抽取的：
+
+```text
+optim/LIBRARY.toml
+optim/references/api_overview.md
+optim/references/recipes.md
+optim/references/gotchas.md
+```
 
