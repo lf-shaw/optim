@@ -1,0 +1,9 @@
+build/*
+dist/*
+.gitignore
+*.pyc
+optim.egg-info/*
+tmp/*
+.vscode/
+benchmarks/solver_evaluation/wheels/
+benchmarks/solver_evaluation.zip
