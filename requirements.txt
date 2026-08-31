@@ -1,0 +1,33 @@
+# Install from the repository root with Python 3.11 on Linux x86_64:
+#
+#   python -m pip install -r requirements.txt
+#
+# PIQP 0.6.4 contains the upstream fix for the compact-inequality dual-recovery
+# out-of-bounds defect audited in this project.  Older releases are unsupported.
+
+# Core numerical/data stack
+numpy>=2.2,<3
+scipy>=1.15,<2
+pandas>=2.2
+bottleneck>=1.4,<2
+tqdm>=4.66,<5
+
+# Production solver backends
+highspy>=1.15,<2
+piqp>=0.6.4
+clarabel==0.11.1
+Mosek>=11.2,<12
+
+# Supported file formats and benchmark telemetry
+openpyxl>=3.1,<4
+tables>=3.10,<4
+psutil>=6,<8
+
+# Local build and test tooling
+Cython>=3,<4
+mypy>=1.11,<2
+pytest>=8,<10
+
+# tuda2 and carry/carry2 are optional internal data-source/alignment adapters.
+# They are maintained and installed from their own repositories, rather than
+# being coupled to this package's solver runtime dependencies.

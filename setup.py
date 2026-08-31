@@ -110,6 +110,7 @@ setup(
     install_requires=[
         "pandas",
         "numpy",
+        "piqp>=0.6.4",
         "mosek",
         "bottleneck",
         "tqdm",
