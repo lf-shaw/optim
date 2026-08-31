@@ -269,15 +269,15 @@ class Solver:
         # 辅助变量
         z = self.__model.variable(self.__n, fusion.Domain.unbounded())
 
-        # x + z >=0
+        # $x+z\ge0$.
         self.__model.constraint(
             fusion.Expr.add(self.__active_weight, z), fusion.Domain.greaterThan(0.0)
         )
-        # x - z <=0
+        # $x-z\le0$.
         self.__model.constraint(
             fusion.Expr.sub(self.__active_weight, z), fusion.Domain.lessThan(0.0)
         )
-        # sum(z) = c
+        # $\mathbf1^{\mathsf T}z=c$.
         self.__model.constraint(fusion.Expr.sum(z), fusion.Domain.equalsTo(ub))
 
     def set_weight_in_bench_lb(self, lb: float, in_bench_flag: np.ndarray):
@@ -457,11 +457,11 @@ class Solver:
         # 辅助变量
         z = self.__model.variable(self.__n, fusion.Domain.unbounded())
 
-        # x + z >=0
+        # $x-x_0+z\ge0$.
         self.__model.constraint(fusion.Expr.add(dx, z), fusion.Domain.greaterThan(0.0))
-        # x - z <=0
+        # $x-x_0-z\le0$.
         self.__model.constraint(fusion.Expr.sub(dx, z), fusion.Domain.lessThan(0.0))
-        # sum(z) = c
+        # $\mathbf1^{\mathsf T}z=c$.
         self.__model.constraint(fusion.Expr.sum(z), fusion.Domain.equalsTo(ub))
 
     def set_risk_constaint(
@@ -473,7 +473,7 @@ class Solver:
         lambda_F: float,
         lambda_D: float,
     ):
-        """设置风险约束
+        r"""设置风险约束
 
         Parameters
         -----------
@@ -489,6 +489,15 @@ class Solver:
             共同风险厌恶系数，gamma 为 None 时有效，默认为 0.75
         lambda_D : float
             个股特异风险厌恶系数，gamma 为 None 时有效，默认为 0.75
+
+        Notes
+        -----
+        令主动权重为 $a$，$G=EV$ 且 $F=VV^{\mathsf T}$，则风险为
+
+        $$
+        R(a)=\lVert G^{\mathsf T}a\rVert_2^2
+        +\lVert D\odot a\rVert_2^2.
+        $$
         """
 
         if not F.ndim == 2:
@@ -517,7 +526,7 @@ class Solver:
             ax = self.__xs
 
         if gamma is not None:
-            # 风险约束 ||sqrt(D)x|| + ||Gx|| <= 2 * (0.5 * gamma^2)
+            # 风险约束 $R(a)\le\gamma^2$ 的旋转二阶锥表示。
             self.__model.constraint(
                 fusion.Expr.vstack(
                     0.5,
@@ -537,7 +546,9 @@ class Solver:
 
             ld = np.sqrt(lambda_D)
             lf = np.sqrt(lambda_F)
-            # 风险约束 ||ld * sqrt(D)x|| + || lf*Gx|| <= 2 * (0.5 * S)
+            # 风险惩罚 epigraph：
+            # $s\ge\lambda_F\lVert G^{\mathsf T}a\rVert_2^2
+            # +\lambda_D\lVert D\odot a\rVert_2^2$。
             self.__model.constraint(
                 fusion.Expr.vstack(
                     0.5,
