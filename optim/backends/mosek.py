@@ -1,4 +1,4 @@
-"""Lazy MOSEK safety backend for QP and factor-model SOCP problems."""
+"""QP 和 factor-model SOCP 问题的延迟 MOSEK 安全后端。"""
 
 from __future__ import annotations
 
@@ -15,6 +15,8 @@ from .base import BackendOptions, BackendResult
 
 
 class MosekBackend:
+    """仅在路由实际到达时导入并签出 license 的 MOSEK 后端。"""
+
     name = "mosek"
 
     def solve(
@@ -22,8 +24,29 @@ class MosekBackend:
         model: QuadraticProgram | FactorQCQP,
         options: BackendOptions,
     ) -> BackendResult:
-        # Import and license checkout happen only when the router reaches this
-        # fallback. Merely importing optim never touches MOSEK.
+        """求解一个 canonical QP 或 factor-QCQP。
+
+        Parameters
+        ----------
+        model : QuadraticProgram | FactorQCQP
+            待求解的 canonical 凸模型。
+        options : BackendOptions
+            输出、容差和时间限制设置。
+
+        Returns
+        -------
+        BackendResult
+            标准化原生证据。缺少安装或 license 时通过失败结果返回，而不是在导入 ``optim``
+            时产生副作用。
+
+        Raises
+        ------
+        TypeError
+            canonical 模型类型不受支持。
+        """
+
+        # 只有路由实际到达该 fallback 时才导入 MOSEK 并签出 license；仅导入 optim 不会访问
+        # MOSEK。
         if isinstance(model, QuadraticProgram):
             return self._solve_qp(model, options)
         if isinstance(model, FactorQCQP):

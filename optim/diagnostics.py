@@ -1,10 +1,8 @@
-"""Explicit, potentially expensive infeasibility diagnostics.
+"""显式且可能较昂贵的不可行诊断。
 
-Normal solve failures return immediately and never enter this module.  A caller
-selects one failed problem and requests ``level='deep'`` to obtain Phase-I
-relaxations, a minimum linear turnover bound and, when meaningful, minimum
-tracking error.  Diagnostics reuse canonical registry metadata so evidence is
-reported in business constraint names rather than anonymous matrix rows.
+普通求解失败会立即返回，不自动进入本模块。调用方选择一个失败问题并请求 ``level='deep'``，
+才会计算 Phase-I 松弛、最小线性换手率下界，以及适用时的最小跟踪误差。诊断复用 canonical
+registry 元数据，因此证据以业务约束名称报告，而不是匿名矩阵行。
 """
 
 from __future__ import annotations
@@ -36,7 +34,25 @@ from .portfolio_types import (
 
 @dataclass(frozen=True)
 class RequiredRelaxation:
-    """One relaxable canonical bound identified by Phase-I."""
+    """Phase-I 识别出的一条需要放宽的 canonical 边界。
+
+    Attributes
+    ----------
+    constraint_id : str
+        稳定的 canonical 约束标识。
+    group : str
+        业务约束组。
+    side : str
+        需要放宽的边界侧，``"lower"`` 或 ``"upper"``。
+    amount : float
+        使用该约束原始单位表示的最小松弛量。
+    configured_bound : float
+        原问题配置的边界值。
+    diagnostic_scale : float
+        Phase-I 目标中用于跨单位比较的正数尺度。
+    key : str | None
+        适用时的资产、因子或属性键。
+    """
 
     constraint_id: str
     group: str
@@ -49,7 +65,33 @@ class RequiredRelaxation:
 
 @dataclass(frozen=True)
 class InfeasibilityReport:
-    """Structured diagnostic evidence, not an automatically applied repair."""
+    """结构化不可行证据，而不是自动应用的修复。
+
+    Attributes
+    ----------
+    stage : str
+        已执行的诊断阶段，当前深度诊断为 ``"deep"``。
+    linear_feasible : bool | None
+        去除非线性风险预算后，公共线性域是否可行。
+    summary_text : str
+        面向使用者的中文诊断摘要。
+    turnover_linear_lower_bound : float | None
+        保持其余线性约束时的最小 L1 换手率。存在 TE 约束时，它只是完整问题的下界。
+    turnover_convex_minimum : float | None
+        恢复搜索确认的完整凸问题可行换手率边界或上界。
+    turnover_limit : float | None
+        原问题配置的换手率上限。
+    minimum_tracking_error : float | None
+        线性域内可实现的最小年化小数跟踪误差。
+    tracking_error_limit : float | None
+        原问题配置的年化小数跟踪误差预算。
+    relaxations : tuple[RequiredRelaxation, ...]
+        Phase-I 所需松弛，按尺度化严重程度降序排列。
+    native_evidence : Mapping[str, Any] | None
+        只读的原生诊断状态和目标值。
+    attempts : tuple[SolverAttempt, ...]
+        诊断过程中执行的全部后端尝试。
+    """
 
     stage: str
     linear_feasible: bool | None
@@ -79,13 +121,34 @@ def diagnose_problem(
     prior_result: OptimizationResult | None = None,
     level: str = "deep",
 ) -> InfeasibilityReport:
-    """Run all current deep-diagnostic phases for exactly one fingerprint.
+    """对一个准确 fingerprint 执行当前全部深度诊断阶段。
 
-    The Phase-I LP keeps compiler-marked hard constraints fixed and minimizes
-    scaled slack on relaxable rows/bounds.  Minimum turnover removes only the
-    aggregate turnover upper bound; with a nonlinear TE constraint its result is
-    a lower bound for the full problem.  Minimum TE is solved only after the
-    linear domain is shown feasible.
+    Phase-I LP 固定编译器标记的硬约束，仅最小化可放宽行/边界的尺度化 slack。最小换手率问题
+    只删除汇总换手率上限；存在非线性 TE 约束时，其结果只是完整问题下界。只有确认线性域
+    可行后才求最小 TE。
+
+    Parameters
+    ----------
+    problem : PortfolioProblem
+        需要诊断的原始业务问题。
+    compiled : CompiledProblem
+        与 ``problem`` 对应的 canonical 编译结果。
+    policy : SolverPolicy
+        诊断子问题使用的数值容差和后端设置。
+    prior_result : OptimizationResult | None
+        同一问题此前的失败结果；提供时必须具有完全相同的 fingerprint。
+    level : str
+        显式诊断深度；当前仅支持 ``"deep"``。
+
+    Returns
+    -------
+    InfeasibilityReport
+        线性可行性、所需松弛、换手率/TE 边界及全部诊断尝试。
+
+    Raises
+    ------
+    ValueError
+        level 不受支持，或先前结果与当前问题 fingerprint 不一致。
     """
 
     if level != "deep":
@@ -163,7 +226,7 @@ def _solve_phase_one(
     domain: LinearDomain,
     policy: SolverPolicy,
 ) -> tuple[Any, tuple[RequiredRelaxation, ...]]:
-    """Construct and solve a weighted-slack LP over relaxable constraints."""
+    """在可放宽约束上构造并求解加权 slack Phase-I LP。"""
 
     row_records = {
         item.index: item for item in domain.constraints if item.location == "row"
@@ -276,7 +339,7 @@ def _minimum_linear_turnover(
     compiled: Any,
     policy: SolverPolicy,
 ) -> tuple[Any, float | None]:
-    """Minimize L1 turnover after removing only its configured upper bound."""
+    """仅移除已配置换手率上限后，最小化 L1 换手率。"""
 
     domain = compiled.model.domain
     turnover_rows = {

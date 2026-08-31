@@ -1,8 +1,7 @@
-"""Unified portfolio optimization API.
+"""统一组合优化公共 API。
 
-Importing :mod:`optim` has no solver-license or optional data-source side
-effects. The legacy ``opt``, ``linopt`` and ``solver`` modules remain lazily
-available during migration.
+导入 :mod:`optim` 不会触发求解器 license 或可选数据源的副作用。迁移期间，旧版
+``opt``、``linopt`` 和 ``solver`` 模块仍可按需延迟加载。
 """
 
 from __future__ import annotations
@@ -126,7 +125,7 @@ __all__ = [
 
 
 def __getattr__(name: str) -> Any:
-    """Load legacy modules only when a caller explicitly requests them."""
+    """仅在调用方显式访问时延迟加载旧版模块。"""
 
     if name in {"opt", "linopt", "solver"}:
         module = import_module(f".{name}", __name__)

@@ -1,4 +1,4 @@
-"""Explicit alignment policies used before canonical compilation."""
+"""canonical 编译前使用的显式数据对齐策略。"""
 
 from __future__ import annotations
 
@@ -9,20 +9,30 @@ import pandas as pd
 
 
 class DataAlignmentError(ValueError):
-    """Input tables cannot be aligned without changing their stated meaning."""
+    """输入表无法在不改变既定语义的前提下完成对齐时抛出。"""
 
 
 class BenchmarkCoverageError(DataAlignmentError):
-    """The optimization universe does not cover the supplied benchmark."""
+    """优化样本空间未完整覆盖给定基准时抛出。"""
 
 
 @dataclass(frozen=True)
 class BenchmarkCoveragePolicy:
-    """How benchmark mass outside the optimization universe is handled.
+    """定义如何处理优化样本空间之外的基准权重。
 
-    ``error`` is deliberately the default.  Renormalization is only permitted
-    when the caller explicitly selects ``renormalize_within_tolerance`` and the
-    missing mass does not exceed the independent business tolerance.
+    默认值有意设为 ``error``。仅当调用方显式选择
+    ``renormalize_within_tolerance``，且缺失权重不超过独立业务阈值时，才允许归一化。
+
+    Attributes
+    ----------
+    action : str
+        ``"error"`` 拒绝任何实质性基准权重缺口；
+        ``"renormalize_within_tolerance"`` 仅允许在
+        ``missing_mass_tolerance`` 范围内显式归一化。
+    missing_mass_tolerance : float
+        显式启用归一化时，允许位于优化样本空间之外的最大基准总权重，采用小数权重单位。
+    weight_sum_tolerance : float
+        检查原始基准权重和是否为一，以及将缺失权重视为数值零时使用的绝对容差。
     """
 
     action: str = "error"
@@ -45,6 +55,23 @@ class BenchmarkCoveragePolicy:
 
 @dataclass(frozen=True)
 class AlignedBenchmark:
+    """已对齐至优化器权威资产坐标的基准。
+
+    Attributes
+    ----------
+    values : numpy.ndarray
+        严格按请求资产顺序排列的基准权重，形状为 ``(n_assets,)``；执行获准的归一化后
+        权重和为一。
+    missing_mass : float
+        所有缺失资产的原始基准权重之和。
+    missing_assets : tuple[str, ...]
+        缺失基准成分股的字符串标签。
+    maximum_missing_weight : float
+        缺失资产中的最大原始成分权重；没有缺失时为零。
+    renormalization_factor : float
+        应用于保留权重的乘数；未执行归一化时为一。
+    """
+
     values: np.ndarray
     missing_mass: float
     missing_assets: tuple[str, ...]
@@ -57,7 +84,32 @@ def align_benchmark(
     assets: pd.Index,
     policy: BenchmarkCoveragePolicy | None = None,
 ) -> AlignedBenchmark:
-    """Align one exact-date benchmark and audit all omitted weight mass."""
+    """对齐一个严格同日基准，并审计全部缺失权重。
+
+    Parameters
+    ----------
+    benchmark : pandas.Series
+        以唯一资产标识为索引的严格同日非负基准权重。在执行覆盖处理前，原始序列之和
+        必须为一。
+    assets : pandas.Index
+        优化问题采用的权威资产顺序。
+    policy : BenchmarkCoveragePolicy | None
+        显式缺失处理策略；``None`` 使用严格默认策略。
+
+    Returns
+    -------
+    AlignedBenchmark
+        位置化基准权重及覆盖率审计信息。
+
+    Raises
+    ------
+    TypeError
+        ``benchmark`` 不是 :class:`pandas.Series` 时抛出。
+    DataAlignmentError
+        标签或权重重复、权重非有限或为负，或权重和未在策略容差内等于一时抛出。
+    BenchmarkCoverageError
+        禁止缺失、缺失权重超过显式阈值，或没有保留任何正基准权重时抛出。
+    """
 
     policy = BenchmarkCoveragePolicy() if policy is None else policy
     if not isinstance(benchmark, pd.Series):
@@ -100,7 +152,7 @@ def align_benchmark(
         raise BenchmarkCoverageError("optimization universe contains no benchmark weight")
     factor = 1.0
     if not np.isclose(retained, 1.0, rtol=0.0, atol=policy.weight_sum_tolerance):
-        # Reaching this branch implies explicit permission above.
+        # 到达此分支表示上方已经确认调用方显式允许归一化。
         factor = 1.0 / retained
         aligned *= factor
     return AlignedBenchmark(

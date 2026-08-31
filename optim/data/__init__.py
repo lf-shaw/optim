@@ -1,4 +1,4 @@
-"""Strict, solver-independent portfolio data assembly."""
+"""严格且与求解器无关的组合数据装配层。"""
 
 from .alignment import (
     BenchmarkCoverageError,

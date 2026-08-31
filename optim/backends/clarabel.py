@@ -1,4 +1,4 @@
-"""Clarabel QP/SOCP safety backend using scaled objectives and QDLDL."""
+"""使用目标缩放和 QDLDL 的 Clarabel QP/SOCP 安全后端。"""
 
 from __future__ import annotations
 
@@ -17,6 +17,26 @@ from .base import BackendOptions, BackendResult
 
 @dataclass(frozen=True)
 class _ConicData:
+    """传给 Clarabel 的内部锥规划数值块。
+
+    Attributes
+    ----------
+    P : scipy.sparse.csc_matrix
+        Clarabel 最小化目标中的上三角二次矩阵。
+    q : numpy.ndarray
+        已缩放的线性目标向量。
+    A : scipy.sparse.csc_matrix
+        锥约束矩阵。
+    b : numpy.ndarray
+        锥约束右端项。
+    cones : tuple[object, ...]
+        与 ``A`` 行块顺序一致的 Clarabel 锥对象。
+    output_variables : int
+        返回给公共层的原始 canonical 变量数量；不包含仅供锥提升使用的内部列。
+    objective_scale : float
+        为改善数值条件应用于原始目标的正比例缩放。
+    """
+
     P: sp.csc_matrix
     q: np.ndarray
     A: sp.csc_matrix
@@ -27,6 +47,8 @@ class _ConicData:
 
 
 class ClarabelBackend:
+    """将 canonical QP 或 factor-QCQP 转换为 Clarabel 锥形式的安全后端。"""
+
     name = "clarabel_qdldl"
 
     def solve(
@@ -34,6 +56,26 @@ class ClarabelBackend:
         model: QuadraticProgram | FactorQCQP,
         options: BackendOptions,
     ) -> BackendResult:
+        """使用全新 Clarabel QDLDL workspace 求解一个 canonical 模型。
+
+        Parameters
+        ----------
+        model : QuadraticProgram | FactorQCQP
+            凸 QP 或含一个 factor-model TE 预算的问题。
+        options : BackendOptions
+            容差、迭代数、时间限制和目标缩放设置。
+
+        Returns
+        -------
+        BackendResult
+            标准化原生状态、完整 canonical 候选和耗时；仍须公共独立验收。
+
+        Raises
+        ------
+        ImportError
+            当前环境未安装 Clarabel。
+        """
+
         import clarabel
 
         build_started = time.perf_counter()
@@ -161,7 +203,7 @@ def _build_conic_data(
             objective_scale=objective_scale,
         )
 
-    # Reuse the exact factor-variable equality compiled for the frontier QPs.
+    # 复用为前沿 QP 编译的精确因子变量等式。
     from ..factor_qcqp import _extend_as_parametric_qp
 
     extended_qp, _, _, _ = _extend_as_parametric_qp(model)

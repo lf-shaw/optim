@@ -1,10 +1,8 @@
-"""Deterministic close-to-close multi-period state machine.
+"""确定性的 close-to-close 多期组合状态机。
 
-The sequence layer is intentionally outside solver backends.  It advances real
-portfolio state, chooses a theta seed, applies an explicitly authorized failure
-policy and calls the same stateless single-period optimizer on every date.
-Returns are used only to mark the previous target portfolio to the next close;
-there is no alternative next-open execution mode in the current contract.
+序列层刻意位于求解器后端之外：它推进真实组合状态、选择 theta 初值、执行显式授权的失败
+策略，并在每个日期调用同一个无状态单期优化器。收益率只用于将上期目标组合估值到下一个
+收盘；当前契约不存在 next-open 执行模式。
 """
 
 from __future__ import annotations
@@ -28,11 +26,33 @@ from .portfolio_types import (
 
 @dataclass(frozen=True)
 class SequenceStep:
-    """Auditable input/output state for one attempted rebalance date.
+    """一个尝试调仓日的可审计输入/输出状态。
 
-    ``pretrade_weight`` is the naturally drifted holding used by turnover, not
-    necessarily the prior target.  Recovery fields are populated only when the
-    caller explicitly enabled turnover relaxation.
+    ``pretrade_weight`` 是换手率约束实际使用的自然漂移持仓，不一定等于上期目标权重。只有
+    调用方显式开启换手率恢复时，恢复相关字段才有值。
+
+    Attributes
+    ----------
+    date : pandas.Timestamp
+        当前尝试的调仓日期。
+    result : OptimizationResult
+        当前日期最终的标准化结果，可能来自原问题或授权恢复问题。
+    pretrade_weight : pandas.Series | None
+        用于当前换手率计算的实际交易前权重；按输出策略可能为空。
+    theta_seed : float | None
+        当前 factor-QCQP 使用的 theta 初始值。
+    recovered_turnover : bool
+        是否通过显式放宽当前日期换手率得到可用解。
+    recovery_report : InfeasibilityReport | None
+        支撑换手率恢复决策的深度诊断报告。
+    configured_turnover_limit : float | None
+        原问题配置的换手率上限。
+    minimum_feasible_turnover : float | None
+        诊断得到的线性下界或完整凸问题可行边界。
+    effective_turnover_limit : float | None
+        恢复求解实际采用的换手率上限。
+    derived_from : ProblemFingerprint | None
+        原始不可行问题的 fingerprint，用于证明恢复问题的派生关系。
     """
 
     date: pd.Timestamp
@@ -49,7 +69,21 @@ class SequenceStep:
 
 @dataclass(frozen=True)
 class PortfolioSequenceResult:
-    """Ordered sequence attempts and the final actual portfolio state."""
+    """有序多期尝试及最终实际组合状态。
+
+    Attributes
+    ----------
+    steps : tuple[SequenceStep, ...]
+        按日期顺序记录的所有已尝试步骤。
+    stopped_date : pandas.Timestamp | None
+        因策略停止的日期；完整运行时为 ``None``。
+    final_weight : pandas.Series | None
+        最后一个已推进状态下的实际持仓；从未建立状态时为空。
+    policy : SequencePolicy
+        本次运行使用的多期策略。
+    schedule_prepare_s : float
+        整段 schedule 预检耗时，单位为秒。
+    """
 
     steps: tuple[SequenceStep, ...]
     stopped_date: pd.Timestamp | None
@@ -58,6 +92,24 @@ class PortfolioSequenceResult:
     schedule_prepare_s: float = 0.0
 
     def result_for_date(self, date: Any) -> OptimizationResult:
+        """返回指定已尝试日期的优化结果。
+
+        Parameters
+        ----------
+        date : Any
+            可转换为 :class:`pandas.Timestamp` 的日期。
+
+        Returns
+        -------
+        OptimizationResult
+            对应日期的结果。
+
+        Raises
+        ------
+        KeyError
+            日期不在已尝试步骤中。
+        """
+
         target = pd.Timestamp(date)
         for step in self.steps:
             if step.date == target:
@@ -66,6 +118,8 @@ class PortfolioSequenceResult:
 
 
 class SequenceDataError(ValueError):
+    """多期日期、收益或持仓状态无法按既定语义安全推进时抛出。"""
+
     pass
 
 
@@ -76,13 +130,35 @@ def solve_sequence(
     holding_period_returns: Mapping[Any, pd.Series | np.ndarray] | None = None,
     sequence_policy: SequencePolicy | None = None,
 ) -> PortfolioSequenceResult:
-    """Solve prevalidated dates while advancing holdings deterministically.
+    """按确定性规则推进实际持仓并求解有序日期。
 
-    Static problems and all required holding-period return dates are checked
-    before the first expensive solve.  In chained mode each day's placeholder
-    initial weight is replaced with the actual marked-to-market portfolio.  A
-    successful solve becomes the next target; ``on_failure='hold'`` carries the
-    current pretrade portfolio, while the default ``stop`` terminates the run.
+    在首个昂贵求解前检查所有静态问题及必需的持仓收益日期。链式模式会用实际市值漂移组合
+    替换每日占位期初权重；成功解成为下一期目标，``on_failure='hold'`` 承接当前交易前组合，
+    默认 ``stop`` 则终止序列。
+
+    Parameters
+    ----------
+    optimizer : PortfolioOptimizer
+        无状态单期优化器。
+    problems : Iterable[PortfolioProblem] | PreparedPortfolioRun
+        严格递增日期的问题序列，或已聚合预检的惰性物化清单。
+    holding_period_returns : Mapping[Any, pandas.Series | numpy.ndarray] | None
+        以当前调仓日为键的上一调仓日至当日 close-to-close 复合收益。Series 按上一期持仓
+        资产标签对齐；ndarray 必须按上一期持仓顺序。
+    sequence_policy : SequencePolicy | None
+        持仓推进、失败、恢复、theta 和输出策略。
+
+    Returns
+    -------
+    PortfolioSequenceResult
+        逐日步骤、停止日期及最终实际持仓。
+
+    Raises
+    ------
+    SequenceDataError
+        日期无序/重复、链式首日无期初持仓、收益日期缺失或持仓漂移无法安全对齐。
+    PortfolioValidationError
+        任一静态问题未通过预检。
     """
 
     policy = SequencePolicy() if sequence_policy is None else sequence_policy
@@ -111,9 +187,8 @@ def solve_sequence(
     if dates != sorted(dates) or len(set(dates)) != len(dates):
         raise SequenceDataError("sequence problem dates must be unique and strictly increasing")
 
-    # Validate every static day and all return dates before the first expensive
-    # solve. Later chained initial weights are dynamic, but callers still
-    # provide a shape-correct placeholder so all other checks can be completed.
+    # 在首个昂贵求解前校验所有静态日期和收益日期。后续链式期初权重虽为动态值，调用方仍
+    # 提供 shape 正确的占位值，以便提前完成其余检查。
     if not prevalidated:
         for position in range(len(dates)):
             report = optimizer.validate(problem_at(position))
@@ -254,14 +329,11 @@ def _recover_turnover(
     float | None,
     float | None,
 ]:
-    """Recover only within an explicitly authorized turnover interval.
+    """仅在显式授权的换手率区间内尝试恢复。
 
-    Deep diagnosis first computes a minimum-turnover value for the remaining
-    linear domain.  Without a TE constraint that value is exact.  With a TE
-    constraint it is only a lower bound, so the routine can try the authorized
-    maximum and bisect the monotone turnover upper-bound relaxation.  Every
-    returned candidate is still accepted by the ordinary independent validator;
-    this path never treats benchmark turnover as the minimum portfolio turnover.
+    深度诊断先计算其余线性域下的最小换手率。没有 TE 约束时该值精确；存在 TE 约束时它只是
+    下界，因此本函数会尝试用户授权上限，并对具有单调性的换手率上限放宽做二分。所有返回候选
+    仍须通过普通独立验收；本路径从不把基准自身换手率当作组合最小换手率。
     """
 
     assert sequence_policy.turnover_recovery is not None
@@ -292,9 +364,8 @@ def _recover_turnover(
         attempts.extend(candidate_result.route)
         return candidate_result
 
-    # For LP/QP this is the exact minimum of the remaining linear feasible
-    # domain.  For factor-QCQP it is only a lower bound, but often already lies
-    # close enough to the full convex boundary to recover in one solve.
+    # 对 LP/QP，这是其余线性可行域的精确最小值；对 factor-QCQP，它只是下界，但通常足够
+    # 接近完整凸边界，可以一次恢复求解成功。
     lower = max(configured, linear_lower)
     first_limit = min(recovery.max_turnover, lower + recovery.buffer)
     first_result = solve_limit(first_limit)
@@ -303,9 +374,8 @@ def _recover_turnover(
         report = _with_convex_turnover(report, convex_minimum, attempts)
         return first_result, True, report, configured, convex_minimum, first_limit
 
-    # Without a TE constraint the linear minimum is exact; a failed full solve
-    # at Tmin+buffer is not evidence that a larger turnover relaxation is the
-    # right repair.  Leave it as an unrecovered solver/model failure.
+    # 没有 TE 约束时，线性最小值就是精确值；在 Tmin+buffer 处完整求解失败，不能证明继续
+    # 放宽换手率是正确修复，因此保留为未恢复的求解器/模型失败。
     if problem.constraints.tracking_error is None or first_limit >= recovery.max_turnover:
         return first_result, False, replace(report, attempts=tuple(attempts)), configured, linear_lower, first_limit
 
@@ -313,10 +383,8 @@ def _recover_turnover(
     if not maximum_result.status.has_solution:
         return maximum_result, False, replace(report, attempts=tuple(attempts)), configured, linear_lower, recovery.max_turnover
 
-    # Feasibility is monotone in a single upper-bound relaxation.  Bisect only
-    # on this explicitly enabled exceptional path; all ordinary dates pay no
-    # extra solver calls.  Non-success midpoints are conservatively kept on the
-    # lower side, while the returned high point is always independently valid.
+    # 仅放宽单一上限时可行性具有单调性。二分只发生在显式开启的异常路径，普通日期不增加
+    # 求解调用。失败中点保守地归入下侧，最终返回的上侧点始终经过独立验收。
     low = first_limit
     high = recovery.max_turnover
     high_result = maximum_result
@@ -355,12 +423,10 @@ def _mark_to_market(
     current_assets: pd.Index,
     policy: SequencePolicy,
 ) -> pd.Series:
-    """Drift previous target weights by C2C returns and align current assets.
+    """使用 C2C 收益漂移上期目标权重，并对齐当前资产域。
 
-    Missing observations are measured using actual holding mass.  They are not
-    silently filled unless the configured tolerance permits the missing mass;
-    dropping securities from the new universe also requires explicit
-    renormalization permission.
+    缺失观测按实际持仓质量计量；除非配置容差明确允许，否则不会静默填补。新资产域删除持仓
+    证券时还必须显式允许重新归一化。
     """
 
     if isinstance(holding_return, pd.Series):
@@ -413,7 +479,7 @@ def _theta_seed(
     previous: float | None,
     fixed: float,
 ) -> float | None:
-    """Resolve fixed/previous theta policy without carrying a workspace."""
+    """在不跨日携带 workspace 的前提下解析固定/上一期 theta 策略。"""
 
     mode = policy.theta_seed
     if mode == "auto":
@@ -439,9 +505,8 @@ def _apply_output_policy(
         return result
     if policy.output_weights == "none":
         return replace(result, weights=None)
-    # Numerical cleanup belongs to the single-period optimizer, which lifts
-    # and independently revalidates the modified vector.  The sequence output
-    # layer only removes exact zeros and must never alter a validated solution.
+    # 数值清理属于单期优化器：它会提升并独立复验修改后的向量。序列输出层只删除精确零，
+    # 绝不能改变已经验收的解。
     sparse = result.weights[result.weights != 0.0]
     return replace(result, weights=sparse)
 

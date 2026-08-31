@@ -1,8 +1,7 @@
-"""Cheap, solver-independent validation for portfolio problems.
+"""组合优化问题的低成本、与求解器无关的静态校验。
 
-Validation intentionally runs before canonical compilation or backend setup.
-It aggregates independent issues so a long schedule can be repaired without
-restarting an expensive optimization for every malformed field.
+校验刻意发生在 canonical 编译和后端建立之前，并聚合彼此独立的问题，使长序列可以一次性
+修复数据，而不必为每个错误字段反复启动昂贵优化。
 """
 
 from __future__ import annotations
@@ -27,12 +26,32 @@ from .portfolio_types import (
 
 
 class ValidationSeverity(str, Enum):
+    """静态校验问题的严重程度。"""
+
     ERROR = "error"
     WARNING = "warning"
 
 
 @dataclass(frozen=True)
 class ValidationIssue:
+    """一条可定位、可机器处理的静态校验问题。
+
+    Attributes
+    ----------
+    field : str
+        出错字段的稳定路径，例如 ``"data.alpha"``。
+    code : str
+        适合程序分支处理的稳定错误代码。
+    severity : ValidationSeverity
+        错误或警告级别。
+    message : str
+        面向使用者的具体说明。
+    date : pandas.Timestamp | None
+        问题所属优化日期；不具备日期语义时为空。
+    context : Mapping[str, Any]
+        只读的结构化上下文，例如期望/实际 shape 或受影响资产。
+    """
+
     field: str
     code: str
     severity: ValidationSeverity
@@ -48,27 +67,55 @@ class ValidationIssue:
 
 @dataclass(frozen=True)
 class ValidationReport:
+    """一次静态校验产生的全部问题。
+
+    Attributes
+    ----------
+    issues : tuple[ValidationIssue, ...]
+        按发现顺序记录的错误和警告；报告为空表示未发现静态问题。
+    """
+
     issues: tuple[ValidationIssue, ...] = ()
 
     @property
     def errors(self) -> tuple[ValidationIssue, ...]:
+        """返回所有 error 级问题。"""
+
         return tuple(i for i in self.issues if i.severity is ValidationSeverity.ERROR)
 
     @property
     def warnings(self) -> tuple[ValidationIssue, ...]:
+        """返回所有 warning 级问题。"""
+
         return tuple(i for i in self.issues if i.severity is ValidationSeverity.WARNING)
 
     @property
     def is_valid(self) -> bool:
+        """是否不存在会阻止编译或求解的 error。"""
+
         return not self.errors
 
     def raise_for_errors(self) -> None:
+        """报告含 error 时抛出聚合异常。
+
+        Raises
+        ------
+        PortfolioValidationError
+            ``errors`` 非空时抛出，异常对象保留完整报告。
+        """
+
         if self.errors:
             raise PortfolioValidationError(self)
 
 
 class PortfolioValidationError(ValueError):
-    """Input/schema/model error raised before any backend is constructed."""
+    """在任何后端建立前发现输入、schema 或模型错误时抛出的聚合异常。
+
+    Attributes
+    ----------
+    report : ValidationReport
+        触发异常的完整静态校验报告，而非截断后的异常文本。
+    """
 
     def __init__(self, report: ValidationReport):
         self.report = report
@@ -261,7 +308,7 @@ def _check_asset_trade_constraints(
     assets: pd.Index,
     initial: np.ndarray | None,
 ) -> bool:
-    """Validate one-off lists without constructing a solver model."""
+    """不建立求解器模型，校验仅对本次优化生效的逐资产指令。"""
 
     if instructions is None or instructions.is_empty:
         return True
@@ -277,7 +324,7 @@ def _check_asset_trade_constraints(
     try:
         asset_set = set(assets)
     except TypeError:
-        # Duplicate/unhashable asset coordinates are reported separately.
+        # 重复或不可哈希的资产坐标由独立检查报告。
         return False
     for group, values in groups:
         local: set[Any] = set()
@@ -362,15 +409,22 @@ def _check_asset_trade_constraints(
 
 
 def validate_problem(problem: PortfolioProblem) -> ValidationReport:
-    """Return all cheap static issues for one already-aligned problem.
+    """返回一个已对齐单期问题的全部低成本静态问题。
 
-    Validation aggregates independent failures instead of raising on the first
-    malformed array.  It checks positional shapes and finiteness, exact risk
-    date/unit, covariance symmetry/PSD, objective dependencies, benchmark and
-    initial budgets, exposure names, operational-list conflicts and the final
-    effective asset capacity.  It does not prove global feasibility of the
-    combined linear domain; that belongs to a solver or explicit Phase-I
-    diagnostic.
+    校验会聚合独立错误，而不是在首个异常数组处停止。检查内容包括位置 shape 和有限性、
+    风险模型准确日期/单位、协方差对称性与半正定性、目标依赖、基准与期初预算、因子名称、
+    交易名单冲突和最终逐资产容量。该函数不证明组合线性域的全局可行性；后者属于求解器或
+    显式 Phase-I 诊断。
+
+    Parameters
+    ----------
+    problem : PortfolioProblem
+        数据已经按 ``PortfolioData.assets`` 对齐的单期问题。
+
+    Returns
+    -------
+    ValidationReport
+        完整错误和警告集合；本函数不因普通校验问题抛异常。
     """
 
     data = problem.data
@@ -581,9 +635,8 @@ def validate_problem(problem: PortfolioProblem) -> ValidationReport:
                 collector.error(field_name, "unknown_attribute", f"unknown extra attribute {key!r}")
             _check_pair(collector, f"{field_name}.{key}", pair)
 
-    # Resolve the final per-asset domain once all required primitive arrays and
-    # instruction values are known to be usable. This catches budget-capacity
-    # and non-tradable conflicts before canonicalization/backend setup.
+    # 仅在基础数组和交易指令均已确认可用后解析最终逐资产边界，以便在 canonical 编译和
+    # 后端建立前发现预算容量及不可交易资产冲突。
     can_resolve_asset_bounds = bool(
         effective_lower is not None
         and effective_upper is not None

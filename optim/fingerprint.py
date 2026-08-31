@@ -1,4 +1,4 @@
-"""Deterministic semantic and canonical problem fingerprints."""
+"""确定性的业务语义及 canonical 问题 fingerprint。"""
 
 from __future__ import annotations
 
@@ -107,12 +107,11 @@ def _feed_variable_registry(
     digest: Any,
     records: tuple[VariableRecord, ...],
 ) -> None:
-    """Hash thousands of flat records as one deterministic payload.
+    """将数千条扁平 registry 记录作为一个确定性 payload 哈希。
 
-    The general recursive encoder is convenient for small semantic objects but
-    created hundreds of thousands of labels and hash updates for a 5,200-asset
-    registry.  These records have a frozen flat schema, so a compact JSON array
-    preserves all fields while avoiding per-field Python dispatch.
+    通用递归编码器适合小型语义对象，但对 5,200 资产 registry 会生成数十万标签和 hash
+    update。这些记录具有冻结的扁平 schema，因此紧凑 JSON 数组可以保留所有字段，同时避免
+    逐字段 Python dispatch。
     """
 
     payload = [
@@ -159,9 +158,21 @@ def _feed_constraint_registry(
 
 
 def semantic_hash(problem: PortfolioProblem) -> str:
-    # Provenance is run/audit metadata, not part of the mathematical problem.
-    # Two independently sourced but byte-identical aligned inputs must retain
-    # the same semantic hash so backend comparisons remain meaningful.
+    """计算不含数据来源元信息的业务语义哈希。
+
+    Parameters
+    ----------
+    problem : PortfolioProblem
+        待标识的完整业务问题。
+
+    Returns
+    -------
+    str
+        小写十六进制 SHA-256。来源不同但对齐后数值逐字节相同的问题会得到相同结果。
+    """
+
+    # provenance 属于运行/审计元信息，不是数学问题本身。独立来源但对齐后逐字节相同的输入
+    # 必须保留相同 semantic hash，后端对比才有意义。
     data = problem.data
     risk_model = data.risk_model
     if risk_model is not None:
@@ -180,6 +191,19 @@ def semantic_hash(problem: PortfolioProblem) -> str:
 
 
 def canonical_hash(model: LinearProgram | QuadraticProgram | FactorQCQP) -> str:
+    """计算 canonical 稀疏数值 payload 和 registry 的哈希。
+
+    Parameters
+    ----------
+    model : LinearProgram | QuadraticProgram | FactorQCQP
+        已排序、不可变的 canonical 模型。
+
+    Returns
+    -------
+    str
+        覆盖矩阵、边界、目标、风险算子和审计 registry 的小写十六进制 SHA-256。
+    """
+
     digest = hashlib.sha256()
     _feed(digest, "model.type", type(model).__qualname__)
     _feed(digest, "model.kind", model.kind)
@@ -213,6 +237,21 @@ def canonical_hash(model: LinearProgram | QuadraticProgram | FactorQCQP) -> str:
 
 
 def fingerprint(problem: PortfolioProblem, model: Any) -> ProblemFingerprint:
+    """组合业务语义哈希、canonical 哈希和编译器版本。
+
+    Parameters
+    ----------
+    problem : PortfolioProblem
+        canonical 模型来源的业务问题。
+    model : CanonicalModel
+        由当前编译器为该问题生成的 canonical 模型。
+
+    Returns
+    -------
+    ProblemFingerprint
+        可用于证明主求解和回退求解针对同一数学问题的身份对象。
+    """
+
     return ProblemFingerprint(
         semantic_hash=semantic_hash(problem),
         canonical_hash=canonical_hash(model),

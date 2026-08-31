@@ -1,4 +1,4 @@
-"""HiGHS adapter for canonical linear programs."""
+"""Canonical 线性规划的 HiGHS 适配器。"""
 
 from __future__ import annotations
 
@@ -13,9 +13,33 @@ from .base import BackendOptions, BackendResult
 
 
 class HighsBackend:
+    """直接求解 :class:`LinearProgram` 的无状态 HiGHS 后端。"""
+
     name = "highs"
 
     def solve(self, model: LinearProgram, options: BackendOptions) -> BackendResult:
+        """建立并求解一个 canonical LP。
+
+        Parameters
+        ----------
+        model : LinearProgram
+            待求解的 canonical 线性规划。
+        options : BackendOptions
+            输出和时间限制等通用数值设置。
+
+        Returns
+        -------
+        BackendResult
+            尚未经过公共独立验收的原生状态、完整变量候选和耗时。
+
+        Raises
+        ------
+        TypeError
+            ``model`` 不是 :class:`LinearProgram`。
+        ImportError
+            当前环境未安装 ``highspy``。
+        """
+
         import highspy
 
         if not isinstance(model, LinearProgram):

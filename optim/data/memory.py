@@ -1,9 +1,8 @@
-"""Strict exact-date assembler for already-loaded portfolio data.
+"""已加载组合数据的严格同日组装器。
 
-Pandas objects are used at this boundary to enforce labelled ``(dt, sid)``
-alignment.  A materialized :class:`PortfolioProblem` then uses one shared asset
-coordinate and dense NumPy arrays on the numerical hot path.  No date fallback
-or implicit forward-fill is performed here.
+该边界使用 pandas 对象强制执行带标签的 ``(dt, sid)`` 对齐。物化后的
+:class:`PortfolioProblem` 使用统一资产顺序和稠密 NumPy 数组进入数值热路径。本模块不进行
+日期替代或隐式 forward-fill。
 """
 
 from __future__ import annotations
@@ -34,11 +33,28 @@ from .contracts import FactorRiskFrames, PortfolioSchedule, _exact_xs, _require_
 
 
 class InMemoryDataSource:
-    """Create exact-date core problems from already-loaded batch frames.
+    """从已加载的批量 frame 构造严格同日核心问题。
 
-    The object retains source frames, not per-day solver models.  Benchmark
-    coverage is governed by an explicit policy and risk/alpha/benchmark dates
-    must match each requested optimization date exactly.
+    对象只保存源 frame，不保存逐日求解器模型。基准覆盖由显式策略控制，风险、alpha 和基准
+    日期必须准确匹配每个优化日期。
+
+    Parameters
+    ----------
+    risk_data : FactorRiskFrames
+        已加载、使用核心年化小数单位的批量风险模型。
+    benchmark : pandas.Series | pandas.DataFrame
+        以严格 ``(dt, sid)`` MultiIndex 存储的逐日基准权重；DataFrame 必须只有一列。
+    benchmark_policy : BenchmarkCoveragePolicy | None
+        基准缺口处理策略；``None`` 使用默认严格报错策略。
+
+    Attributes
+    ----------
+    risk_data : FactorRiskFrames
+        批量风险模型引用。
+    benchmark : pandas.Series | pandas.DataFrame
+        批量基准权重引用。
+    benchmark_policy : BenchmarkCoveragePolicy
+        实际使用的显式覆盖策略。
     """
 
     def __init__(
@@ -68,11 +84,39 @@ class InMemoryDataSource:
         independent_initial_weights: Mapping[pd.Timestamp, pd.Series] | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
     ) -> tuple[PortfolioProblem, ...]:
-        """Materialize and pre-align every requested optimization date.
+        """物化并预对齐所有请求的优化日期。
 
-        Later chained initial weights are placeholders only; the sequence engine
-        replaces them with naturally drifted holdings immediately before solve.
-        Independent mode can supply an exact per-date mapping.
+        链式模式中首日之后的期初权重只是 shape 正确的占位符；序列引擎会在实际求解前用自然
+        漂移后的真实持仓替换。独立模式可提供准确的逐日期期初权重映射。
+
+        Parameters
+        ----------
+        schedule : PortfolioSchedule
+            调仓日期、资产、alpha 和可选属性计划。
+        objective : PortfolioObjective
+            各日期共享的目标类型。
+        constraints : PortfolioConstraints
+            各日期共享的约束配置。
+        alpha_spec : AlphaSpec | None
+            alpha 的单位与尺度。
+        initial_weight : pandas.Series
+            首日或默认期初权重，以 sid 为索引。
+        independent_initial_weights : Mapping[pandas.Timestamp, pandas.Series] | None
+            独立模式下严格逐日期的期初权重。
+        extra_attribute_columns : tuple[str, ...]
+            需要物化为额外逐资产属性的 schedule 列。
+
+        Returns
+        -------
+        tuple[PortfolioProblem, ...]
+            按日期排序、已通过静态校验的单期问题。
+
+        Raises
+        ------
+        PortfolioValidationError
+            任一日期存在输入、单位或静态模型错误。
+        DataAlignmentError
+            日期或资产标签不能严格对齐。
         """
 
         prepared = self.prepare_run(
@@ -97,11 +141,31 @@ class InMemoryDataSource:
         initial_weight: pd.Series,
         extra_attribute_columns: tuple[str, ...] = (),
     ) -> PortfolioProblem:
-        """Materialize one exact-date problem once for the low-latency path.
+        """为低延迟单期路径只物化一次严格同日问题。
 
-        Validation remains the optimizer's responsibility. Unlike
-        ``build_problems()``, this method intentionally does not run a schedule
-        preflight and then materialize the same dense risk matrix a second time.
+        校验仍由优化器负责。与 ``build_problems()`` 不同，本方法不会先做整段预检再重复物化
+        同一份稠密风险矩阵。
+
+        Parameters
+        ----------
+        schedule : PortfolioSchedule
+            必须恰好包含一个日期的计划。
+        objective, constraints, alpha_spec
+            目标、约束和 alpha 单位配置。
+        initial_weight : pandas.Series
+            该日交易前实际权重，以 sid 为索引。
+        extra_attribute_columns : tuple[str, ...]
+            需要物化的额外属性列。
+
+        Returns
+        -------
+        PortfolioProblem
+            尚未重复静态校验的单日问题。
+
+        Raises
+        ------
+        DataAlignmentError
+            schedule 日期数不为 1，或任一输入无法严格对齐。
         """
 
         dates = schedule.dates
@@ -134,12 +198,30 @@ class InMemoryDataSource:
         independent_initial_weights: Mapping[pd.Timestamp, pd.Series] | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
     ) -> PortfolioProblem:
-        """Materialize one date with its global sequence position.
+        """按日期及其全局序列位置物化一个单期问题。
 
-        ``position`` distinguishes the first chained date from later dates when
-        schedule preflight needs a shape-correct placeholder initial portfolio.
-        The sequence engine replaces that placeholder with drifted holdings
-        immediately before the actual solve.
+        ``position`` 用于在预检时区分链式首日和后续日期；后续日期需要 shape 正确的期初组合
+        占位符，实际求解前由序列引擎替换为漂移持仓。
+
+        Parameters
+        ----------
+        schedule : PortfolioSchedule
+            完整调仓计划。
+        date : pandas.Timestamp
+            必须存在于计划及所有数据源中的准确日期。
+        position : int
+            该日期在完整有序序列中的从零开始位置。
+        objective, constraints, alpha_spec, initial_weight
+            本次物化使用的目标、约束、alpha 单位和首日期初权重。
+        independent_initial_weights : Mapping[pandas.Timestamp, pandas.Series] | None
+            独立模式的逐日期期初权重。
+        extra_attribute_columns : tuple[str, ...]
+            需要物化的额外属性列。
+
+        Returns
+        -------
+        PortfolioProblem
+            使用统一资产位置数组的单期问题。
         """
 
         return self._materialize_problem(
@@ -165,13 +247,25 @@ class InMemoryDataSource:
         independent_initial_weights: Mapping[pd.Timestamp, pd.Series] | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
     ) -> "PreparedPortfolioRun":
-        """Preflight all dates without retaining per-day dense risk arrays.
+        """预检全部日期，但不保留逐日稠密风险数组。
 
-        Each date is materialized and statically validated so independent data
-        errors are aggregated before any backend work begins.  Those temporary
-        arrays are discarded; ``problem_at`` materializes the requested date
-        again during solving.  This is deliberate validation-before-compute, not
-        additional external I/O, because all source frames are already resident.
+        每个日期都会临时物化并静态校验，使独立数据错误在任何后端工作前一次聚合。临时数组
+        随即释放，求解时由 ``problem_at`` 再物化指定日期。由于源 frame 已驻留内存，这属于
+        有意的“先校验、后计算”，而非额外外部 I/O。
+
+        Parameters
+        ----------
+        schedule, objective, constraints, alpha_spec, initial_weight
+            完整序列的数据和业务配置。
+        independent_initial_weights : Mapping[pandas.Timestamp, pandas.Series] | None
+            独立模式的逐日初始组合。
+        extra_attribute_columns : tuple[str, ...]
+            需要物化的额外属性列。
+
+        Returns
+        -------
+        PreparedPortfolioRun
+            轻量惰性物化清单及全区间聚合校验报告。
         """
 
         started = time.perf_counter()
@@ -260,8 +354,7 @@ class InMemoryDataSource:
                 )
             selected_initial = independent_initial_weights[date]
         elif position > 0:
-            # Shape-correct placeholder for schedule preflight; the chained
-            # engine replaces it with naturally drifted actual holdings.
+            # 序列预检只需要 shape 正确的占位权重；链式引擎会在实际求解前替换为自然漂移持仓。
             selected_initial = pd.Series(aligned_benchmark.values, index=assets)
         aligned_initial = _align_initial(selected_initial, assets, constraints.budget, date)
 
@@ -311,10 +404,33 @@ class InMemoryDataSource:
 
 @dataclass(frozen=True)
 class PreparedPortfolioRun:
-    """Validated lightweight schedule manifest with daily materialization.
+    """已校验、按日惰性物化的轻量多期清单。
 
-    The manifest stores references to batch frames and immutable run settings.
-    It does not store a tuple of 5,000-by-factor NumPy arrays for every date.
+    清单只保存批量 frame 引用和不可变运行配置，不为每个日期保留一套约
+    5,000 资产乘因子的 NumPy 数组。
+
+    Attributes
+    ----------
+    data_source : InMemoryDataSource
+        已加载的风险模型和基准数据源。
+    schedule : PortfolioSchedule
+        调仓日期、资产、alpha 和属性计划。
+    objective : PortfolioObjective
+        各日期共享的目标。
+    constraints : PortfolioConstraints
+        各日期共享的静态约束。
+    alpha_spec : AlphaSpec | None
+        alpha 单位和尺度。
+    initial_weight : pandas.Series
+        链式首日或默认期初权重。
+    independent_initial_weights : Mapping[pandas.Timestamp, pandas.Series] | None
+        独立模式的逐日期期初权重。
+    extra_attribute_columns : tuple[str, ...]
+        物化为额外属性的 schedule 列。
+    validation : ValidationReport
+        全日期预检的聚合报告。
+    prepare_s : float
+        全区间预检 wall-clock 秒数。
     """
 
     data_source: InMemoryDataSource
@@ -330,9 +446,31 @@ class PreparedPortfolioRun:
 
     @property
     def dates(self) -> pd.DatetimeIndex:
+        """返回已准备序列的有序唯一调仓日期。"""
+
         return self.schedule.dates
 
     def problem_at(self, date: pd.Timestamp) -> PortfolioProblem:
+        """按需物化一个准确日期的单期问题。
+
+        Parameters
+        ----------
+        date : pandas.Timestamp
+            必须存在于已准备 schedule 中的日期。
+
+        Returns
+        -------
+        PortfolioProblem
+            使用该日准确数据和全局序列位置构造的问题。
+
+        Raises
+        ------
+        KeyError
+            日期不属于已准备 schedule。
+        DataAlignmentError
+            该日数据无法严格按标签对齐。
+        """
+
         date = pd.Timestamp(date)
         try:
             location = int(self.dates.get_loc(date))

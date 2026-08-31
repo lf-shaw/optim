@@ -1,16 +1,12 @@
-"""Structure-aware strategy for one factor-model tracking-risk constraint.
+"""针对单一因子模型跟踪风险约束的结构感知求解策略。
 
-PIQP is a QP solver, not a generic SOCP solver.  This module solves the convex
-QCQP by exploiting the portfolio risk structure: a low-dimensional factor block
-plus diagonal specific risk and exactly one quadratic risk budget.  It builds a
-parameterized QP whose matrix/domain stay fixed while theta changes only the
-linear objective, then searches the one-dimensional risk/alpha frontier.
+PIQP 是 QP 求解器，而不是通用 SOCP 求解器。本模块利用组合风险的“低维因子块加
+对角特异风险”结构，以及仅有一个二次风险预算这一条件求解凸 QCQP。实现会构造矩阵和
+可行域固定、仅由 theta 改变线性目标的参数化 QP，再搜索一维风险/alpha 前沿。
 
-An optional HiGHS prescreen is a strict certificate, not a heuristic: the global
-alpha optimum over the enclosing linear domain is also the QCQP optimum whenever
-that same point satisfies the risk budget.  All public risk values remain in
-annualized decimal units; internal positive scaling only preserves the audited
-theta/conditioning regime.
+可选的 HiGHS 预筛选提供严格证书，而非启发式判断：如果外层线性域上的全局 alpha
+最优点同时满足风险预算，它也必然是 QCQP 最优点。所有公共风险值均保持年化小数单位；
+内部正比例缩放仅用于保持已经审计的 theta 量级和数值条件。
 """
 
 from __future__ import annotations
@@ -37,17 +33,33 @@ from .model.canonical import (
 from .portfolio_types import AlphaSpec, FailureReason, ProblemKind, SolveStatus, SolverPolicy
 
 
-# Public risk inputs use annualized decimal units. The production theta profile
-# was calibrated with percentage-point risk, whose variance is 10,000 times
-# decimal variance. Scaling the complete parametric risk objective by this
-# positive constant preserves the QCQP frontier while retaining the audited
-# theta magnitude and PIQP conditioning. Certificate arithmetic explicitly
-# includes the same factor and remains in raw alpha units.
+# 公共风险输入使用年化小数单位。生产 theta 配置最初按百分数风险校准，其方差是小数
+# 方差的 10,000 倍。用这一正数缩放完整参数化风险目标不会改变 QCQP 前沿，同时保留
+# 已审计的 theta 量级和 PIQP 数值条件。证书计算显式包含同一缩放，结果仍为原始 alpha
+# 单位。
 _FRONTIER_RISK_OBJECTIVE_SCALE = 10_000.0
 
 
 @dataclass(frozen=True)
 class _FrontierPoint:
+    """参数化 QP 搜索得到的一个内部前沿点。
+
+    Attributes
+    ----------
+    theta : float
+        生成该点的正风险/alpha 权衡参数。
+    vector : numpy.ndarray
+        基础 QCQP 坐标中的 primal 向量。
+    variance : float
+        独立复算的年化跟踪方差。
+    alpha_value : float
+        原始 alpha 单位下的线性目标值。
+    qp_gap : float
+        PIQP 报告的当前参数化子问题对偶间隙。
+    recovered : bool
+        当前点是否来自一次获准的 workspace 冷重建恢复。
+    """
+
     theta: float
     vector: np.ndarray
     variance: float
@@ -57,6 +69,8 @@ class _FrontierPoint:
 
 
 class _WorkspaceFailure(RuntimeError):
+    """将 PIQP workspace 生命周期故障标准化为内部异常。"""
+
     def __init__(self, message: str, *, first_solve: bool, native_status: str):
         super().__init__(message)
         self.first_solve = first_solve
@@ -64,14 +78,12 @@ class _WorkspaceFailure(RuntimeError):
 
 
 class _ParametricPIQPWorkspace:
-    """One-day PIQP workspace with a narrowly defined recovery lifecycle.
+    """恢复生命周期受到严格限制的单日 PIQP workspace。
 
-    ``P``, constraints and bounds are installed once.  Subsequent theta points
-    update only ``q`` and warm-start through PIQP.  A first cold solve is never
-    repeated with identical inputs.  After at least one successful solve, a
-    failed update path may rebuild the current QP once when policy permits; the
-    caller otherwise receives a normalized failure and invokes its fallback.
-    Workspaces are deliberately not shared across dates.
+    ``P``、约束和边界仅安装一次。后续 theta 点只更新 ``q``，并通过 PIQP 热启动。
+    首次冷求解失败后不会用相同输入重复尝试。至少一次求解成功后，如果更新路径失败且
+    策略允许，可以针对当前 QP 冷重建一次；否则调用方得到标准化失败并启动回退。
+    workspace 有意不跨日期共享。
     """
 
     def __init__(self, model: QuadraticProgram, policy: SolverPolicy):
@@ -121,7 +133,7 @@ class _ParametricPIQPWorkspace:
         return solver
 
     def solve(self, q: np.ndarray, tolerance: float) -> tuple[np.ndarray, float, bool]:
-        """Solve/update one theta point and return vector, QP gap and recovery flag."""
+        """求解或更新一个 theta 点，返回向量、QP 间隙和恢复标志。"""
 
         is_first = self.solver is None
         used_update = False
@@ -150,8 +162,7 @@ class _ParametricPIQPWorkspace:
         try:
             vector, qp_gap, native = self._solve_current()
         except _WorkspaceFailure as failure:
-            # The audited policy retries only a failed update lifecycle. A
-            # first cold solve is never repeated with identical inputs.
+            # 经审计策略只重试失败的更新生命周期；首次冷求解不会用相同输入再次运行。
             if used_update and self.policy.rebuild_after_update_failure:
                 return self._rebuild_and_solve(
                     q,
@@ -251,18 +262,16 @@ def _first_number(value: Any, *names: str) -> float | None:
 def _extend_as_parametric_qp(
     model: FactorQCQP,
 ) -> tuple[QuadraticProgram, np.ndarray, float, float]:
-    r"""Lift a factor-QCQP into a fixed-matrix parameterized QP.
+    r"""将因子 QCQP 提升为固定矩阵的参数化 QP。
 
-    The base QCQP domain contains portfolio and linear auxiliary variables.  We
-    append factor active exposure $f$ and the equality
-    $f=E^{\mathsf T}(x-b)$. Dense style/industry rows already present in the
-    base domain are replaced by direct one-column bounds on $f$ to avoid
-    duplicating $E^{\mathsf T}$ in the KKT system.
+    基础 QCQP 可行域包含组合变量和线性辅助变量。实现追加因子主动暴露 $f$ 以及等式
+    $f=E^{\mathsf T}(x-b)$。基础域中已经存在的稠密风格/行业行会替换为 $f$ 上的直接
+    单列边界，从而避免在 KKT 系统中重复 $E^{\mathsf T}$。
 
-    The returned QP encodes half the positively scaled risk objective.  The
-    separate ``alpha_solver`` vector is centered and scaled; a theta point uses
-    $q(\theta)=q_{\mathrm{risk}}-\theta\widetilde\alpha$. Centering is exact
-    under the budget equality and affects conditioning, not the optimizer.
+    返回的 QP 编码经正比例缩放后的半风险目标。独立的 ``alpha_solver`` 向量经过中心化
+    与缩放；theta 点使用
+    $q(\theta)=q_{\mathrm{risk}}-\theta\widetilde\alpha$。在预算等式下，中心化是精确
+    等价变换，只影响数值条件而不改变最优解。
     """
 
     base = model.domain
@@ -295,9 +304,8 @@ def _extend_as_parametric_qp(
             (factor_lookup[str(record.key).lower()] for record in active_bound_records),
             dtype=np.int32,
         )
-        # These canonical rows are $E_j^{\mathsf T}x$ with benchmark-shifted
-        # bounds. Once $f=E^{\mathsf T}(x-b)$ is introduced, replace each dense
-        # row by the corresponding one-column bound on $f_j$.
+        # 这些 canonical 行为 $E_j^{\mathsf T}x$，其边界已经按基准平移。引入
+        # $f=E^{\mathsf T}(x-b)$ 后，将每个稠密行替换为 $f_j$ 上对应的单列边界。
         keep = np.ones(base.n_constraints, dtype=float)
         keep[bound_rows] = 0.0
         original_rows = sp.diags(keep, format="csc") @ original_rows
@@ -423,14 +431,28 @@ def solve_factor_qcqp(
     theta_seed: float | None = None,
     objective_tolerance: float | None = None,
 ) -> BackendResult:
-    """Solve a factor QCQP, optionally certifying it with the enclosing LP.
+    """求解因子 QCQP，并可选地用外层 LP 提供最优性证书。
 
-    If the globally optimal point of the identical linear domain also satisfies
-    the tracking-error constraint, it is necessarily globally optimal for the
-    QCQP.  This fast path is strictly opt-in through ``policy.lp_prescreen``;
-    the default route remains the PIQP frontier.  A failed/unsafe screen is not
-    treated as QCQP failure: its time and status are recorded before continuing
-    through the same frontier route used when screening is disabled.
+    如果相同线性域上的全局最优点同时满足跟踪误差约束，它必然也是 QCQP 的全局最优点。
+    此快速路径只能通过 ``policy.lp_prescreen`` 显式启用；默认路径仍为 PIQP 前沿。
+    预筛选失败或无法安全认证不视为 QCQP 失败：实现记录其耗时和状态后，继续执行与未
+    启用预筛选时相同的前沿路径。
+
+    Parameters
+    ----------
+    model : FactorQCQP
+        已编译的单风险预算因子 QCQP。
+    policy : SolverPolicy
+        后端路由、前沿搜索和数值容差策略。
+    theta_seed : float | None
+        首个 theta 候选值；``None`` 使用策略默认值。
+    objective_tolerance : float | None
+        原始 alpha 单位下允许的绝对证书间隙；``None`` 按策略和 alpha 规格计算。
+
+    Returns
+    -------
+    BackendResult
+        PIQP 前沿或获认证 LP 快速路径的标准化后端结果。
     """
 
     if not policy.lp_prescreen:
@@ -484,7 +506,7 @@ def _solve_lp_prescreen(
     model: FactorQCQP,
     policy: SolverPolicy,
 ) -> tuple[BackendResult, float | None, bool]:
-    """Solve the exact enclosing LP and test a margin-safe TE certificate."""
+    """求解精确外层 LP，并检查保留风险裕量的 TE 证书。"""
 
     c = np.zeros(model.domain.n_variables, dtype=float)
     c[model.domain.weight_indices] = -np.asarray(model.alpha, dtype=float)
@@ -520,20 +542,18 @@ def _solve_factor_qcqp_frontier(
     theta_seed: float | None = None,
     objective_tolerance: float | None = None,
 ) -> BackendResult:
-    r"""Solve a factor QCQP through a safeguarded one-dimensional search.
+    r"""通过带保护的一维搜索求解因子 QCQP。
 
-    Search first establishes a risk-feasible/risk-infeasible theta bracket by
-    geometric expansion or contraction.  It then applies bounded interpolation
-    (falling back to bisection on a flat/non-monotone numerical span), performs a
-    high-accuracy final solve and, when necessary, approaches the risk boundary
-    again from the safe side. Success requires both risk feasibility and
+    搜索首先通过几何扩张或收缩建立风险可行/不可行 theta 区间，随后执行有界插值；当
+    数值区间平坦或不单调时退回二分。之后进行高精度最终求解，并在必要时从安全侧再次
+    接近风险边界。成功必须同时满足风险可行性以及
 
     $$
     g_{\mathrm{frontier}}+g_{\mathrm{QP}}
     \le\varepsilon_{\mathrm{objective}}.
     $$
 
-    Merely reaching a TE value close to the budget is not a stopping certificate.
+    仅仅得到接近预算的 TE 值并不构成停止证书。
     """
 
     tuning = policy.tuning
@@ -562,8 +582,7 @@ def _solve_factor_qcqp_frontier(
     if objective_tolerance is None:
         objective_tolerance = policy.objective_tolerance.raw_limit(_UNIT_ALPHA_SPEC)
     deadline = None
-    # A public total time limit will be added to SolverPolicy rather than
-    # overloading PIQP's per-QP iteration controls.
+    # 公共总时间上限将通过 SolverPolicy 单独加入，而不会复用 PIQP 的逐 QP 迭代控制。
 
     points = 0
 
@@ -661,8 +680,8 @@ def _solve_factor_qcqp_frontier(
                         FailureReason.INFEASIBLE_REPORTED,
                         "minimum-risk QP exceeds the tracking-error budget",
                     )
-                # The minimum-risk endpoint is feasible. Use it as a theta=0
-                # bracket endpoint but never compute a frontier gap at zero.
+                # 最小风险端点可行，因此将其作为 theta=0 的区间端点，但绝不在零点计算
+                # 前沿间隙。
                 low = _FrontierPoint(
                     0.0,
                     base_vector,

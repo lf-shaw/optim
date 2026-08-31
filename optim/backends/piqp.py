@@ -1,10 +1,8 @@
-"""Direct sparse PIQP adapter for one-shot canonical quadratic programs.
+"""单次 canonical 二次规划的 direct sparse PIQP 适配器。
 
-This adapter builds a fresh workspace and performs one solve.  The separate
-factor-QCQP strategy owns its same-day multi-theta update lifecycle.  Both paths
-share the same compact double-sided inequality conversion defined here.
-Objective scaling multiplies ``P`` and ``q`` by the same positive value, so it
-changes conditioning but not the mathematical optimizer.
+该适配器每次建立新 workspace 并执行一次求解；独立 factor-QCQP 策略负责同日多 theta 的
+update 生命周期。两条路径共享本模块定义的 compact 双边不等式转换。目标缩放用同一正数
+同时乘 ``P`` 和 ``q``，只改变数值条件，不改变数学最优解。
 """
 
 from __future__ import annotations
@@ -22,6 +20,8 @@ from .base import BackendOptions, BackendResult
 
 
 def piqp_distribution_version() -> str | None:
+    """返回已安装 PIQP distribution 版本，未安装时返回 ``None``。"""
+
     try:
         return metadata.version("piqp")
     except metadata.PackageNotFoundError:
@@ -29,13 +29,26 @@ def piqp_distribution_version() -> str | None:
 
 
 def resolve_piqp_inequality_form(requested: str) -> str:
-    """Resolve the PIQP inequality representation.
+    """解析 PIQP 线性不等式表示。
 
-    PIQP 0.6.4 is the minimum declared package dependency and contains the upstream
-    dual-recovery fix required by compact double-sided inequalities.  ``auto``
-    therefore selects compact unconditionally.  ``one_sided`` remains an
-    explicit diagnostic/benchmark option, not an old-version compatibility
-    path.
+    PIQP 0.6.4 是声明的最低依赖，并已包含 compact 双边不等式所需的上游 dual-recovery
+    修复，因此 ``auto`` 无条件选择 ``compact``。``one_sided`` 仅保留为显式诊断/benchmark
+    选项，不是旧版本兼容路径。
+
+    Parameters
+    ----------
+    requested : str
+        ``"auto"``、``"compact"`` 或 ``"one_sided"``，不区分大小写。
+
+    Returns
+    -------
+    str
+        明确的 ``"compact"`` 或 ``"one_sided"``。
+
+    Raises
+    ------
+    ValueError
+        输入值不受支持。
     """
 
     form = requested.lower()
@@ -50,7 +63,7 @@ def _constraint_data(
     model: QuadraticProgram,
     form: str,
 ) -> tuple[sp.csc_matrix, np.ndarray, sp.csc_matrix, np.ndarray, np.ndarray]:
-    """Split canonical rows into PIQP equalities and selected inequality form."""
+    """将 canonical 行拆分为 PIQP 等式和选定形式的不等式。"""
 
     domain = model.domain
     equality = (
@@ -85,11 +98,33 @@ def _constraint_data(
 
 
 class PIQPBackend:
-    """One-shot direct PIQP backend for a compiled convex QP."""
+    """已编译凸 QP 的单次 direct PIQP 后端。"""
 
     name = "piqp"
 
     def solve(self, model: QuadraticProgram, options: BackendOptions) -> BackendResult:
+        """建立新 PIQP workspace 并求解一个 canonical QP。
+
+        Parameters
+        ----------
+        model : QuadraticProgram
+            对称半正定 Hessian 的 canonical 凸 QP。
+        options : BackendOptions
+            PIQP 容差、迭代数、目标缩放和不等式表示设置。
+
+        Returns
+        -------
+        BackendResult
+            尚未经过公共独立验收的候选向量、状态和原生残差。
+
+        Raises
+        ------
+        TypeError
+            ``model`` 不是 :class:`QuadraticProgram`。
+        ImportError
+            当前环境未安装项目要求的 PIQP。
+        """
+
         import piqp
 
         if not isinstance(model, QuadraticProgram):
@@ -191,7 +226,7 @@ class PIQPBackend:
 
 
 def _objective_scale(model: QuadraticProgram, target: float | None) -> float:
-    """Compute a bounded positive scale from explicit alpha dispersion if set."""
+    """根据显式 alpha 离散度计算有界正缩放；未配置目标时返回一。"""
 
     if target is None:
         return 1.0

@@ -1,4 +1,4 @@
-"""Thin solver backend adapters."""
+"""保持轻量的求解器后端适配器。"""
 
 from .base import BackendOptions, BackendResult, SolverBackend
 from .clarabel import ClarabelBackend

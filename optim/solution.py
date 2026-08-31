@@ -1,9 +1,8 @@
-"""Backend-independent reconstruction, metrics and feasibility validation.
+"""与后端无关的向量重建、指标计算和可行性验收。
 
-This module intentionally does not inspect native solver status or residuals.
-It treats a returned vector as untrusted numerical data and checks it against
-the same canonical payload supplied to the backend, while separately recomputing
-business risk and objective metrics from :class:`PortfolioProblem`.
+本模块刻意不读取原生求解器状态或残差，而将后端返回向量视为不可信数值数据，使用发送给
+后端的同一 canonical payload 进行检查，并从 :class:`PortfolioProblem` 独立复算业务风险
+和目标指标。
 """
 
 from __future__ import annotations
@@ -30,12 +29,29 @@ def lift_weights(
     compiled: CompiledProblem,
     weight: np.ndarray,
 ) -> np.ndarray:
-    """Reconstruct canonical auxiliary variables for a portfolio weight vector.
+    """根据组合权重确定性重建 canonical 辅助变量。
 
-    Weight cleanup changes only portfolio columns.  Before revalidation this
-    function deterministically rebuilds absolute-turnover, total-active and
-    factor-exposure columns so the cleaned vector is compared with the original
-    mathematical model rather than with stale solver auxiliaries.
+    权重清理只改变组合权重列。重新验收前，本函数确定性重建换手率绝对值、总主动权重和因子
+    敞口辅助列，使清理后的向量与原数学模型比较，而不是与过期的求解器辅助变量比较。
+
+    Parameters
+    ----------
+    problem : PortfolioProblem
+        辅助变量业务语义来源。
+    compiled : CompiledProblem
+        定义完整变量布局和编译优化的 canonical 模型。
+    weight : numpy.ndarray
+        按 ``problem.data.assets`` 顺序排列的目标权重，shape 为 ``(n_assets,)``。
+
+    Returns
+    -------
+    numpy.ndarray
+        完整 canonical 变量向量，shape 为 ``(n_variables,)``。
+
+    Raises
+    ------
+    ValueError
+        权重向量与 canonical 资产坐标 shape 不一致。
     """
 
     domain = compiled.model.domain
@@ -85,13 +101,25 @@ def evaluate_solution(
     compiled: CompiledProblem,
     vector: np.ndarray,
 ) -> tuple[PortfolioMetrics, tuple[ConstraintViolation, ...], float]:
-    """Recompute all canonical constraints and business metrics once.
+    """一次性独立复算全部 canonical 约束和业务指标。
 
-    Violations are reported in their native units and linked back through the
-    constraint registry.  Tracking error is recomputed from annualized factor
-    covariance and specific volatility; it is never inferred from a solver's
-    cone residual.  The returned maximum is the acceptance quantity used by the
-    common API for primary and fallback backends alike.
+    违约使用各自原始单位报告，并通过 constraint registry 映射回业务名称。跟踪误差由年化因子
+    协方差和特异波动率复算，绝不从求解器锥残差推断。返回的最大违约量是公共 API 对主后端和
+    回退后端统一使用的验收指标。
+
+    Parameters
+    ----------
+    problem : PortfolioProblem
+        目标、风险和业务指标语义来源。
+    compiled : CompiledProblem
+        后端实际求解的 canonical 数值模型。
+    vector : numpy.ndarray
+        后端候选完整变量向量，shape 必须为 ``(n_variables,)`` 且全部有限。
+
+    Returns
+    -------
+    tuple[PortfolioMetrics, tuple[ConstraintViolation, ...], float]
+        独立指标、逐约束违约记录和最大绝对违约量。向量 shape 或数值无效时最大违约为无穷。
     """
 
     model = compiled.model

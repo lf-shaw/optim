@@ -1,15 +1,12 @@
-r"""Compile portfolio semantics into solver-independent sparse models.
+r"""将组合业务语义编译为与求解器无关的稀疏模型。
 
-The compiler is the only layer allowed to translate business constraints into
-matrix rows and auxiliary variables.  Every problem shares a polyhedral domain
-$\underline z\le z\le\overline z$ and $l\le Az\le u$;
-LP/QP/factor-QCQP objects add only their objective and risk representation.
+编译器是唯一允许把业务约束转换为矩阵行和辅助变量的层。所有问题共享多面体域
+$\underline z\le z\le\overline z$ 和 $l\le Az\le u$；LP、QP 和 factor-QCQP 对象只增加
+各自的目标与风险表示。
 
-The first ``n_assets`` columns of ``z`` are always weights.  Optional columns
-represent turnover epigraphs, total-active epigraphs and factor active exposure.
-Each row/column receives an audit record used later by fingerprints, independent
-solution validation and infeasibility diagnostics.  This module never imports
-or initializes a numerical solver.
+``z`` 的前 ``n_assets`` 列始终是组合权重；可选后续列表示换手率 epigraph、总主动权重
+epigraph 和因子主动敞口。每一行/列都带审计记录，供 fingerprint、独立解验收和不可行诊断
+使用。本模块从不导入或初始化数值求解器。
 """
 
 from __future__ import annotations
@@ -47,18 +44,31 @@ from .canonical import (
 
 
 class CanonicalCompilationError(ValueError):
-    """A valid semantic request cannot be represented by this compiler."""
+    """有效业务请求无法由当前编译器表示时抛出。"""
 
 
 def classify_problem(problem: PortfolioProblem) -> ProblemKind:
-    """Classify by mathematical structure, not by the historical API name.
+    """按数学结构而不是历史 API 名称分类问题。
 
-    A linear alpha problem remains an LP regardless of turnover or exposure
-    constraints because those constraints compile linearly.  Adding one factor
-    tracking-error budget to ``MaximizeAlpha`` selects the specialized
-    factor-QCQP representation.  ``RiskAdjustedAlpha`` plus another risk budget
-    is classified as generic conic, which the current v1 compiler reports as
-    unsupported rather than silently changing the requested objective.
+    线性 alpha 问题即使包含换手率或敞口约束仍是 LP，因为这些约束都可线性编译。
+    ``MaximizeAlpha`` 加一个因子跟踪误差预算时选择专用 factor-QCQP 表示。
+    ``RiskAdjustedAlpha`` 再叠加风险预算属于通用锥问题；当前 v1 编译器会明确报告不支持，
+    而不是静默改变用户目标。
+
+    Parameters
+    ----------
+    problem : PortfolioProblem
+        已构造的业务问题。
+
+    Returns
+    -------
+    ProblemKind
+        由目标和非线性约束共同决定的 canonical 问题类型。
+
+    Raises
+    ------
+    CanonicalCompilationError
+        目标类型不受支持。
     """
 
     objective = problem.objective
@@ -74,7 +84,27 @@ def classify_problem(problem: PortfolioProblem) -> ProblemKind:
 
 @dataclass
 class _Layout:
-    """Contiguous column ranges selected for one canonical model."""
+    """一个 canonical 模型选定的连续变量列布局。
+
+    Attributes
+    ----------
+    n_variables : int
+        canonical 向量的总列数。
+    weight : numpy.ndarray
+        组合目标权重列的位置索引。
+    turnover_aux : numpy.ndarray | None
+        换手率绝对值或稀疏买入辅助变量列；未配置换手率时为 ``None``。
+    turnover_support : numpy.ndarray | None
+        稀疏换手率表示中，初始非零持仓对应的资产位置。
+    turnover_new : numpy.ndarray | None
+        稀疏换手率表示中，初始零持仓对应的资产位置。
+    sparse_turnover : bool
+        是否使用只做多满仓条件下的精确稀疏换手率表示。
+    active_aux : numpy.ndarray | None
+        总主动权重绝对值辅助变量列；约束被证明冗余或未配置时为 ``None``。
+    factor : numpy.ndarray | None
+        QP 中的因子主动暴露变量列；无需显式因子变量时为 ``None``。
+    """
 
     n_variables: int
     weight: np.ndarray
@@ -87,12 +117,10 @@ class _Layout:
 
 
 class _DomainBuilder:
-    """Incrementally build one auditable sparse linear domain.
+    """增量构造一个可审计的稀疏线性域。
 
-    Layout decisions are made once in ``__init__`` so later constraint blocks
-    can be assembled directly in final-width CSC form.  The builder also records
-    exact structural simplifications, such as sparse turnover and provably
-    redundant aggregate active constraints, on ``optimizations``.
+    列布局在 ``__init__`` 中一次确定，使后续约束块可直接按最终宽度组装为 CSC。构造器还会在
+    ``optimizations`` 中记录数学上精确的结构简化，例如稀疏换手率和可证明冗余的总主动约束。
     """
 
     def __init__(
@@ -187,11 +215,10 @@ class _DomainBuilder:
         self._configure_variables()
 
     def _configure_variables(self) -> None:
-        """Resolve effective asset bounds and register every canonical column.
+        """解析逐资产最终边界，并登记每一个 canonical 变量列。
 
-        Operational instructions are already merged by ``resolve_asset_bounds``.
-        Common immutable metadata is interned because an ordinary 5,000-asset
-        problem has only a handful of distinct bound-source combinations.
+        操作指令已经由 ``resolve_asset_bounds`` 合并。普通的 5,000 资产问题通常只有
+        少量不同的边界来源组合，因此此处驻留公共不可变元数据以降低分配开销。
         """
 
         assets = self.data.assets
@@ -203,9 +230,8 @@ class _DomainBuilder:
         upper = resolved.upper
         self.variable_lower[self.layout.weight] = lower
         self.variable_upper[self.layout.weight] = upper
-        # In an ordinary large universe only a handful of source combinations
-        # exist.  Intern their immutable mappings instead of allocating and
-        # copying an equivalent dictionary for every asset.
+        # 普通大样本空间通常只有少量来源组合；驻留其不可变映射，避免为每个资产分配并
+        # 复制等价字典。
         metadata_flyweights: dict[
             tuple[tuple[str, ...], tuple[str, ...]], MappingProxyType[str, Any]
         ] = {}
@@ -306,7 +332,7 @@ class _DomainBuilder:
         relaxable: bool = True,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        """Append a bounded row block and its business-level audit records."""
+        """追加一个有界行块及其业务级审计记录。"""
 
         block = self._pad(matrix)
         n_rows = block.shape[0]
@@ -340,18 +366,15 @@ class _DomainBuilder:
         return self._pad(sp.csc_matrix(values))
 
     def add_common_constraints(self) -> None:
-        """Compile the linear feasible domain shared by all objective types.
+        """编译所有目标类型共享的线性可行域。
 
-        This includes budget, factor definitions, turnover, total active weight,
-        benchmark-member coverage, style/industry bounds, extra attributes and
-        an optional alpha floor.  Absolute and per-name active bounds are column
-        bounds configured earlier rather than matrix rows.
+        其中包括预算、因子定义、换手率、总主动权重、基准成分覆盖、风格/行业边界、
+        附加属性以及可选 alpha 下限。绝对权重和逐标的主动权重边界已在此前配置为变量
+        列边界，而非矩阵行。
 
-        The sparse turnover formulation is exact for a long-only fully invested
-        initial portfolio.  Because total buys equal total sells, L1 turnover is
-        twice the buys: positive increases on the original support plus weights
-        opened outside that support.  No relationship with tracking error is
-        assumed.
+        对只做多且满仓的初始组合，稀疏换手率表示是精确的。由于总买入等于总卖出，L1
+        换手率等于买入量的两倍：原持仓支撑集上的正增量，加上支撑集之外新建的权重。
+        这里不假设换手率与跟踪误差存在任何关系。
         """
 
         n = self.n_assets
@@ -587,13 +610,11 @@ class _DomainBuilder:
             )
 
     def _add_factor_bounds(self, expected_type: str, bounds: Any) -> None:
-        r"""Compile style/industry active exposure bounds.
+        r"""编译风格或行业主动暴露边界。
 
-        QPs already contain $f=E^{\mathsf T}(x-b)$ variables, so a factor bound
-        is one sparse coefficient on $f_j$. LP/factor-QCQP base domains do not
-        yet contain $f$ and therefore use $E_j^{\mathsf T}x$ with
-        benchmark-shifted bounds. The factor-QCQP strategy later replaces those
-        dense rows when it introduces factor variables for its parameterized QP.
+        QP 已包含 $f=E^{\mathsf T}(x-b)$ 变量，因此因子边界只是 $f_j$ 上的一个稀疏
+        系数。LP/factor-QCQP 基础域尚不包含 $f$，所以使用 $E_j^{\mathsf T}x$ 与按基准
+        平移的边界。factor-QCQP 策略随后为参数化 QP 引入因子变量时，会替换这些稠密行。
         """
 
         if bounds is None:
@@ -620,9 +641,8 @@ class _DomainBuilder:
         lower = np.asarray([selected[int(i)][0] for i in indices])
         upper = np.asarray([selected[int(i)][1] for i in indices])
         if self.layout.factor is not None:
-            # Factor variables already equal $E^{\mathsf T}(x-b)$, so their
-            # bounds are sparse single-column rows. Repeating $E^{\mathsf T}$
-            # here would duplicate the dense exposure block in PIQP's KKT matrix.
+            # 因子变量已经等于 $E^{\mathsf T}(x-b)$，因此其边界是稀疏单列行；若在此重复
+            # $E^{\mathsf T}$，会在 PIQP 的 KKT 矩阵中复制稠密暴露块。
             rows = np.arange(len(indices), dtype=np.int32)
             matrix = sp.csc_matrix(
                 (
@@ -647,7 +667,7 @@ class _DomainBuilder:
         )
 
     def finish(self) -> LinearDomain:
-        """Freeze accumulated blocks as sorted canonical CSC arrays."""
+        """将累计约束块冻结为已排序的 canonical CSC 数组。"""
 
         if self.blocks:
             matrix = sp.vstack(self.blocks, format="csc")
@@ -674,7 +694,7 @@ class _DomainBuilder:
 
 
 def _risk_operator(problem: PortfolioProblem, domain: LinearDomain) -> FactorRiskOperator:
-    """Create the annualized factor-plus-specific tracking-risk operator."""
+    """构造年化“因子加特异”跟踪风险算子。"""
 
     risk_model = problem.data.risk_model
     if isinstance(risk_model, FullCovarianceRiskModel):
@@ -696,7 +716,7 @@ def _risk_operator(problem: PortfolioProblem, domain: LinearDomain) -> FactorRis
 
 
 def _compile_lp(problem: PortfolioProblem) -> tuple[LinearProgram, tuple[str, ...]]:
-    r"""Compile $\max_x\alpha^{\mathsf T}x$ as minimization vector $c$."""
+    r"""将 $\max_x\alpha^{\mathsf T}x$ 编译为最小化向量 $c$。"""
 
     builder = _DomainBuilder(problem, include_factor_variables=False)
     builder.add_common_constraints()
@@ -708,13 +728,11 @@ def _compile_lp(problem: PortfolioProblem) -> tuple[LinearProgram, tuple[str, ..
 
 
 def _compile_qp(problem: PortfolioProblem) -> tuple[QuadraticProgram, tuple[str, ...]]:
-    """Compile a low-rank factor plus diagonal-specific convex QP.
+    """编译“低秩因子加对角特异风险”的凸 QP。
 
-    Factor exposure is represented by explicit ``f`` variables, keeping the
-    quadratic matrix at an asset diagonal plus a small factor block.  For a
-    risk-adjusted alpha objective, alpha is translated by ``alpha @ benchmark``;
-    the budget equality makes that translation constant, while PIQP objective
-    scaling becomes insensitive to an arbitrary common shift of alpha.
+    因子敞口使用显式 ``f`` 变量，使二次矩阵保持为资产对角块加小型因子块。风险调整 alpha
+    目标会平移 ``alpha @ benchmark``；预算等式使该平移只改变常数，同时让 PIQP 目标缩放不受
+    alpha 任意公共平移影响。
     """
 
     if not isinstance(problem.data.risk_model, FactorRiskModel):
@@ -762,9 +780,8 @@ def _compile_qp(problem: PortfolioProblem) -> tuple[QuadraticProgram, tuple[str,
     if isinstance(objective, RiskAdjustedAlpha):
         assert problem.data.alpha is not None
         alpha = np.asarray(problem.data.alpha, dtype=float)
-        # The budget equality makes an alpha translation mathematically
-        # constant. Center at the benchmark so PIQP scaling depends on alpha
-        # dispersion rather than on the risk linear term or arbitrary level.
+        # 预算等式使 alpha 平移在数学上只改变常数。以基准为中心，使 PIQP 缩放取决于 alpha
+        # 离散程度，而不是风险线性项或任意公共水平。
         alpha_shift = float(alpha @ risk.benchmark)
         centered_alpha = alpha - alpha_shift
         q[domain.weight_indices] -= centered_alpha
@@ -794,7 +811,7 @@ def _compile_qp(problem: PortfolioProblem) -> tuple[QuadraticProgram, tuple[str,
 
 
 def _compile_factor_qcqp(problem: PortfolioProblem) -> tuple[FactorQCQP, tuple[str, ...]]:
-    """Compile the linear domain and factor risk operator for one TE budget."""
+    """为单一 TE 预算编译线性域和因子风险算子。"""
 
     if not isinstance(problem.data.risk_model, FactorRiskModel):
         raise CanonicalCompilationError("factor-QCQP requires FactorRiskModel")
@@ -814,13 +831,30 @@ def _compile_factor_qcqp(problem: PortfolioProblem) -> tuple[FactorQCQP, tuple[s
 
 
 def compile_problem(problem: PortfolioProblem, *, validate: bool = True) -> CompiledProblem:
-    """Validate and compile one problem without importing a solver backend.
+    """在不导入求解器后端的情况下校验并编译一个问题。
 
-    ``validate=False`` is reserved for callers, such as
-    :meth:`PortfolioOptimizer.prepare`, that have just produced an equivalent
-    validation report.  The returned fingerprint covers both semantic inputs
-    and the final numerical payload so all fallback attempts can be audited as
-    the same mathematical problem.
+    ``validate=False`` 只供刚刚生成等价校验报告的调用方使用，例如
+    :meth:`PortfolioOptimizer.prepare`。返回 fingerprint 同时覆盖业务语义输入和最终数值
+    payload，使所有回退尝试可被审计为同一个数学问题。
+
+    Parameters
+    ----------
+    problem : PortfolioProblem
+        待编译的单期业务问题。
+    validate : bool
+        是否先运行完整静态校验。仅在调用方已经校验同一不可变问题时才应设为假。
+
+    Returns
+    -------
+    CompiledProblem
+        canonical 模型、问题 fingerprint 和已应用的精确结构优化。
+
+    Raises
+    ------
+    PortfolioValidationError
+        ``validate=True`` 且问题存在静态错误。
+    CanonicalCompilationError
+        数学结构当前无法表示，例如风险调整目标又叠加 TE 预算。
     """
 
     if validate:

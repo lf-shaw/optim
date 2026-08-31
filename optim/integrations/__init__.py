@@ -1,1 +1,1 @@
-"""Optional data-platform integrations; none are imported by :mod:`optim`."""
+"""可选数据平台集成；导入 :mod:`optim` 时不会自动加载其中任何模块。"""

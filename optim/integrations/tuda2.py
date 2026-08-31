@@ -1,4 +1,4 @@
-"""Lazy, batched tuda2 adapter for the solver-independent data layer."""
+"""面向求解器无关数据层的延迟导入、批量 tuda2 适配器。"""
 
 from __future__ import annotations
 
@@ -27,17 +27,48 @@ from ..portfolio_types import (
 
 
 class Tuda2UnavailableError(ImportError):
+    """调用 tuda2 适配器但当前环境未安装 tuda2 时抛出。"""
+
     pass
 
 
 @dataclass(frozen=True)
 class Tuda2LoadedData:
+    """一次批量 tuda2 请求得到的核心数据。
+
+    Attributes
+    ----------
+    risk_data : FactorRiskFrames
+        已转换为统一因子轴和核心年化小数单位的风险模型 frame。
+    benchmark : pandas.DataFrame
+        使用 ``(dt, sid)`` MultiIndex 的逐日基准权重。
+    """
+
     risk_data: FactorRiskFrames
     benchmark: pd.DataFrame
 
 
 @dataclass(frozen=True)
 class Tuda2DataSource:
+    """批量获取 tuda2 风险、基准、可交易性和持仓漂移收益的数据源。
+
+    适配器坚持“每种数据类型按完整区间一次取够”：日度优化循环只访问内存，不重复发起 I/O。
+
+    Parameters
+    ----------
+    risk_model : str
+        tuda2 风险模型版本，支持 ``"cne5"`` 和 ``"datayes"``。
+    benchmark_weight_type : str
+        指数权重口径，支持 ``"free"`` 和 ``"daily"``。
+    module : Any | None
+        可选的已导入 tuda2 兼容模块，主要用于测试；``None`` 时首次访问再延迟导入。
+
+    Attributes
+    ----------
+    risk_model, benchmark_weight_type, module
+        与同名构造参数一致，dataclass 为不可变对象。
+    """
+
     risk_model: str = "datayes"
     benchmark_weight_type: str = "daily"
     module: Any | None = None
@@ -71,17 +102,38 @@ class Tuda2DataSource:
         dates: pd.DatetimeIndex | list[pd.Timestamp],
         benchmark_sid: str,
     ) -> Tuda2LoadedData:
-        """Fetch every requested date in one call per data type.
+        """按数据类型各调用一次，批量获取全部请求日期。
 
-        tuda2 returns annualized decimal covariance/specific volatility, so no
-        numerical unit conversion is performed here.  Industry categories are
-        expanded once into the same factor coordinate as covariance.
+        tuda2 返回年化小数协方差和特异波动率，因此此处不做数值单位转换。行业分类只展开一次，
+        并与协方差使用相同因子坐标。
+
+        Parameters
+        ----------
+        dates : pandas.DatetimeIndex | list[pandas.Timestamp]
+            需要严格获取的全部优化日期；会排序、去重，但不做日期替代。
+        benchmark_sid : str
+            基准指数证券标识。
+
+        Returns
+        -------
+        Tuda2LoadedData
+            批量风险模型和逐日基准权重。
+
+        Raises
+        ------
+        ValueError
+            日期为空，或 tuda2 返回的因子/行业结构无效。
+        Tuda2UnavailableError
+            当前环境未安装 tuda2 且没有注入兼容模块。
         """
 
         module = self._module()
         requested = pd.DatetimeIndex(pd.to_datetime(dates)).sort_values().unique()
         if len(requested) == 0:
             raise ValueError("dates must not be empty")
+
+        # TODO 根据 dts 的稠密程度（跟完整交易日比）决定是读取时直接过滤（传入 dts）还是读取完了之后再过滤
+        # 有时候我们是每日优化，日期是完备的，再传入 dts 会减低数据读取效率。
 
         exposure_raw = module.get_risk_model(
             "exposure", dts=requested, version=self.risk_model
@@ -128,12 +180,30 @@ class Tuda2DataSource:
         dates: pd.DatetimeIndex | list[pd.Timestamp],
         sids: list[str] | None = None,
     ) -> dict[pd.Timestamp, pd.Series]:
-        """Compound daily close-to-close returns over rebalance intervals.
+        """在相邻调仓区间复合日度 close-to-close 收益。
 
-        The result is keyed by the *current* rebalance date: the value for
-        ``dates[i]`` compounds daily returns in ``(dates[i-1], dates[i]]``.
-        Missing daily observations remain NaN so the sequence engine can
-        measure missing actual holding mass rather than silently skipping them.
+        返回映射使用“当前调仓日”为键：``dates[i]`` 的值复合区间
+        ``(dates[i-1], dates[i]]`` 内的日度收益。日度观测缺失时保留 NaN，使序列引擎能够
+        计算缺失实际持仓质量，而不是静默跳过。
+
+        Parameters
+        ----------
+        dates : pandas.DatetimeIndex | list[pandas.Timestamp]
+            有序调仓日期；少于两个日期时返回空映射。
+        sids : list[str] | None
+            需要获取的资产集合；``None`` 使用 tuda2 默认资产域。
+
+        Returns
+        -------
+        dict[pandas.Timestamp, pandas.Series]
+            当前调仓日到逐资产区间复合收益的映射。
+
+        Raises
+        ------
+        TypeError
+            ``tuda2.get_return`` 未返回 DataFrame。
+        ValueError
+            返回标签、值列、日期覆盖或收益数值无效。
         """
 
         module = self._module()
@@ -166,7 +236,9 @@ class Tuda2DataSource:
         if value_column is None and daily_returns.shape[1] == 1:
             value_column = str(daily_returns.columns[0])
         if value_column is None:
-            raise ValueError("tuda2 daily close returns do not contain one unambiguous value column")
+            raise ValueError(
+                "tuda2 daily close returns do not contain one unambiguous value column"
+            )
         daily = daily_returns[value_column].unstack("sid").sort_index()
         if sids is not None:
             daily = daily.reindex(columns=pd.Index(sids, name="sid"))
@@ -177,7 +249,9 @@ class Tuda2DataSource:
         for position in range(1, len(requested)):
             previous_date = requested[position - 1]
             current_date = requested[position]
-            interval = daily.loc[(daily.index > previous_date) & (daily.index <= current_date)]
+            interval = daily.loc[
+                (daily.index > previous_date) & (daily.index <= current_date)
+            ]
             if interval.empty or current_date not in interval.index:
                 raise ValueError(
                     f"tuda2 daily close returns do not reach rebalance date {current_date.date()}"
@@ -204,11 +278,51 @@ class Tuda2DataSource:
         tradable_universe: str | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
     ):
-        """Fetch each full tuda2 range once and reuse it through all solves.
+        """一次获取完整 tuda2 区间，并在全部逐日求解中复用。
 
-        Strategy dates/assets/alpha remain defined by the schedule. tuda2
-        supplies exact-date risk, benchmark and compounded close-to-close
-        returns. No tuda2 I/O occurs in the daily optimization loop.
+        策略日期、资产和 alpha 仍由 schedule 定义；tuda2 提供严格同日风险、基准及复合
+        close-to-close 收益。逐日优化循环中不发生 tuda2 I/O。
+
+        Parameters
+        ----------
+        optimizer : PortfolioOptimizer
+            执行统一求解和独立验收的优化器实例。
+        schedule : PortfolioSchedule
+            策略定义的调仓日期、资产、alpha 和属性。
+        benchmark_sid : str
+            基准指数证券标识。
+        initial_weight : pandas.Series
+            链式首日实际持仓，以 sid 为索引。
+        objective : PortfolioObjective
+            各日期共享的目标。
+        constraints : PortfolioConstraints
+            各日期共享的静态约束。
+        alpha_spec : AlphaSpec | None
+            alpha 单位和尺度。
+        sequence_policy : SequencePolicy | None
+            多期持仓、失败、theta 和输出策略。
+        benchmark_policy : BenchmarkCoveragePolicy | None
+            基准覆盖缺口的显式处理策略。
+        independent_initial_weights : Mapping[pandas.Timestamp, pandas.Series] | None
+            独立模式的逐日期期初权重。
+        holding_period_returns : Mapping[pandas.Timestamp, pandas.Series] | None
+            已提供的区间复合收益；链式模式为空时由 tuda2 一次性获取。
+        tradable_universe : str | None
+            可选 tuda2 universe 名称，用于批量附加严格同日可交易性。
+        extra_attribute_columns : tuple[str, ...]
+            从 schedule 物化的额外属性列。
+
+        Returns
+        -------
+        PortfolioSequenceResult
+            完整逐日序列结果。
+
+        Raises
+        ------
+        DataAlignmentError
+            schedule 与 tuda2 严格同日数据无法安全对齐。
+        PortfolioValidationError
+            预检发现任一日期的输入或静态模型错误。
         """
 
         effective_schedule = (
@@ -234,7 +348,9 @@ class Tuda2DataSource:
         )
         prepared.validation.raise_for_errors()
 
-        resolved_policy = SequencePolicy() if sequence_policy is None else sequence_policy
+        resolved_policy = (
+            SequencePolicy() if sequence_policy is None else sequence_policy
+        )
         returns = holding_period_returns
         if resolved_policy.mode == "chained" and returns is None:
             sids = (
@@ -272,7 +388,46 @@ class Tuda2DataSource:
         extra_attribute_columns: tuple[str, ...] = (),
         theta_seed: float | None = None,
     ):
-        """Fetch exact-date tuda2 inputs and solve one live-trading request."""
+        """获取严格同日 tuda2 输入并求解一次实盘请求。
+
+        Parameters
+        ----------
+        optimizer : PortfolioOptimizer
+            执行统一求解的优化器实例。
+        date : Any
+            唯一优化日期，可转换为 :class:`pandas.Timestamp`。
+        universe : pandas.DataFrame
+            单日资产及 alpha/属性；可使用 sid 索引，或只含请求日期的 ``(dt, sid)`` 索引。
+        benchmark_sid : str
+            基准指数证券标识。
+        initial_weight : pandas.Series
+            交易前实际持仓，以 sid 为索引。
+        objective, constraints, alpha_spec
+            本次请求的目标、约束及 alpha 单位。
+        asset_trade, blacklist, frozen, not_buyable, not_sellable, weight_overrides
+            仅对本次请求生效的逐资产交易指令；重复入口规则与
+            :meth:`PortfolioOptimizer.optimize` 一致。
+        benchmark_policy : BenchmarkCoveragePolicy | None
+            基准覆盖缺口的显式策略。
+        tradable_universe : str | None
+            可选 tuda2 universe 名称，用于附加该日可交易性。
+        extra_attribute_columns : tuple[str, ...]
+            从 universe 物化的额外属性列。
+        theta_seed : float | None
+            factor-QCQP 的可选 theta 初始值。
+
+        Returns
+        -------
+        OptimizationResult
+            标准化单期求解结果。
+
+        Raises
+        ------
+        DataAlignmentError
+            任一输入缺少请求日期或资产标签无法严格对齐。
+        PortfolioValidationError
+            组装后问题未通过静态校验。
+        """
 
         target_date = pd.Timestamp(date)
         schedule = _single_date_schedule(target_date, universe)
@@ -362,7 +517,9 @@ def _expand_exposure(
         raise ValueError("tuda2 exposure must use a (dt, sid) MultiIndex")
     missing_style = [name for name in style_factors if name not in exposure.columns]
     if missing_style:
-        raise ValueError(f"tuda2 exposure is missing style factors {missing_style[:10]}")
+        raise ValueError(
+            f"tuda2 exposure is missing style factors {missing_style[:10]}"
+        )
     style = exposure.loc[:, list(style_factors)].astype(float, copy=False)
     if industry_factors:
         if "industry" in exposure.columns:
@@ -371,14 +528,18 @@ def _expand_exposure(
                 set(labels.dropna().astype(str).unique()) - set(industry_factors)
             )
             if unknown:
-                raise ValueError(f"tuda2 exposure contains unknown industries {unknown[:10]}")
+                raise ValueError(
+                    f"tuda2 exposure contains unknown industries {unknown[:10]}"
+                )
             industry = pd.get_dummies(labels, dtype=float).reindex(
                 columns=list(industry_factors), fill_value=0.0
             )
         elif all(name in exposure.columns for name in industry_factors):
             industry = exposure.loc[:, list(industry_factors)].astype(float, copy=False)
         else:
-            raise ValueError("tuda2 exposure has neither industry labels nor dummy factors")
+            raise ValueError(
+                "tuda2 exposure has neither industry labels nor dummy factors"
+            )
         result = pd.concat([style, industry], axis=1, copy=False)
     else:
         result = style
@@ -390,7 +551,9 @@ def _expand_exposure(
     return result
 
 
-def _single_date_schedule(date: pd.Timestamp, universe: pd.DataFrame) -> PortfolioSchedule:
+def _single_date_schedule(
+    date: pd.Timestamp, universe: pd.DataFrame
+) -> PortfolioSchedule:
     if not isinstance(universe, pd.DataFrame):
         raise TypeError("universe must be a pandas DataFrame")
     frame = universe.copy()
@@ -399,7 +562,9 @@ def _single_date_schedule(date: pd.Timestamp, universe: pd.DataFrame) -> Portfol
             raise ValueError("universe MultiIndex names must be exactly ('dt', 'sid')")
         dates = pd.DatetimeIndex(frame.index.get_level_values("dt").unique())
         if len(dates) != 1 or pd.Timestamp(dates[0]) != date:
-            raise ValueError("single-period universe must contain exactly the requested date")
+            raise ValueError(
+                "single-period universe must contain exactly the requested date"
+            )
     else:
         if frame.index.has_duplicates:
             raise ValueError("single-period universe contains duplicate sid rows")

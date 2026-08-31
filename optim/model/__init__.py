@@ -1,4 +1,4 @@
-"""Canonical mathematical models and portfolio compiler."""
+"""canonical 数学模型与组合问题编译器。"""
 
 from .canonical import (
     CanonicalModel,
