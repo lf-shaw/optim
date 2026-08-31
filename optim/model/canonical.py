@@ -129,13 +129,13 @@ class LinearDomain:
     def n_variables(self) -> int:
         """返回 canonical 变量列数。"""
 
-        return int(self.A.shape[1])
+        return int(self.A.shape[1])  # type: ignore
 
     @property
     def n_constraints(self) -> int:
         """返回 canonical 矩阵行约束数。"""
 
-        return int(self.A.shape[0])
+        return int(self.A.shape[0])  # type: ignore
 
 
 @dataclass(frozen=True)
@@ -274,7 +274,6 @@ class FactorQCQP:
     risk_limit : float
         正数年化小数跟踪误差上限。
     """
-
 
     kind: ProblemKind
     domain: LinearDomain

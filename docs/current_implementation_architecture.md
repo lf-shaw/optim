@@ -53,7 +53,8 @@
                          │
                   失败且允许 fallback
                          │
-               MOSEK → Clarabel QDLDL
+           MOSEK ─不可用/失败→ Clarabel QDLDL
+             └─不可行/无界→ 终止回退
                          │
                          ▼
                OptimizationResult
@@ -255,13 +256,16 @@ solve_prepared
              │
     未通过且为 QP/QCQP
         ├── MOSEK（配置为 licensed fallback 时）
-        └── Clarabel QDLDL（仍未通过时）
+        ├── MOSEK 不可行/无界 -> 保留确定状态并终止回退
+        └── MOSEK 不可用或求解失败 -> Clarabel QDLDL
              │
     _result -> OptimizationResult
 ```
 
 LP 当前没有 fallback。QP/QCQP fallback 每次都使用同一个 `CompiledProblem`；每个 backend
-结果都单独经过相同的独立验收。
+结果都单独经过相同的独立验收。MOSEK 已经成功运行并报告不可行或无界时，不再让免费后端的
+数值失败覆盖其数学状态；MOSEK 未安装、无 license、数值失败或达到求解限制时才进入
+Clarabel。
 
 小权重清理阈值默认为 `1e-5`，即 0.1 bp 权重。清理流程先置零再按预算归一化，然后重建
 turnover/factor 等辅助变量。如果破坏可行性或使已认证 objective gap 超限，则丢弃清理结果，

@@ -42,6 +42,7 @@ from optim import (  # noqa: E402
     PortfolioOptimizer,
     SequencePolicy,
     SolverPolicy,
+    TurnoverRecoveryPolicy,
 )
 
 
@@ -77,6 +78,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--price-hdf", type=Path)
     parser.add_argument("--lp-prescreen", action="store_true")
     parser.add_argument("--on-failure", choices=("stop", "hold"), default="stop")
+    parser.add_argument("--turnover-recovery-max", type=float)
     parser.add_argument("--diagnostic-demo", action="store_true")
     parser.add_argument("--diagnose-chain-failure", action="store_true")
     parser.add_argument("--output", type=Path)
@@ -431,6 +433,13 @@ def main() -> None:
             theta_seed="auto",
             holding_missing_mass_tolerance=args.holding_missing_mass_tolerance,
             renormalize_missing_holdings=True,
+            turnover_recovery=(
+                None
+                if args.turnover_recovery_max is None
+                else TurnoverRecoveryPolicy(
+                    max_turnover=args.turnover_recovery_max,
+                )
+            ),
             output_weights="sparse",
         ),
     )
@@ -507,6 +516,9 @@ def main() -> None:
         "turnover_l1_max": max(
             step.result.metrics.turnover_l1 or 0.0 for step in sequence.steps
         ),
+        "turnover_recovery_count": sum(
+            int(step.recovered_turnover) for step in sequence.steps
+        ),
         "pretrade_drift_l1_max": max(
             (row["l1"] for row in drift_rows),
             default=0.0,
@@ -540,6 +552,10 @@ def main() -> None:
                     ),
                     None,
                 ),
+                "recovered_turnover": step.recovered_turnover,
+                "configured_turnover_limit": step.configured_turnover_limit,
+                "minimum_feasible_turnover": step.minimum_feasible_turnover,
+                "effective_turnover_limit": step.effective_turnover_limit,
             }
             for step in sequence.steps
         ],
@@ -570,6 +586,7 @@ def main() -> None:
             "turnover_l1_limit": arguments.turnover,
             "holding_missing_mass_tolerance": args.holding_missing_mass_tolerance,
             "on_failure": args.on_failure,
+            "turnover_recovery_max": args.turnover_recovery_max,
         },
         "data_store_wall_s": data_store_wall_s,
         "problem_materialize_s": materialize_s,

@@ -238,12 +238,16 @@ primary backend
     |
     +-- 其他失败 -> fallback
                     |
-                    +-- MOSEK 包及有效 license 可用 -> MOSEK
-                    +-- 否则 -> Clarabel scaled + QDLDL
+                    +-- 尝试 MOSEK
+                            |
+                            +-- 解通过独立验收 -> return
+                            +-- 明确 infeasible / unbounded -> 终止回退并返回该状态
+                            +-- 未安装、无 license 或求解失败 -> Clarabel scaled + QDLDL
 ```
 
 每次尝试都必须保留 backend、版本、状态、耗时、迭代、残差、证书和失败原因。
-fallback 成功是可用结果，但不能计为 primary backend 直接成功。
+fallback 成功是可用结果，但不能计为 primary backend 直接成功。最终状态不能简单采用“最后一个
+attempt 覆盖此前证据”：MOSEK 给出的确定数学状态优先于后续免费后端的数值故障。
 
 ## 7. 依赖策略
 

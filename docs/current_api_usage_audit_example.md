@@ -238,9 +238,9 @@ prepare 约占成功日总耗时 9.7%，后端 solve 约占 86.6%。因此当前
 0.67 秒，HDF 整表读取约 0.46--0.57 秒。这些属于数据适配器/I/O，不在逐日
 `OptimizationResult.timings` 内。
 
-## 6. 2025-06-16 暴露出的设计问题
+## 6. 2025-06-16 暴露并已修复的 fallback 问题
 
-该日的 route 为：
+最初审计时，该日的 route 为：
 
 ```text
 PIQP frontier: MAX_ITER / numerical failure
@@ -256,16 +256,45 @@ deep 诊断结果为：
 - Phase-I 最大冲突为 `benchmark_member_weight:members` 下界，需要放宽 5.58435%；
 - 因线性域已经不可行，不再计算 minimum TE。
 
-这符合指数成分调整日的预期。但当前公共最终状态是 `numerical_error`，因为最后一次 Clarabel
-尝试覆盖了 route 中 MOSEK 的 `infeasible` 证据，且 `result.message` 为空。这带来两个真实问题：
+这符合指数成分调整日的预期。旧逻辑的公共最终状态却是 `numerical_error`，因为最后一次
+Clarabel 尝试覆盖了 route 中 MOSEK 的 `infeasible` 证据，且 `result.message` 为空。这带来
+两个真实问题：
 
 1. 用户只看最终状态会误判问题性质，必须展开 `result.route` 或运行 deep 诊断；
 2. 当前换手恢复只在最终 `status == INFEASIBLE` 时触发，因此该日不会自动进入已经显式授权的
    turnover recovery。
 
-这应在后续路由语义中修正：保留全部 attempt 的同时，对“可靠后端已报告不可行且没有任何可用
-解”的结果建立明确聚合规则和非空 message。不能简单把所有 numerical failure 都改成
-infeasible，因为没有 MOSEK/诊断证据的新问题仍可能是真实数值故障。
+现已改为：MOSEK 成功运行并报告 `INFEASIBLE` 或 `UNBOUNDED` 时立即终止 fallback；只有
+MOSEK 未安装、无 license 或自身求解失败时才进入 Clarabel。不能简单把所有 numerical
+failure 都改成 infeasible，因为没有 MOSEK/诊断证据的新问题仍可能是真实数值故障。
+
+相同 29 日链式数据复验后，2025-06-16 的公共结果为：
+
+```text
+status = infeasible
+message = mosek 报告 canonical 问题不可行；原生状态：...PrimalInfeasible
+route = [PIQP numerical failure, MOSEK infeasible]
+```
+
+Clarabel 不再运行，失败日总耗时从约 2.63 秒降至约 2.48 秒；更重要的是最终状态现在可以触发
+用户显式授权的 `TurnoverRecoveryPolicy`。
+
+使用同一数据并显式设置 `--turnover-recovery-max 0.20` 后，29 个交易日全部得到最优解，且仅
+2025-06-16 触发一次恢复：
+
+```text
+configured turnover limit = 0.050000
+minimum feasible turnover = 0.161697
+effective turnover limit  = 0.161697
+realized turnover         = 0.161697
+tracking error            = 0.019972
+final backend             = factor_qcqp_piqp
+```
+
+这说明结构性冲突被正确识别并限制在指数调整日，而不是继续污染后续日期。恢复后的正式求解约
+0.55 秒；异常日还会额外执行一次精确最小换手率诊断，因此整段 wall time 会包含未计入最终
+`OptimizationResult.timings` 的诊断开销。该恢复仍默认关闭，只有用户显式配置最大允许换手率时
+才会启用。
 
 将 `on_failure` 改为 `hold` 并跑完整 35 日后，6 月 16 日至 6 月 24 日连续 7 日失败，总 wall
 约 34.5 秒。这再次证明默认 `stop` 是合理的；盲目承接持仓会把一次指数调整冲突扩散到后续
@@ -277,5 +306,5 @@ infeasible，因为没有 MOSEK/诊断证据的新问题仍可能是真实数值
 - 链式接口正确执行 C2C 自然漂移和 theta 传播；实际漂移量也能从 `pretrade_weight` 审计。
 - 计时字段可以清楚区分前端与后端，当前真实 v5 前端占比约一成，不是主要瓶颈。
 - `route`、fingerprint 和 deep diagnosis 的证据结构可用，诊断默认关闭是正确性能选择。
-- 最大待修项不是调用形式，而是多后端全部失败时的最终状态/message 聚合；它同时影响用户解释
-  和换手率恢复入口。
+- 多后端 fallback 现已保留 MOSEK 的确定不可行/无界状态；MOSEK 不可用或自身失败时仍由
+  Clarabel 提供免费兜底。

@@ -27,13 +27,19 @@ from optim.model import FactorQCQP, LinearProgram, QuadraticProgram, compile_pro
 
 
 def test_compiler_classifies_lp_qp_and_factor_qcqp(sample_data, sample_constraints):
-    lp = compile_problem(PortfolioProblem(sample_data, MaximizeAlpha(), sample_constraints))
-    qp = compile_problem(PortfolioProblem(sample_data, RiskAdjustedAlpha(), sample_constraints))
+    lp = compile_problem(
+        PortfolioProblem(sample_data, MaximizeAlpha(), sample_constraints)
+    )
+    qp = compile_problem(
+        PortfolioProblem(sample_data, RiskAdjustedAlpha(), sample_constraints)
+    )
     qcqp_constraints = replace(
         sample_constraints,
         tracking_error=TrackingErrorLimit(annualized=0.20),
     )
-    qcqp = compile_problem(PortfolioProblem(sample_data, MaximizeAlpha(), qcqp_constraints))
+    qcqp = compile_problem(
+        PortfolioProblem(sample_data, MaximizeAlpha(), qcqp_constraints)
+    )
     assert isinstance(lp.model, LinearProgram)
     assert isinstance(qp.model, QuadraticProgram)
     assert isinstance(qcqp.model, FactorQCQP)
@@ -136,7 +142,9 @@ def test_factor_variables_remove_duplicate_dense_exposure_bound_rows(
         if record.group in {"style", "industry"}
     )
     assert factor_bounds
-    assert all(qp_model.domain.A.getrow(record.index).nnz == 1 for record in factor_bounds)
+    assert all(
+        qp_model.domain.A.getrow(record.index).nnz == 1 for record in factor_bounds
+    )
 
     qcqp_model = compile_problem(
         PortfolioProblem(
@@ -156,8 +164,7 @@ def test_factor_variables_remove_duplicate_dense_exposure_bound_rows(
         if record.group in {"style", "industry"}
     )
     assert all(
-        extended.domain.A.getrow(record.index).nnz == 1
-        for record in extended_bounds
+        extended.domain.A.getrow(record.index).nnz == 1 for record in extended_bounds
     )
     factor_definition_keys = {
         record.key
@@ -241,8 +248,18 @@ def test_risky_lp_prescreen_continues_to_factor_frontier(
     assert result.route[0].metadata["qp_solves"] > 0
 
 
-def test_factor_qcqp_falls_back_to_clarabel_when_primary_and_mosek_fail(
-    sample_data, sample_constraints, monkeypatch
+@pytest.mark.parametrize(
+    "mosek_reason",
+    [
+        FailureReason.BACKEND_UNAVAILABLE,
+        FailureReason.NUMERICAL_FAILURE,
+    ],
+)
+def test_factor_qcqp_falls_back_to_clarabel_when_mosek_cannot_solve(
+    sample_data,
+    sample_constraints,
+    monkeypatch,
+    mosek_reason,
 ):
     failed_primary = BackendResult(
         backend="factor_qcqp_piqp",
@@ -257,11 +274,15 @@ def test_factor_qcqp_falls_back_to_clarabel_when_primary_and_mosek_fail(
         status=SolveStatus.SOLVER_ERROR,
         primal=None,
         objective_value=None,
-        native_status="forced_no_license",
-        reason=FailureReason.BACKEND_UNAVAILABLE,
+        native_status="forced_mosek_failure",
+        reason=mosek_reason,
     )
-    monkeypatch.setattr("optim.api.solve_factor_qcqp", lambda *args, **kwargs: failed_primary)
-    monkeypatch.setattr("optim.api.MosekBackend.solve", lambda *args, **kwargs: failed_mosek)
+    monkeypatch.setattr(
+        "optim.api.solve_factor_qcqp", lambda *args, **kwargs: failed_primary
+    )
+    monkeypatch.setattr(
+        "optim.api.MosekBackend.solve", lambda *args, **kwargs: failed_mosek
+    )
     constraints = replace(
         sample_constraints,
         tracking_error=TrackingErrorLimit(annualized=0.03),
@@ -278,6 +299,60 @@ def test_factor_qcqp_falls_back_to_clarabel_when_primary_and_mosek_fail(
     assert result.backend == "clarabel_qdldl"
     assert result.metrics.tracking_error <= 0.03 + 1e-8
     assert result.certificate.kind == "conic_primal_dual"
+
+
+def test_mosek_infeasible_is_terminal_and_skips_clarabel(
+    sample_data, sample_constraints, monkeypatch
+):
+    failed_primary = BackendResult(
+        backend="factor_qcqp_piqp",
+        status=SolveStatus.NUMERICAL_ERROR,
+        primal=None,
+        objective_value=None,
+        native_status="forced_primary_failure",
+        reason=FailureReason.NUMERICAL_FAILURE,
+    )
+    infeasible_mosek = BackendResult(
+        backend="mosek",
+        status=SolveStatus.INFEASIBLE,
+        primal=None,
+        objective_value=None,
+        native_status="ProblemStatus.PrimalInfeasible",
+        reason=FailureReason.INFEASIBLE_REPORTED,
+    )
+
+    def unexpected_clarabel(*args, **kwargs):
+        raise AssertionError(
+            "Clarabel must not run after definitive MOSEK infeasibility"
+        )
+
+    monkeypatch.setattr(
+        "optim.api.solve_factor_qcqp",
+        lambda *args, **kwargs: failed_primary,
+    )
+    monkeypatch.setattr(
+        "optim.api.MosekBackend.solve",
+        lambda *args, **kwargs: infeasible_mosek,
+    )
+    monkeypatch.setattr("optim.api.ClarabelBackend.solve", unexpected_clarabel)
+    constraints = replace(
+        sample_constraints,
+        tracking_error=TrackingErrorLimit(annualized=0.03),
+    )
+
+    result = PortfolioOptimizer().solve(
+        PortfolioProblem(sample_data, MaximizeAlpha(), constraints)
+    )
+
+    assert result.status is SolveStatus.INFEASIBLE
+    assert result.backend is None
+    assert [attempt.backend for attempt in result.route] == [
+        "factor_qcqp_piqp",
+        "mosek",
+    ]
+    assert result.route[-1].reason is FailureReason.INFEASIBLE_REPORTED
+    assert "不可行" in result.message
+    assert "ProblemStatus.PrimalInfeasible" in result.message
 
 
 def test_invalid_primary_solution_is_rejected_before_fallback(
@@ -301,7 +376,9 @@ def test_invalid_primary_solution_is_rejected_before_fallback(
         reason=FailureReason.BACKEND_UNAVAILABLE,
     )
     monkeypatch.setattr("optim.api.PIQPBackend.solve", invalid_piqp)
-    monkeypatch.setattr("optim.api.MosekBackend.solve", lambda *args, **kwargs: failed_mosek)
+    monkeypatch.setattr(
+        "optim.api.MosekBackend.solve", lambda *args, **kwargs: failed_mosek
+    )
     result = PortfolioOptimizer().solve(
         PortfolioProblem(sample_data, RiskAdjustedAlpha(), sample_constraints)
     )
@@ -328,7 +405,10 @@ def test_sparse_turnover_reformulation_is_conditional_and_exact(
     assert compiled.model.domain.n_variables == len(data.assets) + 2
     result = PortfolioOptimizer().solve(problem)
     assert result.status is SolveStatus.OPTIMAL
-    assert np.abs(result.require_weights().to_numpy() - sparse_initial).sum() <= 0.50 + 1e-9
+    assert (
+        np.abs(result.require_weights().to_numpy() - sparse_initial).sum()
+        <= 0.50 + 1e-9
+    )
 
     short_constraints = replace(
         constraints,

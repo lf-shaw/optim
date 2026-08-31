@@ -27,7 +27,13 @@ from .backends import (
 )
 from .backends.base import BackendResult
 from .factor_qcqp import solve_factor_qcqp
-from .model import CompiledProblem, FactorQCQP, LinearProgram, QuadraticProgram, compile_problem
+from .model import (
+    CompiledProblem,
+    FactorQCQP,
+    LinearProgram,
+    QuadraticProgram,
+    compile_problem,
+)
 from .portfolio_types import (
     AlignmentReport,
     AssetTradeConstraints,
@@ -269,7 +275,9 @@ class PortfolioOptimizer:
             raise ValueError(
                 "pass either asset_trade or the individual one-off lists, not both"
             )
-        if config.asset_trade is not None and (asset_trade is not None or convenience_used):
+        if config.asset_trade is not None and (
+            asset_trade is not None or convenience_used
+        ):
             raise ValueError(
                 "asset_trade is already present in constraints; do not provide it twice"
             )
@@ -456,7 +464,8 @@ class PortfolioOptimizer:
         """路由一个 canonical 模型并验收每次主求解和回退尝试。
 
         当前路由刻意保持显式：LP 使用 HiGHS，QP 使用 PIQP，factor-QCQP 使用专用 frontier
-        策略。QP/QCQP 候选未通过验收时先尝试配置的 MOSEK，再尝试 Clarabel。所有回退求解
+        策略。QP/QCQP 候选未通过验收时先尝试配置的 MOSEK；MOSEK 给出不可行或无界等确定
+        数学状态时立即停止，只有 MOSEK 不可用或自身求解失败时才尝试 Clarabel。所有回退求解
         完全相同的 ``CompiledProblem`` 并经过同一独立验收；LP 当前没有回退路径。
 
         Parameters
@@ -509,13 +518,18 @@ class PortfolioOptimizer:
         attempts: list[BackendResult] = []
         primary, evaluation = self._audit_backend_result(prepared, primary)
         attempts.append(primary)
-        if not evaluation.accepted and isinstance(model, (QuadraticProgram, FactorQCQP)):
+        if not evaluation.accepted and isinstance(
+            model, (QuadraticProgram, FactorQCQP)
+        ):
+            licensed_terminal = False
             if self.policy.licensed_fallback.lower() == "mosek":
                 fallback = MosekBackend().solve(model, options)
                 fallback, evaluation = self._audit_backend_result(prepared, fallback)
                 attempts.append(fallback)
+                licensed_terminal = _has_definitive_mathematical_status(fallback)
             if (
                 not evaluation.accepted
+                and not licensed_terminal
                 and self.policy.free_fallback.lower() in {"clarabel", "clarabel_qdldl"}
             ):
                 fallback = ClarabelBackend().solve(model, options)
@@ -550,7 +564,9 @@ class PortfolioOptimizer:
         metrics = PortfolioMetrics()
         violations: tuple[ConstraintViolation, ...] = ()
         max_violation = 0.0
-        accepted = backend_result.status.has_solution and backend_result.primal is not None
+        accepted = (
+            backend_result.status.has_solution and backend_result.primal is not None
+        )
         if accepted:
             assert backend_result.primal is not None
             metrics, violations, max_violation = evaluate_solution(
@@ -570,12 +586,14 @@ class PortfolioOptimizer:
                     ),
                 )
             else:
-                backend_result, metrics, violations, max_violation = self._clean_solution(
-                    prepared,
-                    backend_result,
-                    metrics,
-                    violations,
-                    max_violation,
+                backend_result, metrics, violations, max_violation = (
+                    self._clean_solution(
+                        prepared,
+                        backend_result,
+                        metrics,
+                        violations,
+                        max_violation,
+                    )
                 )
         return backend_result, _Evaluation(
             metrics,
@@ -640,7 +658,9 @@ class PortfolioOptimizer:
             )
         cleanup_loss = 0.0
         if raw_metrics.objective is not None and metrics.objective is not None:
-            if isinstance(prepared.problem.objective, (MaximizeAlpha, RiskAdjustedAlpha)):
+            if isinstance(
+                prepared.problem.objective, (MaximizeAlpha, RiskAdjustedAlpha)
+            ):
                 cleanup_loss = max(0.0, raw_metrics.objective - metrics.objective)
             else:
                 cleanup_loss = max(0.0, metrics.objective - raw_metrics.objective)
@@ -702,6 +722,8 @@ class PortfolioOptimizer:
         accepted = evaluation.accepted
         status = backend_result.status
         message = backend_result.message
+        if not accepted and not message:
+            message = _default_failure_message(backend_result)
 
         weights = None
         objective_value = None
@@ -738,7 +760,10 @@ class PortfolioOptimizer:
                         "max_constraint_violation": max_violation,
                     },
                 )
-            elif isinstance(compiled.model, FactorQCQP) and "total_gap" in backend_result.diagnostics:
+            elif (
+                isinstance(compiled.model, FactorQCQP)
+                and "total_gap" in backend_result.diagnostics
+            ):
                 total_gap = float(backend_result.diagnostics["total_gap"])
                 alpha_spec = problem.data.alpha_spec
                 assert alpha_spec is not None
@@ -908,3 +933,24 @@ def _metadata_float(metadata, key: str, default: float) -> float:
     except (TypeError, ValueError):
         return default
     return value if np.isfinite(value) else default
+
+
+def _has_definitive_mathematical_status(result: BackendResult) -> bool:
+    """判断商业回退是否已经给出不应被免费后端覆盖的确定数学状态。"""
+
+    return result.status in {SolveStatus.INFEASIBLE, SolveStatus.UNBOUNDED}
+
+
+def _default_failure_message(result: BackendResult) -> str:
+    """在后端没有提供文本时，为最终失败生成可读且可审计的摘要。"""
+
+    status_text = {
+        SolveStatus.INFEASIBLE: "报告 canonical 问题不可行",
+        SolveStatus.UNBOUNDED: "报告 canonical 问题无界",
+        SolveStatus.LIMIT_REACHED: "达到求解限制",
+        SolveStatus.NUMERICAL_ERROR: "发生数值错误",
+        SolveStatus.RESOURCE_ERROR: "发生资源错误",
+        SolveStatus.SOLVER_ERROR: "求解失败",
+    }.get(result.status, f"返回状态 {result.status.value}")
+    native = f"；原生状态：{result.native_status}" if result.native_status else ""
+    return f"{result.backend} {status_text}{native}"
