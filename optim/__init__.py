@@ -7,9 +7,16 @@
 from __future__ import annotations
 
 from importlib import import_module
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from ._version import __version__
+try:
+    from ._version import version as __version__
+except ImportError:
+    try:
+        __version__ = version("optim")
+    except PackageNotFoundError:
+        __version__ = "0+unknown"
 from .portfolio_types import (
     AlignmentReport,
     AlphaSpec,

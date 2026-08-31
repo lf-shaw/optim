@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 from pathlib import Path
-import re
 import tomllib
 
 
@@ -89,22 +88,17 @@ def test_every_core_implementation_module_is_an_explicit_extension() -> None:
     assert (_PACKAGE_ROOT / "py.typed").is_file()
 
 
-def test_distribution_and_ai_catalog_versions_match() -> None:
-    """发行版本必须从 3.0.0 起，并在包、wheel 配置和 AI 目录中保持一致。"""
+def test_distribution_version_is_generated_from_release_tags() -> None:
+    """发行版本只能由 vX.Y.Z tag 生成，catalog 源文件保留动态占位符。"""
 
-    version_namespace: dict[str, str] = {}
-    exec(
-        (_PACKAGE_ROOT / "_version.py").read_text(encoding="utf-8"),
-        version_namespace,
-    )
-    package_version = version_namespace["__version__"]
-
-    setup_text = (_PACKAGE_ROOT.parent / "setup.py").read_text(encoding="utf-8")
-    match = re.search(r'\bversion="([^"]+)"', setup_text)
-    assert match is not None
-    setup_version = match.group(1)
-
+    with (_PACKAGE_ROOT.parent / "pyproject.toml").open("rb") as stream:
+        configuration = tomllib.load(stream)
     with (_PACKAGE_ROOT / "LIBRARY.toml").open("rb") as stream:
         catalog_version = tomllib.load(stream)["meta"]["version"]
 
-    assert package_version == setup_version == catalog_version == "3.0.0"
+    assert configuration["project"]["dynamic"] == ["version"]
+    scm = configuration["tool"]["setuptools_scm"]
+    assert scm["version_file"] == "optim/_version.py"
+    assert scm["tag_regex"] == r"^v(?P<version>\d+\.\d+\.\d+)$"
+    assert scm["fallback_version"] == "3.0.0"
+    assert catalog_version == "dynamic"

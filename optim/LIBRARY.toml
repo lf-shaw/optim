@@ -1,12 +1,12 @@
 # ============================================================
 # LIBRARY.toml — optim
-# 版本需与 optim/_version.py 和 setup.py 保持一致。
+# 源码使用 dynamic 标记；构建时由 setuptools-scm 将实际 Git 版本写入 wheel 副本。
 # ============================================================
 
 [meta]
 name = "optim"
 display_name = "Optim Portfolio Optimizer"
-version = "3.0.0"
+version = "dynamic"
 summary = "面向 A 股因子风险模型的统一组合优化器：支持单期/多期、LP、风险惩罚 QP、Factor-QCQP、严格数据校验和不可行诊断"
 category = "optimization"
 tags = [

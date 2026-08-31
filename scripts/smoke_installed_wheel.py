@@ -5,7 +5,9 @@ from __future__ import annotations
 
 from dataclasses import replace
 from importlib import resources
+from importlib.metadata import version
 from pathlib import Path
+import tomllib
 
 import numpy as np
 import pandas as pd
@@ -77,8 +79,12 @@ def _problem() -> PortfolioProblem:
 def main() -> None:
     """验证版本、资源、扩展模块和三类优化结果。"""
 
-    if optim.__version__ != "3.0.0":
-        raise RuntimeError(f"unexpected installed version: {optim.__version__}")
+    distribution_version = version("optim")
+    if optim.__version__ != distribution_version:
+        raise RuntimeError(
+            "package and distribution versions differ: "
+            f"package={optim.__version__}, distribution={distribution_version}"
+        )
     engine_path = Path(engine.__file__)
     if engine_path.suffix not in {".so", ".pyd"}:
         raise RuntimeError(f"core engine is not a binary extension: {engine_path}")
@@ -91,6 +97,13 @@ def main() -> None:
     ):
         if not package_files.joinpath(relative).is_file():
             raise RuntimeError(f"installed wheel misses resource: {relative}")
+    with package_files.joinpath("LIBRARY.toml").open("rb") as stream:
+        catalog_version = tomllib.load(stream)["meta"]["version"]
+    if catalog_version != distribution_version:
+        raise RuntimeError(
+            "catalog and distribution versions differ: "
+            f"catalog={catalog_version}, distribution={distribution_version}"
+        )
 
     base = _problem()
     problems = {

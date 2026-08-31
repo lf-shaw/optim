@@ -1,7 +1,66 @@
+# ============================================================
+# optim — PEP 621 项目与 setuptools-scm 发布元数据
+# Python 扩展和自定义构建命令仍由 setup.py 提供。
+# ============================================================
+
 [build-system]
 requires = [
     "setuptools>=69",
     "wheel",
     "Cython>=3,<4",
+    "setuptools-scm>=8,<10",
 ]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "optim"
+dynamic = ["version"]
+description = "面向 A 股因子风险模型的统一组合优化器"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "Proprietary"}
+authors = [{name = "shaolf"}]
+keywords = [
+    "portfolio-optimization",
+    "factor-risk-model",
+    "linear-programming",
+    "quadratic-programming",
+    "tracking-error",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: Other/Proprietary License",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "numpy>=2.2,<3",
+    "scipy>=1.15,<2",
+    "pandas>=2.2",
+    "bottleneck>=1.4,<2",
+    "tqdm>=4.66,<5",
+    "highspy>=1.15,<2",
+    "piqp>=0.6.4",
+    "clarabel==0.11.1",
+    "Mosek>=11.2,<12",
+]
+
+[tool.setuptools_scm]
+version_file = "optim/_version.py"
+tag_regex = "^v(?P<version>\\d+\\.\\d+\\.\\d+)$"
+fallback_version = "3.0.0"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = ["optim", "optim.*"]
+
+[tool.setuptools.package-data]
+optim = [
+    "py.typed",
+    "LIBRARY.toml",
+    "references/*.md",
+]

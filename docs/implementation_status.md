@@ -53,7 +53,8 @@ fingerprint 选择单日 deep 诊断；需要异常式取权重时调用 `result
    optimizer 转换一次，多期每日只跨边界调用一次，theta continuation 不跨层往返。
 8. 多期问题在首个求解前完成全区间静态预检；逐日热路径直接编译经过预检的模板，不再重复
    扫描风险矩阵和约束数组。链式模式每日唯一变化的期初权重由受控 C2C 漂移生成。
-9. 新架构发行版本从 `3.0.0` 开始；包内版本、wheel 元数据和 AI catalog 由自动测试保持一致。
+9. 新架构发行 tag 从 `v3.0.0` 开始；`setuptools-scm` 自动生成包版本，构建过程同步 wheel
+   元数据与 AI catalog，源码不再手工维护 `_version.py`。
 
 ## 单期实盘入口
 

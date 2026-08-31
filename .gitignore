@@ -3,6 +3,7 @@ dist/*
 .gitignore
 *.pyc
 optim.egg-info/*
+optim/_version.py
 tmp/*
 .vscode/
 benchmarks/solver_evaluation/wheels/

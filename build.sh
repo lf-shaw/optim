@@ -37,15 +37,16 @@ done
 
 echo "=== [1/4] 清理上次构建的临时产物 ==="
 rm -rf build/ optim.egg-info/
+rm -f optim/_version.py
 find optim/_core -type f \( -name '*.c' -o -name '*.cpp' -o -name '*.so' -o -name '*.pyd' \) -delete
 find optim -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 
 echo "=== [2/4] 编译平台 wheel ==="
-if PYTHONNOUSERSITE=1 python -c "import build" 2>/dev/null; then
-    PYTHONNOUSERSITE=1 python -m build --wheel --no-isolation
+if python -c "import build" 2>/dev/null; then
+    python -m build --wheel --no-isolation
 else
     echo "未安装 build，使用 setuptools bdist_wheel 兼容入口"
-    PYTHONNOUSERSITE=1 python setup.py bdist_wheel
+    python setup.py bdist_wheel
 fi
 
 WHL=$(ls -t dist/optim-*.whl | head -1)
@@ -54,6 +55,15 @@ PYTHONNOUSERSITE=1 python scripts/validate_wheel.py "$WHL"
 
 if [[ "$PUSH" -eq 1 ]]; then
     echo "=== [4/4] 上传到 [$REPOSITORY] 仓库 ==="
+    git diff --quiet && git diff --cached --quiet \
+        || { echo "❌ 正式发布要求工作树和暂存区均干净" >&2; exit 1; }
+    RELEASE_TAG=$(git tag --points-at HEAD --list 'v[0-9]*' | head -1)
+    [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+        || { echo "❌ --push 要求 HEAD 具有 vX.Y.Z 发布 tag" >&2; exit 1; }
+    WHEEL_VERSION=$(PYTHONNOUSERSITE=1 python -c \
+        "import re, zipfile; z=zipfile.ZipFile('$WHL'); n=next(x for x in z.namelist() if x.endswith('.dist-info/METADATA')); print(re.search(r'^Version: (.+)$', z.read(n).decode(), re.M).group(1))")
+    [[ "$WHEEL_VERSION" == "${RELEASE_TAG#v}" ]] \
+        || { echo "❌ wheel 版本 $WHEEL_VERSION 与 tag $RELEASE_TAG 不一致" >&2; exit 1; }
     command -v twine >/dev/null || { echo "❌ 未找到 twine" >&2; exit 1; }
     twine upload -r "$REPOSITORY" --skip-existing "$WHL"
     echo "✅ 已上传到 [$REPOSITORY]: $(basename "$WHL")"
