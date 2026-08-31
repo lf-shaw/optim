@@ -93,7 +93,51 @@ else:
 
 ## 3. 链式用户怎样调用
 
-v5 范例已经把每天转换为一个 `PortfolioProblem`，因此直接调用：
+正式用户不需要逐日构造 `PortfolioProblem`。当数据已经按 `PortfolioSchedule`、
+`FactorRiskFrames` 和每日 benchmark frames 组织时，统一入口是：
+
+```python
+sequence = optimizer.optimize_range(
+    data_source=InMemoryDataSource(
+        risk_data=risk_frames,
+        benchmark=benchmark_frame,
+    ),
+    schedule=PortfolioSchedule(universe_with_alpha),
+    objective=MaximizeAlpha(),
+    constraints=constraints,
+    alpha_spec=AlphaSpec(...),
+    initial_weight=first_day_actual_weight,
+    holding_period_returns=returns_by_current_rebalance_date,
+    sequence_policy=SequencePolicy(
+        mode="chained",
+        on_failure="stop",
+        theta_seed="auto",
+        output_weights="sparse",
+    ),
+)
+```
+
+依赖 tuda2 自动取数时仍由同一个 optimizer 入口调用：
+
+```python
+sequence = optimizer.optimize_range(
+    data_source=Tuda2DataSource(risk_model="datayes"),
+    schedule=PortfolioSchedule(universe_with_alpha),
+    benchmark_sid="000852.SH",
+    objective=MaximizeAlpha(),
+    constraints=constraints,
+    alpha_spec=AlphaSpec(...),
+    initial_weight=first_day_actual_weight,
+    sequence_policy=SequencePolicy(mode="chained"),
+)
+```
+
+tuda2 适配器会在求解循环前分别一次取足整个区间的 exposure、covariance、specific risk、
+benchmark 和日度 C2C 收益。用户只提供第一日真实持仓；后续日期的占位权重只存在于内部预检
+实现中，不能成为用户调用契约。
+
+v5 审计脚本尚使用历史 `DataStore`，不属于正式数据源协议，因此才显式把每天转换为一个
+`PortfolioProblem` 并调用低层入口：
 
 ```python
 sequence = optimizer.solve_sequence(
@@ -123,10 +167,9 @@ $$
 再把它作为第 $t$ 日换手率约束的期初权重。`theta_seed="auto"` 在链式模式传播上一成功日的
 theta，但不跨日复用 PIQP workspace。
 
-如果数据已经按 `PortfolioSchedule`、`FactorRiskFrames` 和每日 benchmark frames 组织，建议
-调用更高层的 `optimizer.optimize_range(...)`。它先做全区间严格同日预检，再进入同一个
-`solve_sequence` 状态机。tuda2 用户则使用 `Tuda2DataSource.optimize_range(...)`，外部 I/O
-仍然只发生在进入逐日求解循环之前。
+`asset_trade` 面向已知当日真实持仓和交易状态的单期实盘请求，不进入多期 facade。
+`solve_sequence(problems, ...)` 仅保留给研究或高级调用方显式提供每日完整问题的场景。两种
+多期入口最终进入同一个序列状态机。
 
 结果读取示例：
 

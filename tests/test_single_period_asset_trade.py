@@ -229,7 +229,7 @@ def test_range_rejects_static_one_off_asset_lists(sample_data, sample_constraint
         asset_trade=AssetTradeConstraints(frozen=("a",)),
     )
     optimizer = PortfolioOptimizer()
-    with pytest.raises(ValueError, match="dated PortfolioProblem"):
+    with pytest.raises(ValueError, match="single-period optimize"):
         optimizer.optimize_range(
             data_source=None,  # rejected before data-source access
             schedule=None,

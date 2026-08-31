@@ -127,8 +127,8 @@ TE 为年化小数波动率。核心不会根据数值量级猜单位。
   分别给出相对期初权重的单边边界。
 - 操作性交易指令可对指定证券局部覆盖普通 active bound，但仍受 absolute/long-only domain
   约束；覆盖来源写入 constraint registry。
-- 批量 `optimize_range()` 不允许把同一份非空 `asset_trade` 复制到所有日期。逐日清单需要
-  显式构造逐日问题。
+- 批量 `optimize_range()` 不接受 `asset_trade`。黑名单、冻结和单边交易依赖当日真实持仓及
+  可交易状态，属于单期实盘请求，不能被静态广播或提前写入研究序列。
 
 ## 4. 数据入口与日期规则
 
@@ -159,6 +159,11 @@ benchmark 在 universe 外存在任何非容差内的质量缺口时默认报错
 一次额外的内存计算换取“昂贵序列开始前发现全部静态错误”。底层 pandas/tuda2 frame 已经
 一次性载入，不发生逐日远程 I/O。
 
+普通用户只调用统一 optimizer facade：单期使用 `optimizer.optimize(data=...)`，多期使用
+`optimizer.optimize_range(data_source=..., schedule=...)`。后者内部构造
+`PreparedPortfolioRun`，调用方不需要为每个日期创建 `PortfolioProblem` 或占位期初持仓。
+`solve_sequence(problems, ...)` 是研究或高级调用方显式提供每日完整问题的低层入口。
+
 ### 4.3 tuda2 入口
 
 `Tuda2DataSource.load()` 对一个区间分别调用一次 exposure、covariance、specific risk 和
@@ -170,6 +175,11 @@ R(t-1, t) = product(1 + r_daily) - 1
 ```
 
 缺失收益保持 NaN，由序列层按实际持仓质量判断是否可接受；不会在复合时静默跳过。
+
+tuda2 不改变 facade 方向：单期和多期分别使用
+`optimizer.optimize(data_source=Tuda2DataSource(...), ...)` 与
+`optimizer.optimize_range(data_source=Tuda2DataSource(...), ...)`。适配器内部只实现
+`build_problem()`/`prepare_sequence()` 数据准备协议，不回调 optimizer，也不是推荐用户入口。
 
 ## 5. 校验、编译与 canonical model
 

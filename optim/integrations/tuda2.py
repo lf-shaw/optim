@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import cached_property
 from importlib import import_module
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
@@ -15,14 +15,14 @@ from ..data import (
     FactorRiskFrames,
     InMemoryDataSource,
     PortfolioSchedule,
+    PreparedPortfolioRun,
 )
 from ..portfolio_types import (
     AlphaSpec,
-    AssetTradeConstraints,
     DataProvenance,
     PortfolioConstraints,
     PortfolioObjective,
-    SequencePolicy,
+    PortfolioProblem,
 )
 
 
@@ -46,6 +46,22 @@ class Tuda2LoadedData:
 
     risk_data: FactorRiskFrames
     benchmark: pd.DataFrame
+
+
+@dataclass(frozen=True)
+class Tuda2PreparedSequence:
+    """tuda2 已完成批量 I/O 和全区间预检的多期输入。
+
+    Attributes
+    ----------
+    run : PreparedPortfolioRun
+        仅持有批量 frame 引用、运行配置和预检报告的惰性问题清单。
+    holding_period_returns : Mapping[pandas.Timestamp, pandas.Series] | None
+        以当前调仓日为键的 C2C 区间复合收益；独立模式或无需持仓漂移时可以为 ``None``。
+    """
+
+    run: PreparedPortfolioRun
+    holding_period_returns: Mapping[pd.Timestamp, pd.Series] | None
 
 
 @dataclass(frozen=True)
@@ -261,9 +277,8 @@ class Tuda2DataSource:
             result[pd.Timestamp(current_date)] = compounded
         return result
 
-    def optimize_range(
+    def prepare_sequence(
         self,
-        optimizer: Any,
         *,
         schedule: PortfolioSchedule,
         benchmark_sid: str,
@@ -271,22 +286,21 @@ class Tuda2DataSource:
         objective: PortfolioObjective,
         constraints: PortfolioConstraints,
         alpha_spec: AlphaSpec | None,
-        sequence_policy: SequencePolicy | None = None,
         benchmark_policy: BenchmarkCoveragePolicy | None = None,
         independent_initial_weights: Mapping[pd.Timestamp, pd.Series] | None = None,
         holding_period_returns: Mapping[pd.Timestamp, pd.Series] | None = None,
+        require_holding_returns: bool = True,
         tradable_universe: str | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
-    ):
-        """一次获取完整 tuda2 区间，并在全部逐日求解中复用。
+    ) -> Tuda2PreparedSequence:
+        """一次获取完整区间，预检并返回求解器无关的多期输入。
 
         策略日期、资产和 alpha 仍由 schedule 定义；tuda2 提供严格同日风险、基准及复合
-        close-to-close 收益。逐日优化循环中不发生 tuda2 I/O。
+        close-to-close 收益。该方法不调用 optimizer；普通用户通过
+        ``PortfolioOptimizer.optimize_range(data_source=self, ...)`` 间接使用它。
 
         Parameters
         ----------
-        optimizer : PortfolioOptimizer
-            执行统一求解和独立验收的优化器实例。
         schedule : PortfolioSchedule
             策略定义的调仓日期、资产、alpha 和属性。
         benchmark_sid : str
@@ -299,14 +313,14 @@ class Tuda2DataSource:
             各日期共享的静态约束。
         alpha_spec : AlphaSpec | None
             alpha 单位和尺度。
-        sequence_policy : SequencePolicy | None
-            多期持仓、失败、theta 和输出策略。
         benchmark_policy : BenchmarkCoveragePolicy | None
             基准覆盖缺口的显式处理策略。
         independent_initial_weights : Mapping[pandas.Timestamp, pandas.Series] | None
             独立模式的逐日期期初权重。
         holding_period_returns : Mapping[pandas.Timestamp, pandas.Series] | None
-            已提供的区间复合收益；链式模式为空时由 tuda2 一次性获取。
+            调用方已提供的区间复合收益；不为空时不会再次读取收益。
+        require_holding_returns : bool
+            是否为链式持仓漂移准备收益。为真且调用方未提供时，一次性从 tuda2 获取。
         tradable_universe : str | None
             可选 tuda2 universe 名称，用于批量附加严格同日可交易性。
         extra_attribute_columns : tuple[str, ...]
@@ -314,8 +328,8 @@ class Tuda2DataSource:
 
         Returns
         -------
-        PortfolioSequenceResult
-            完整逐日序列结果。
+        Tuda2PreparedSequence
+            已预检的惰性问题清单和可选持有期收益。
 
         Raises
         ------
@@ -348,11 +362,8 @@ class Tuda2DataSource:
         )
         prepared.validation.raise_for_errors()
 
-        resolved_policy = (
-            SequencePolicy() if sequence_policy is None else sequence_policy
-        )
         returns = holding_period_returns
-        if resolved_policy.mode == "chained" and returns is None:
+        if require_holding_returns and returns is None:
             sids = (
                 effective_schedule.universe.index.get_level_values("sid")
                 .unique()
@@ -360,15 +371,13 @@ class Tuda2DataSource:
                 .tolist()
             )
             returns = self.load_close_to_close_returns(dates=dates, sids=sids)
-        return optimizer.solve_sequence(
-            prepared,
+        return Tuda2PreparedSequence(
+            run=prepared,
             holding_period_returns=returns,
-            sequence_policy=resolved_policy,
         )
 
-    def optimize(
+    def build_problem(
         self,
-        optimizer: Any,
         *,
         date: Any,
         universe: pd.DataFrame,
@@ -377,23 +386,17 @@ class Tuda2DataSource:
         objective: PortfolioObjective,
         constraints: PortfolioConstraints,
         alpha_spec: AlphaSpec | None,
-        asset_trade: AssetTradeConstraints | None = None,
-        blacklist: Iterable[Any] | None = None,
-        frozen: Iterable[Any] | None = None,
-        not_buyable: Iterable[Any] | None = None,
-        not_sellable: Iterable[Any] | None = None,
-        weight_overrides: Mapping[Any, float | tuple[float, float]] | None = None,
         benchmark_policy: BenchmarkCoveragePolicy | None = None,
         tradable_universe: str | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
-        theta_seed: float | None = None,
-    ):
-        """获取严格同日 tuda2 输入并求解一次实盘请求。
+    ) -> PortfolioProblem:
+        """获取严格同日 tuda2 输入并只构造一个单期问题。
+
+        本方法不调用求解器。普通用户通过
+        ``PortfolioOptimizer.optimize(data_source=self, ...)`` 间接使用它。
 
         Parameters
         ----------
-        optimizer : PortfolioOptimizer
-            执行统一求解的优化器实例。
         date : Any
             唯一优化日期，可转换为 :class:`pandas.Timestamp`。
         universe : pandas.DataFrame
@@ -404,22 +407,16 @@ class Tuda2DataSource:
             交易前实际持仓，以 sid 为索引。
         objective, constraints, alpha_spec
             本次请求的目标、约束及 alpha 单位。
-        asset_trade, blacklist, frozen, not_buyable, not_sellable, weight_overrides
-            仅对本次请求生效的逐资产交易指令；重复入口规则与
-            :meth:`PortfolioOptimizer.optimize` 一致。
         benchmark_policy : BenchmarkCoveragePolicy | None
             基准覆盖缺口的显式策略。
         tradable_universe : str | None
             可选 tuda2 universe 名称，用于附加该日可交易性。
         extra_attribute_columns : tuple[str, ...]
             从 universe 物化的额外属性列。
-        theta_seed : float | None
-            factor-QCQP 的可选 theta 初始值。
-
         Returns
         -------
-        OptimizationResult
-            标准化单期求解结果。
+        PortfolioProblem
+            已严格对齐但尚未求解的单期问题。
 
         Raises
         ------
@@ -439,25 +436,13 @@ class Tuda2DataSource:
             benchmark=loaded.benchmark,
             benchmark_policy=benchmark_policy,
         )
-        problem = memory_source.build_problem(
+        return memory_source.build_problem(
             schedule,
             objective=objective,
             constraints=constraints,
             alpha_spec=alpha_spec,
             initial_weight=initial_weight,
             extra_attribute_columns=extra_attribute_columns,
-        )
-        return optimizer.optimize(
-            data=problem.data,
-            objective=objective,
-            constraints=constraints,
-            asset_trade=asset_trade,
-            blacklist=blacklist,
-            frozen=frozen,
-            not_buyable=not_buyable,
-            not_sellable=not_sellable,
-            weight_overrides=weight_overrides,
-            theta_seed=theta_seed,
         )
 
     def _attach_tradability(

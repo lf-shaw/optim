@@ -65,12 +65,28 @@ result = optimizer.optimize(
 ```
 
 名单约束同时适用于 LP、QP 和 factor-QCQP，因为它们在 solver 路由前编译为同一个 canonical
-资产域。`optimize_range` 不接受一个静态的非空 `asset_trade` 并把它复制到所有日期；批量
-任务若确有逐日名单，应构造各日 `PortfolioProblem`，从而明确每张名单的生效日期。
+资产域。`optimize_range` 不接受 `asset_trade`：操作性名单依赖当日真实持仓和交易状态，主要
+服务单期实盘请求，不在多期研究 facade 中提前表达或广播。
 
-依赖 tuda2 的同日入口为 `Tuda2DataSource.optimize(optimizer, date=..., universe=...,
-benchmark_sid=..., ...)`。它只读取指定日期，不取持仓漂移收益，并通过
-`InMemoryDataSource.build_problem()` 只物化一次 dense 风险矩阵，再进入完全相同的单期核心。
+依赖 tuda2 的同日入口仍由 optimizer facade 调用：
+
+```python
+result = optimizer.optimize(
+    data_source=Tuda2DataSource(risk_model="datayes"),
+    date=date,
+    universe=universe,
+    benchmark_sid="000852.SH",
+    initial_weight=initial_weight,
+    objective=MaximizeAlpha(),
+    constraints=constraints,
+    alpha_spec=AlphaSpec(),
+)
+```
+
+它只读取指定日期，不取持仓漂移收益，并通过 `InMemoryDataSource.build_problem()` 只物化一次
+dense 风险矩阵，再进入完全相同的单期核心。多期同样使用
+`optimizer.optimize_range(data_source=..., schedule=..., ...)`，普通用户不需要逐日构造
+`PortfolioProblem`；低层 `solve_sequence(problems, ...)` 只服务每日业务模型确实不同的场景。
 
 ## 前端性能检查
 

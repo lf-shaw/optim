@@ -49,6 +49,7 @@ from .portfolio_types import (
     PortfolioProblem,
     ProofStatus,
     RiskAdjustedAlpha,
+    SequencePolicy,
     SolveStatus,
     SolveTimings,
     SolverAttempt,
@@ -58,8 +59,13 @@ from .solution import evaluate_solution, lift_weights
 from .validation import ValidationReport, validate_problem
 
 if TYPE_CHECKING:
-    from .data import InMemoryDataSource, PortfolioSchedule
-    from .portfolio_types import AlphaSpec, SequencePolicy
+    from .data import (
+        BenchmarkCoveragePolicy,
+        InMemoryDataSource,
+        PortfolioSchedule,
+    )
+    from .integrations.tuda2 import Tuda2DataSource
+    from .portfolio_types import AlphaSpec
     from .sequence import PortfolioSequenceResult
 
 
@@ -213,30 +219,47 @@ class PortfolioOptimizer:
     def optimize(
         self,
         *,
-        data: PortfolioData,
+        data: PortfolioData | None = None,
+        data_source: "Tuda2DataSource | None" = None,
+        date: Any | None = None,
+        universe: pd.DataFrame | None = None,
+        benchmark_sid: str | None = None,
+        initial_weight: pd.Series | None = None,
         objective: PortfolioObjective,
         constraints: PortfolioConstraints | None = None,
+        alpha_spec: "AlphaSpec | None" = None,
         asset_trade: AssetTradeConstraints | None = None,
         blacklist: Iterable[Any] | None = None,
         frozen: Iterable[Any] | None = None,
         not_buyable: Iterable[Any] | None = None,
         not_sellable: Iterable[Any] | None = None,
         weight_overrides: Mapping[Any, float | tuple[float, float]] | None = None,
+        benchmark_policy: "BenchmarkCoveragePolicy | None" = None,
+        tradable_universe: str | None = None,
+        extra_attribute_columns: tuple[str, ...] = (),
         theta_seed: float | None = None,
     ) -> OptimizationResult:
-        """求解一次实盘单期请求，不保留临时交易名单。
+        """从已对齐数据或数据源求解一次实盘单期请求。
 
         ``solve(PortfolioProblem(...))`` 仍是 canonical 低层 API。本便捷方法将常用单期路径
-        显式化，并把逐资产名单转换成不可变、仅对本问题生效的约束。
+        显式化，并把逐资产名单转换成不可变、仅对本问题生效的约束。调用方必须在 ``data``
+        与 ``data_source`` 中恰好选择一个：前者直接进入核心，后者由适配器一次获取并严格对齐
+        指定日期的数据，再回到相同的核心路径。
 
         Parameters
         ----------
-        data : PortfolioData
-            已对齐的严格同日单期数据。
+        data : PortfolioData | None
+            已对齐的严格同日单期数据；与 ``data_source`` 互斥。
+        data_source : Tuda2DataSource | None
+            实现单期数据准备协议的 tuda2 数据源。
+        date, universe, benchmark_sid, initial_weight
+            使用数据源时必需的单期日期、样本空间、基准标识和交易前实际持仓。
         objective : PortfolioObjective
             业务目标。
         constraints : PortfolioConstraints | None
             可行域配置；``None`` 使用默认约束。
+        alpha_spec : AlphaSpec | None
+            使用数据源物化 alpha 时的单位和尺度；直接传 ``data`` 时单位已经包含在数据中。
         asset_trade : AssetTradeConstraints | None
             已构造的单期交易指令。不能与下面的便捷名单同时传入，也不能与
             ``constraints.asset_trade`` 重复。
@@ -244,6 +267,12 @@ class PortfolioOptimizer:
             单期黑名单、冻结、不可买入和不可卖出资产集合。
         weight_overrides : Mapping[Any, float | tuple[float, float]] | None
             单期逐资产精确目标或闭区间覆盖。
+        benchmark_policy : BenchmarkCoveragePolicy | None
+            数据源处理基准覆盖缺口的显式策略。
+        tradable_universe : str | None
+            数据源可选的可交易域名称。
+        extra_attribute_columns : tuple[str, ...]
+            从数据源样本空间物化的额外逐资产数值列。
         theta_seed : float | None
             factor-QCQP 的可选 theta 初始值。
 
@@ -255,12 +284,68 @@ class PortfolioOptimizer:
         Raises
         ------
         ValueError
-            同一交易指令通过多个入口重复提供。
+            数据输入入口不唯一、数据源参数不完整，或同一交易指令通过多个入口重复提供。
         PortfolioValidationError
             组装后的问题未通过静态校验。
         """
 
+        if (data is None) == (data_source is None):
+            raise ValueError("pass exactly one of data or data_source")
         config = PortfolioConstraints() if constraints is None else constraints
+        if data_source is not None:
+            missing = [
+                name
+                for name, value in (
+                    ("date", date),
+                    ("universe", universe),
+                    ("benchmark_sid", benchmark_sid),
+                    ("initial_weight", initial_weight),
+                )
+                if value is None
+            ]
+            if missing:
+                raise ValueError(
+                    "data_source single-period optimization requires "
+                    + ", ".join(missing)
+                )
+            assert date is not None
+            assert universe is not None
+            assert benchmark_sid is not None
+            assert initial_weight is not None
+            source_problem = data_source.build_problem(
+                date=date,
+                universe=universe,
+                benchmark_sid=benchmark_sid,
+                initial_weight=initial_weight,
+                objective=objective,
+                constraints=config,
+                alpha_spec=alpha_spec,
+                benchmark_policy=benchmark_policy,
+                tradable_universe=tradable_universe,
+                extra_attribute_columns=extra_attribute_columns,
+            )
+            data = source_problem.data
+        else:
+            source_only_values = {
+                "date": date,
+                "universe": universe,
+                "benchmark_sid": benchmark_sid,
+                "initial_weight": initial_weight,
+                "alpha_spec": alpha_spec,
+                "benchmark_policy": benchmark_policy,
+                "tradable_universe": tradable_universe,
+            }
+            unexpected = [
+                name for name, value in source_only_values.items() if value is not None
+            ]
+            if extra_attribute_columns:
+                unexpected.append("extra_attribute_columns")
+            if unexpected:
+                raise ValueError(
+                    "source-only arguments cannot be combined with data: "
+                    + ", ".join(unexpected)
+                )
+        assert data is not None
         convenience_used = any(
             value is not None
             for value in (
@@ -299,26 +384,30 @@ class PortfolioOptimizer:
     def optimize_range(
         self,
         *,
-        data_source: "InMemoryDataSource",
+        data_source: "InMemoryDataSource | Tuda2DataSource",
         schedule: "PortfolioSchedule",
         objective: "PortfolioObjective",
         constraints: "PortfolioConstraints",
         alpha_spec: "AlphaSpec | None",
         initial_weight: pd.Series,
+        benchmark_sid: str | None = None,
         holding_period_returns=None,
         sequence_policy: "SequencePolicy | None" = None,
         independent_initial_weights=None,
+        benchmark_policy: "BenchmarkCoveragePolicy | None" = None,
+        tradable_universe: str | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
     ) -> "PortfolioSequenceResult":
-        """严格对齐已加载的调仓计划并按多期序列求解。
+        """通过统一数据源 facade 严格对齐并求解多期序列。
 
-        非空静态 ``asset_trade`` 会被拒绝，因为黑名单、冻结名单等通常只对单日生效。需要逐日
-        指令的策略必须显式构造逐日问题，不能把同一名单静默广播到整个区间。
+        非空静态 ``asset_trade`` 会被拒绝，因为黑名单、冻结名单等依赖当日真实持仓和交易
+        状态。此类操作性指令应使用单期 ``optimize``，不能静默广播到整个研究区间。
 
         Parameters
         ----------
-        data_source : InMemoryDataSource
-            已一次性加载的基准和风险模型数据源。
+        data_source : InMemoryDataSource | Tuda2DataSource
+            已加载的 ``InMemoryDataSource``，或实现区间准备协议的 ``Tuda2DataSource``。
+            外部数据源必须在逐日求解前一次性完成区间 I/O，不得回调求解器。
         schedule : PortfolioSchedule
             以严格 ``(dt, sid)`` MultiIndex 定义调仓日期、资产和 alpha 的计划。
         objective : PortfolioObjective
@@ -329,12 +418,18 @@ class PortfolioOptimizer:
             alpha 单位和尺度；alpha 目标必须提供。
         initial_weight : pandas.Series
             链式序列首日的实际期初权重，以资产为索引。
+        benchmark_sid : str | None
+            外部数据源使用的基准指数标识；内存源的 benchmark 已经绑定，必须保持 ``None``。
         holding_period_returns : Any | None
             相邻调仓日之间的 close-to-close 复合收益；链式模式由序列引擎按标签读取。
         sequence_policy : SequencePolicy | None
             持仓漂移、失败、theta 传播和输出策略；``None`` 使用默认策略。
         independent_initial_weights : Any | None
             独立模式下按日期提供的期初权重。
+        benchmark_policy : BenchmarkCoveragePolicy | None
+            外部数据源处理基准覆盖缺口的显式策略；内存源已经绑定该策略。
+        tradable_universe : str | None
+            外部数据源可选的可交易域名称。
         extra_attribute_columns : tuple[str, ...]
             从 schedule 物化到 ``PortfolioData.extra_attributes`` 的列名。
 
@@ -354,9 +449,45 @@ class PortfolioOptimizer:
         if constraints.asset_trade is not None and not constraints.asset_trade.is_empty:
             raise ValueError(
                 "static asset_trade constraints are not accepted by optimize_range; "
-                "construct dated PortfolioProblem objects for date-specific instructions"
+                "use single-period optimize for operational asset instructions"
             )
 
+        from .data import InMemoryDataSource
+
+        if not isinstance(data_source, InMemoryDataSource):
+            if benchmark_sid is None:
+                raise ValueError("external data_source requires benchmark_sid")
+            resolved_policy = (
+                SequencePolicy() if sequence_policy is None else sequence_policy
+            )
+            prepared = data_source.prepare_sequence(
+                schedule=schedule,
+                benchmark_sid=benchmark_sid,
+                initial_weight=initial_weight,
+                objective=objective,
+                constraints=constraints,
+                alpha_spec=alpha_spec,
+                benchmark_policy=benchmark_policy,
+                independent_initial_weights=independent_initial_weights,
+                holding_period_returns=holding_period_returns,
+                require_holding_returns=resolved_policy.mode == "chained",
+                tradable_universe=tradable_universe,
+                extra_attribute_columns=extra_attribute_columns,
+            )
+            return self.solve_sequence(
+                prepared.run,
+                holding_period_returns=prepared.holding_period_returns,
+                sequence_policy=resolved_policy,
+            )
+        if (
+            benchmark_sid is not None
+            or benchmark_policy is not None
+            or tradable_universe is not None
+        ):
+            raise ValueError(
+                "benchmark_sid, benchmark_policy and tradable_universe are external-source "
+                "arguments; InMemoryDataSource already binds these data"
+            )
         prepared_run = data_source.prepare_run(
             schedule,
             objective=objective,
@@ -889,9 +1020,14 @@ class PortfolioOptimizer:
             value = metadata.get(field)
             if value is not None:
                 try:
-                    source_dates[label] = pd.Timestamp(value)
+                    parsed_date = pd.Timestamp(value)
                 except (TypeError, ValueError):
                     pass
+                else:
+                    # pandas 的类型声明允许 ``Timestamp(...)`` 返回 ``NaT``；来源日期映射
+                    # 只接受真实时间戳，避免把缺失日期写入审计结果。
+                    if isinstance(parsed_date, pd.Timestamp):
+                        source_dates[label] = parsed_date
         timings = SolveTimings(
             prepare_s=prepared.prepare_s,
             backend_setup_s=sum(item.setup_s for item in backend_results),

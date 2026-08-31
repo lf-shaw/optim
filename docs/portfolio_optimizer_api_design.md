@@ -301,8 +301,10 @@ legacy adapter 中；新核心不依赖调用顺序。强制 blacklist/freeze �
 时，交易指令只对该证券优先，并把原区间与豁免来源写入 registry；行业、风格、总主动和
 风险等组合级约束仍然有效。
 
-`optimize_range` 不允许把同一个非空一次性清单静态复制到所有日期。多期若需要每日不同的
-清单，应输入带日期的 `PortfolioProblem` 序列；freeze 等清单不会被 optimizer 隐式延续。
+`optimize_range` 不接受 `asset_trade`。blacklist、freeze 和单边交易依赖当日真实持仓、停牌
+及风控状态，属于单期实盘请求；多期研究接口不会假定调用方能够提前知道整段操作性名单。
+高级调用方仍可使用低层 `solve_sequence()` 显式提交每日完整 `PortfolioProblem`，但这不是
+普通多期 facade 的能力。
 
 ## 4. 两种数据入口
 
@@ -323,16 +325,20 @@ result = PortfolioOptimizer().solve(problem)
 
 适合单元测试、离线文件、其他数据平台和上层系统已经完成对齐的场景。
 
-多期手动入口允许保留原有 universe 用法：
+多期手动入口使用统一的数据源 facade，不要求调用方逐日构造问题：
 
 ```python
 series = optimizer.optimize_range(
-    universe=universe_with_alpha,  # MultiIndex (dt, sid) 决定调仓日
-    benchmark=benchmark_frame,
-    risk_data=InMemoryRiskModel(...),
+    data_source=InMemoryDataSource(
+        risk_data=risk_frames,
+        benchmark=benchmark_frame,
+    ),
+    schedule=PortfolioSchedule(universe_with_alpha),
     initial_weight=initial,
     objective=MaximizeAlpha(),
     constraints=constraints,
+    alpha_spec=AlphaSpec(),
+    holding_period_returns=close_to_close_returns,
 )
 ```
 
@@ -350,8 +356,8 @@ source = Tuda2DataSource(
     benchmark_weight_type="daily",
 )
 
-result = source.optimize(
-    optimizer,
+result = optimizer.optimize(
+    data_source=source,
     date="2025-04-30",
     universe=universe_with_alpha_for_one_date,
     benchmark_sid="000852.SH",
@@ -368,11 +374,13 @@ result = source.optimize(
 
 ```python
 series = optimizer.optimize_range(
-    universe=universe_with_alpha,   # dt 即唯一调仓日历
-    benchmark="000852.SH",
+    data_source=source,
+    schedule=PortfolioSchedule(universe_with_alpha),  # dt 即唯一调仓日历
+    benchmark_sid="000852.SH",
     initial_weight=initial,
     objective=MaximizeAlpha(),
     constraints=constraints,
+    alpha_spec=AlphaSpec(),
 )
 ```
 
@@ -453,20 +461,19 @@ risk_model_missing_holding_mass
 
 ```python
 series = optimizer.optimize_range(
-    since="2025-01-01",
-    until="2025-12-31",
-    alpha=alpha_frame,
-    benchmark="000852.SH",
+    data_source=Tuda2DataSource(risk_model="datayes"),
+    schedule=PortfolioSchedule(universe_with_alpha),
+    benchmark_sid="000852.SH",
     initial_weight=initial,
-    state=SequencePolicy(
+    sequence_policy=SequencePolicy(
         mode="chained",
-        holding_update="mark_to_market",
-        on_infeasible="stop",
+        on_failure="stop",
         turnover_recovery=None,
-        theta_seed="previous",
+        theta_seed="auto",
     ),
     objective=MaximizeAlpha(),
     constraints=constraints,
+    alpha_spec=AlphaSpec(),
 )
 ```
 

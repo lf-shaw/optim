@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import numpy as np
 import pandas as pd
 import pytest
@@ -281,11 +279,11 @@ def test_optimize_range_reuses_the_same_strict_memory_path():
     assert result.schedule_prepare_s > 0.0
 
 
-def test_tuda2_convenience_range_uses_common_lazy_core_path():
+def test_optimizer_range_facade_routes_tuda2_through_common_lazy_core_path():
     fake = _FakeTuda2()
     dates = pd.to_datetime(["2026-01-02", "2026-01-05"])
-    result = Tuda2DataSource(module=fake).optimize_range(
-        PortfolioOptimizer(),
+    result = PortfolioOptimizer().optimize_range(
+        data_source=Tuda2DataSource(module=fake),
         schedule=_schedule(),
         benchmark_sid="000852.SH",
         initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
@@ -303,8 +301,8 @@ def test_tuda2_default_fetches_each_full_range_once_and_reuses_it():
     fake = _FakeTuda2()
     source = Tuda2DataSource(module=fake)
     dates = tuple(pd.bdate_range("2026-01-02", periods=5).strftime("%Y-%m-%d"))
-    result = source.optimize_range(
-        PortfolioOptimizer(),
+    result = PortfolioOptimizer().optimize_range(
+        data_source=source,
         schedule=_schedule(dates),
         benchmark_sid="000852.SH",
         initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
@@ -327,8 +325,8 @@ def test_tuda2_default_fetches_each_full_range_once_and_reuses_it():
 def test_tuda2_tradability_is_fetched_once_for_the_full_range():
     fake = _FakeTuda2()
     dates = tuple(pd.bdate_range("2026-01-02", periods=5).strftime("%Y-%m-%d"))
-    result = Tuda2DataSource(module=fake).optimize_range(
-        PortfolioOptimizer(),
+    result = PortfolioOptimizer().optimize_range(
+        data_source=Tuda2DataSource(module=fake),
         schedule=_schedule(dates),
         benchmark_sid="000852.SH",
         initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
@@ -354,13 +352,9 @@ def test_tuda2_range_stops_after_full_preflight_before_returns_or_solver():
     missing = pd.Timestamp(dates[2])
     fake = _MissingMiddleBenchmarkTuda2(missing)
 
-    class _NeverSolve:
-        def solve_sequence(self, *args, **kwargs):
-            raise AssertionError("solver must not run after a preflight failure")
-
     with pytest.raises(PortfolioValidationError) as caught:
-        Tuda2DataSource(module=fake).optimize_range(
-            _NeverSolve(),
+        PortfolioOptimizer().optimize_range(
+            data_source=Tuda2DataSource(module=fake),
             schedule=_schedule(dates),
             benchmark_sid="000852.SH",
             initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
@@ -374,12 +368,12 @@ def test_tuda2_range_stops_after_full_preflight_before_returns_or_solver():
     assert len([call for call in fake.calls if call[0:2] == ("risk", "exposure")]) == 1
 
 
-def test_tuda2_single_period_path_applies_one_off_lists_without_return_fetch():
+def test_optimizer_single_facade_applies_tuda2_one_off_lists_without_return_fetch():
     fake = _FakeTuda2()
     date = pd.Timestamp("2026-01-02")
     universe = _schedule().day(date)
-    result = Tuda2DataSource(module=fake).optimize(
-        PortfolioOptimizer(),
+    result = PortfolioOptimizer().optimize(
+        data_source=Tuda2DataSource(module=fake),
         date=date,
         universe=universe,
         benchmark_sid="000852.SH",
@@ -392,3 +386,33 @@ def test_tuda2_single_period_path_applies_one_off_lists_without_return_fetch():
     assert result.status.has_solution
     assert result.require_weights()["a"] == pytest.approx(0.0, abs=1e-9)
     assert not [call for call in fake.calls if call[0] == "returns"]
+
+
+def test_optimizer_single_facade_requires_exactly_one_data_entry():
+    optimizer = PortfolioOptimizer()
+    common = {
+        "objective": MaximizeAlpha(),
+        "constraints": _constraints(),
+    }
+    with pytest.raises(ValueError, match="exactly one"):
+        optimizer.optimize(**common)
+    one_day_data = (
+        InMemoryDataSource(
+            risk_data=_frames(("2026-01-02",)),
+            benchmark=_benchmark(("2026-01-02",)),
+        )
+        .build_problem(
+            _schedule(("2026-01-02",)),
+            objective=MaximizeAlpha(),
+            constraints=_constraints(),
+            alpha_spec=AlphaSpec(),
+            initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
+        )
+        .data
+    )
+    with pytest.raises(ValueError, match="exactly one"):
+        optimizer.optimize(
+            data=one_day_data,
+            data_source=Tuda2DataSource(module=_FakeTuda2()),
+            **common,
+        )
