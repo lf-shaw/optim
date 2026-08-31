@@ -1,6 +1,6 @@
 # 统一组合优化器当前实现架构
 
-更新日期：2026-08-30。
+更新日期：2026-08-31。
 
 本文面向代码审阅，描述仓库当前实现，而不是未来目标态。后端选择依据见
 [`solver_backend_decision.md`](solver_backend_decision.md)，接口最初设计见
@@ -42,6 +42,11 @@
                          ▼
                   PortfolioOptimizer
                          │
+                _solver_adapter（一次转换）
+                         │
+                         ▼
+              _core.CoreSolver.solve
+                         │
           ┌──────────────┼──────────────────┐
           ▼              ▼                  ▼
        HiGHS LP       PIQP QP       factor-QCQP strategy
@@ -49,12 +54,15 @@
                               PIQP 参数 QP / 可选 HiGHS LP
                          │
                          ▼
-             evaluate_solution 独立验收
+            canonical 数值可行性复算
                          │
-                  失败且允许 fallback
+                  未通过且允许 fallback
                          │
            MOSEK ─不可用/失败→ Clarabel QDLDL
              └─不可行/无界→ 终止回退
+                         │
+                         ▼
+             evaluate_solution 业务验收
                          │
                          ▼
                OptimizationResult
@@ -69,11 +77,14 @@
 | 外部数据适配 | `integrations/tuda2.py` | 风险、benchmark、可交易性及 C2C 收益的批量 I/O |
 | 静态校验 | `validation.py` | shape、单位、日期、有限性、PSD、约束组合和交易清单预检 |
 | 单股域解析 | `asset_bounds.py` | 合并绝对/主动边界、黑名单、冻结、单边交易和非交易冻结 |
-| canonical model | `model/canonical.py` | $l\le Az\le u$、变量边界、QP 矩阵、风险算子和审计 registry |
+| canonical 上层契约 | `model/canonical.py` | 编译结果、fingerprint 与 core 数值 payload 的上层入口 |
 | 编译器 | `model/compiler.py` | 问题分类、辅助变量布局、稀疏约束与目标构造、fingerprint |
-| backend | `backends/*` | 极薄的 HiGHS/PIQP/MOSEK/Clarabel 调用及状态标准化 |
-| factor-QCQP | `factor_qcqp.py` | LP 严格预筛、参数 QP、theta 搜索、PIQP workspace 生命周期和 gap |
-| 统一入口 | `api.py` | prepare、路由、fallback、独立验收、清理、证书与结果组装 |
+| 数值核心契约 | `_core/canonical.py`、`_core/contracts.py` | 纯数值 canonical payload、core 状态和扁平选项；不依赖上层模块 |
+| backend | `_core/backends/*` | HiGHS/PIQP/MOSEK/Clarabel 调用及原生状态标准化 |
+| factor-QCQP | `_core/factor_qcqp.py` | LP 严格预筛、参数 QP、theta 搜索、PIQP workspace 生命周期和 gap |
+| core 路由 | `_core/engine.py` | 一次调用内完成分类路由、fallback 和 canonical 可行性复算 |
+| 内部适配 | `_solver_adapter.py` | 公共 policy/core options、状态、结果和证书之间的一次性映射 |
+| 统一入口 | `api.py` | prepare、单期/多期 facade 和显式诊断入口 |
 | 结果验收 | `solution.py` | 辅助变量重建、全部 canonical 约束与业务指标复算 |
 | 多期 | `sequence.py` | C2C 漂移、theta 传播、失败策略和显式换手恢复 |
 | 显式诊断 | `diagnostics.py` | Phase-I、线性最小换手、最小 TE 诊断 |
@@ -157,7 +168,8 @@ benchmark 在 universe 外存在任何非容差内的质量缺口时默认报错
 `prepare_run()` 会逐日物化并校验所有静态输入，聚合错误后返回轻量 manifest；它不会长期
 保存每天的 dense NumPy 风险数组。求解时 `problem_at()` 再物化当日数组，因此当前实现用
 一次额外的内存计算换取“昂贵序列开始前发现全部静态错误”。底层 pandas/tuda2 frame 已经
-一次性载入，不发生逐日远程 I/O。
+一次性载入，不发生逐日远程 I/O。全区间预检通过后，逐日热路径不会再次运行完整
+`validate_problem()`；链式模式替换的期初权重只来自序列引擎受控的 C2C 漂移。
 
 普通用户只调用统一 optimizer facade：单期使用 `optimizer.optimize(data=...)`，多期使用
 `optimizer.optimize_range(data_source=..., schedule=...)`。后者内部构造
@@ -251,23 +263,23 @@ $f$ 的单列，不再重复一份 dense $E^{\mathsf T}x$，从而减小 KKT 稀
 ```text
 prepare(problem)
     ├── validate_problem
-    └── compile_problem（仅在 valid 时）
+    └── 数值准备（仅在 valid 时）
              │
 solve_prepared
     ├── LP             -> HiGHS
     ├── QP             -> PIQP
     └── Factor-QCQP    -> factor frontier strategy
              │
+    canonical 数值复算未通过且为 QP/QCQP
+        ├── MOSEK（配置为 licensed fallback 时）
+        ├── MOSEK 不可行/无界 -> 保留确定状态并终止回退
+        └── MOSEK 不可用或求解失败 -> Clarabel QDLDL
+             │
     _audit_backend_result
         ├── evaluate_solution
         ├── 1e-5 小权重清理尝试
         ├── 清理后重建辅助变量
         └── 再次验收约束与 objective certificate
-             │
-    未通过且为 QP/QCQP
-        ├── MOSEK（配置为 licensed fallback 时）
-        ├── MOSEK 不可行/无界 -> 保留确定状态并终止回退
-        └── MOSEK 不可用或求解失败 -> Clarabel QDLDL
              │
     _result -> OptimizationResult
 ```
@@ -389,7 +401,7 @@ x_pretrade(t) = normalize(x_target(t-1) * (1 + return(t-1, t)))
 
 真实 v5 35 日开发机结果见
 [`v5_unified_optimizer_real_benchmark.md`](v5_unified_optimizer_real_benchmark.md)。当前 5200×47
-合成 factor-QCQP 的 warm `prepare()` 中位数约 0.046 秒。
+合成 factor-QCQP 的最新 warm `prepare()` 中位数约 0.041 秒。
 
 从用户调用角度审计单期、C2C 链式求解、结果读取和显式 deep diagnosis 的可运行范例见
 [`current_api_usage_audit_example.md`](current_api_usage_audit_example.md)。该范例只把 v5 当作真实
@@ -409,9 +421,10 @@ x_pretrade(t) = normalize(x_target(t-1) * (1 + return(t-1, t)))
    `ProblemFingerprint`。
 7. `SolveTimings.compile_s/postprocess_s` 尚未单独拆分，prepare 和 total 字段已经可用。
 8. 二阶段“近似 alpha 最优集合内最小化与上一期距离”尚未实现。
-9. `PreparedPortfolioProblem` 当前公开持有 `CompiledProblem`；未来做 Cython `_core` 保护时需要
-   改为 opaque handle，但本轮不改接口。
-10. 当前 `setup.py` 仍是旧单层 Cython 构建配置，不覆盖新子包；源代码保护改造尚未开始。
+9. `PreparedPortfolioProblem` 只公开 fingerprint、编译优化和耗时；数值准备状态是不可序列化
+   的 opaque handle。
+10. wheel 保留带内联类型的公共 Python facade 和 `py.typed`；`_core` 数值实现显式 Cython
+   编译，只保留包初始化入口，不分发实现模块对应的 `.py/.pyi/.c/.cpp` 或注解 HTML。
 
 这些条目应作为审阅后的实施清单，而不是在本轮文档整理中顺手改变。
 
@@ -422,8 +435,8 @@ x_pretrade(t) = normalize(x_target(t-1) * (1 + return(t-1, t)))
 1. `portfolio_types.py`：公共数据、目标、约束、policy 和结果语义；
 2. `validation.py`、`asset_bounds.py`：前置校验和交易约束优先级；
 3. `model/canonical.py`、`model/compiler.py`：统一数学模型；
-4. `api.py`：路由、fallback、独立验收和结果；
-5. `factor_qcqp.py`、`backends/piqp.py`：专用快速路径；
+4. `api.py`、`_solver_adapter.py`：公共入口及内部求解边界转换；
+5. `_core/engine.py`、`_core/factor_qcqp.py`、`_core/backends/piqp.py`：路由与专用快速路径；
 6. `solution.py`：solver-independent 正确性边界；
 7. `data/*`、`integrations/tuda2.py`、`sequence.py`：数据与多期状态推进；
 8. `diagnostics.py`：显式不可行诊断。

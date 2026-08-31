@@ -134,7 +134,8 @@ canonical template，只填充当日 `data/q/l/u`。这不改变既定的“PIQP
 factor/specific risk 后，同时生成 TE、敞口、certificate 和 metrics。不能让 strategy、backend、
 validator、reporter 各做一次相同矩阵乘法。
 
-全区间静态 schema/日期/PSD/覆盖率检查只在 prepare 做一次；逐日只补依赖动态持仓的检查。
+全区间静态 schema/日期/PSD/覆盖率检查只在 prepare 做一次；通过预检后逐日直接编译当日
+模板，不重复调用完整静态 validator。链式期初持仓由受控漂移生成并在生成时检查动态条件。
 deep infeasibility diagnostics 已确定为显式单问题调用，不进入正常优化计时路径。
 
 ## 7. 必须覆盖的性能测试

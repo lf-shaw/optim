@@ -9,6 +9,7 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
+from ._version import __version__
 from .portfolio_types import (
     AlignmentReport,
     AlphaSpec,
@@ -67,6 +68,7 @@ from .data import (
 )
 
 __all__ = [
+    "__version__",
     "AlignmentReport",
     "AlphaSpec",
     "AssetTradeConstraints",

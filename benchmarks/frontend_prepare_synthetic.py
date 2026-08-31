@@ -97,7 +97,7 @@ def main() -> None:
         prepared.validation.raise_for_errors()
         if repeat >= args.warmups:
             timings.append(elapsed)
-    assert prepared is not None and prepared.compiled is not None
+    assert prepared is not None and prepared.fingerprint is not None
     print(
         json.dumps(
             {
@@ -107,9 +107,8 @@ def main() -> None:
                 "median_prepare_s": statistics.median(timings),
                 "min_prepare_s": min(timings),
                 "max_prepare_s": max(timings),
-                "canonical_shape": prepared.compiled.model.domain.A.shape,
-                "canonical_nnz": prepared.compiled.model.domain.A.nnz,
-                "compiler_version": prepared.compiled.fingerprint.compiler_version,
+                "compiler_version": prepared.fingerprint.compiler_version,
+                "compiler_optimizations": prepared.compiler_optimizations,
             },
             indent=2,
         )

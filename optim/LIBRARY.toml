@@ -1,0 +1,175 @@
+# ============================================================
+# LIBRARY.toml — optim
+# 版本需与 optim/_version.py 和 setup.py 保持一致。
+# ============================================================
+
+[meta]
+name = "optim"
+display_name = "Optim Portfolio Optimizer"
+version = "3.0.0"
+summary = "面向 A 股因子风险模型的统一组合优化器：支持单期/多期、LP、风险惩罚 QP、Factor-QCQP、严格数据校验和不可行诊断"
+category = "optimization"
+tags = [
+    "portfolio-optimization",
+    "china-a-share",
+    "factor-risk-model",
+    "linear-programming",
+    "quadratic-programming",
+    "tracking-error",
+    "turnover",
+]
+maintainers = ["shaolf"]
+
+[recall]
+gotchas_priority = "high"
+recipes_priority = "high"
+
+[[symbols]]
+name = "optim.PortfolioOptimizer"
+signature = "PortfolioOptimizer(policy: SolverPolicy | None = None)"
+summary = "统一单期和多期优化入口；实例只保存求解策略，不保存持仓、样本空间或交易名单"
+group = "optimizer"
+
+[[symbols]]
+name = "optim.PortfolioOptimizer.solve"
+signature = "solve(problem: PortfolioProblem, *, theta_seed: float | None = None) -> OptimizationResult"
+summary = "校验并求解一个完整单期问题；不可行和数值失败返回结构化结果，不自动运行深度诊断"
+group = "optimizer"
+
+[[symbols]]
+name = "optim.PortfolioOptimizer.optimize"
+signature = "optimize(*, data=None, data_source=None, date=None, universe=None, benchmark_sid=None, initial_weight=None, objective, constraints=None, alpha_spec=None, asset_trade=None, blacklist=None, frozen=None, not_buyable=None, not_sellable=None, weight_overrides=None, benchmark_policy=None, tradable_universe=None, extra_attribute_columns=(), theta_seed=None) -> OptimizationResult"
+summary = "单期便利入口；支持手动 PortfolioData 或 Tuda2DataSource，以及仅对本次请求生效的交易名单"
+group = "optimizer"
+
+[[symbols]]
+name = "optim.PortfolioOptimizer.optimize_range"
+signature = "optimize_range(*, data_source, schedule, objective, constraints, alpha_spec, initial_weight, benchmark_sid=None, holding_period_returns=None, sequence_policy=None, independent_initial_weights=None, benchmark_policy=None, tradable_universe=None, extra_attribute_columns=()) -> PortfolioSequenceResult"
+summary = "多期入口；数据源全区间预检后逐日求解，链式模式按 close-to-close 收益推进真实期初持仓"
+group = "optimizer"
+
+[[symbols]]
+name = "optim.PortfolioOptimizer.diagnose"
+signature = "diagnose(problem: PortfolioProblem, *, prior_result: OptimizationResult | None = None, level='deep') -> InfeasibilityReport"
+summary = "显式诊断一个准确的不可行问题；普通失败路径不会自动调用"
+group = "diagnostics"
+
+[[symbols]]
+name = "optim.PortfolioProblem"
+signature = "PortfolioProblem(data: PortfolioData, objective: PortfolioObjective, constraints: PortfolioConstraints)"
+summary = "单次优化请求的不可变完整定义"
+group = "model"
+
+[[symbols]]
+name = "optim.PortfolioData"
+signature = "PortfolioData(date, assets, alpha, benchmark, initial_weight, tradable, risk_model=None, alpha_spec=None, extra_attributes={}, provenance=...)"
+summary = "严格同日、共用唯一 assets 位置坐标的单日数值输入"
+group = "model"
+
+[[symbols]]
+name = "optim.FactorRiskModel"
+signature = "FactorRiskModel(asof, exposure, covariance, specific_volatility, factor_names, factor_types, provenance=..., annualization='annualized_decimal')"
+summary = "因子暴露、年化小数因子协方差和年化小数特异波动率"
+group = "risk"
+
+[[symbols]]
+name = "optim.AlphaSpec"
+signature = "AlphaSpec(units='standardized_score', scale=1.0)"
+summary = "声明 alpha 的业务单位和证书归一化尺度；优化器不会猜测或转换 alpha 单位"
+group = "objective"
+
+[[symbols]]
+name = "optim.MaximizeAlpha"
+signature = "MaximizeAlpha()"
+summary = "最大化线性 alpha；无 TE 约束时为 LP，有 TE 约束时为 Factor-QCQP"
+group = "objective"
+
+[[symbols]]
+name = "optim.RiskAdjustedAlpha"
+signature = "RiskAdjustedAlpha(factor_aversion=0.75, specific_aversion=0.75)"
+summary = "最大化 alpha 并惩罚年化因子方差和特异方差"
+group = "objective"
+
+[[symbols]]
+name = "optim.MinimizeTrackingError"
+signature = "MinimizeTrackingError(alpha_floor=None)"
+summary = "最小化年化跟踪误差方差；alpha_floor=None 时 PortfolioData.alpha 可以为 None"
+group = "objective"
+
+[[symbols]]
+name = "optim.PortfolioConstraints"
+signature = "PortfolioConstraints(long_only=True, budget=1.0, asset_weight=WeightBounds(), active_weight=None, total_active=None, turnover=None, benchmark_member_weight=None, style=None, industry=None, tracking_error=None, freeze_nontradable=True, asset_trade=None, extra_active={}, extra_absolute={})"
+summary = "LP、QP 和 Factor-QCQP 共享的不可变可行域配置"
+group = "constraints"
+
+[[symbols]]
+name = "optim.AssetTradeConstraints"
+signature = "AssetTradeConstraints(blacklist=(), frozen=(), not_buyable=(), not_sellable=(), weight_overrides={}, missing_asset='error')"
+summary = "只对单次问题生效的黑名单、冻结、单边交易和逐资产权重覆盖"
+group = "constraints"
+
+[[symbols]]
+name = "optim.TurnoverLimit"
+signature = "TurnoverLimit(limit: float, convention='l1')"
+summary = "换手率定义为目标权重和期初权重之差的 L1 范数，不除以 2"
+group = "constraints"
+
+[[symbols]]
+name = "optim.TrackingErrorLimit"
+signature = "TrackingErrorLimit(annualized: float)"
+summary = "年化小数跟踪误差预算，例如 2% 写作 0.02"
+group = "constraints"
+
+[[symbols]]
+name = "optim.ExposureBounds"
+signature = "ExposureBounds(default=None, overrides={})"
+summary = "风格或行业主动敞口的默认上下限和逐因子覆盖"
+group = "constraints"
+
+[[symbols]]
+name = "optim.SolverPolicy"
+signature = "SolverPolicy(...)"
+summary = "目标证书、回退、LP 预筛和数值容差策略；通常使用默认值，仅按业务需要显式覆盖"
+group = "policy"
+
+[[symbols]]
+name = "optim.SequencePolicy"
+signature = "SequencePolicy(mode='chained', on_failure='stop', theta_seed='auto', turnover_recovery=None, output_weights='sparse', ...)"
+summary = "多期持仓漂移、失败处理、theta 传播、换手恢复和权重输出策略"
+group = "policy"
+
+[[symbols]]
+name = "optim.TurnoverRecoveryPolicy"
+signature = "TurnoverRecoveryPolicy(max_turnover: float, buffer=1e-5, require_turnover_only=True, reset_next_period=True)"
+summary = "显式授权结构性不可行日期可使用的最大换手率；默认不启用"
+group = "policy"
+
+[[symbols]]
+name = "optim.OptimizationResult"
+signature = "OptimizationResult(status, weights, objective_value, backend, route, metrics, certificate, violations, alignment, diagnostics, timings, fingerprint, message)"
+summary = "标准化单期结果；先检查 status.has_solution，再读取权重、指标、路线和证书"
+group = "result"
+
+[[symbols]]
+name = "optim.PortfolioSchedule"
+signature = "PortfolioSchedule(universe: pandas.DataFrame, alpha_column='alpha', tradable_column='tradable')"
+summary = "严格使用 (dt, sid) MultiIndex 的多期调仓日期、资产、alpha 和逐资产属性计划"
+group = "data"
+
+[[symbols]]
+name = "optim.InMemoryDataSource"
+signature = "InMemoryDataSource(*, risk_data: FactorRiskFrames, benchmark, benchmark_policy=None)"
+summary = "从已加载的严格同日批量风险模型和基准权重准备单期或多期问题"
+group = "data"
+
+[[symbols]]
+name = "optim.BenchmarkCoveragePolicy"
+signature = "BenchmarkCoveragePolicy(action='error', missing_mass_tolerance=0.0, weight_sum_tolerance=1e-8)"
+summary = "基准覆盖缺口默认报错；只有显式选择 renormalize_within_tolerance 才允许阈值内归一化"
+group = "data"
+
+[[symbols]]
+name = "optim.integrations.tuda2.Tuda2DataSource"
+signature = "Tuda2DataSource(risk_model='datayes', benchmark_weight_type='daily', module=None)"
+summary = "批量调用 tuda2 风险模型、指数权重和日度 C2C 收益接口的数据适配器"
+group = "data"

@@ -8,8 +8,6 @@
 from __future__ import annotations
 
 import math
-from typing import Any
-
 import numpy as np
 
 from .model.canonical import CompiledProblem, FactorQCQP, QuadraticProgram

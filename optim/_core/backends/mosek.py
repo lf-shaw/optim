@@ -9,8 +9,11 @@ from typing import Any
 import numpy as np
 import scipy.sparse as sp
 
-from ..model.canonical import FactorQCQP, QuadraticProgram
-from ..portfolio_types import FailureReason, SolveStatus
+from ..canonical import FactorQCQP, QuadraticProgram
+from ..contracts import (
+    CoreFailureReason as FailureReason,
+    CoreSolveStatus as SolveStatus,
+)
 from .base import BackendOptions, BackendResult
 
 

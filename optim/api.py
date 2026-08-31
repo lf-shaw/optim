@@ -1,61 +1,30 @@
-"""统一组合优化器的公共编排层。
+"""统一组合优化器的公共接口。
 
-本模块负责一个数学请求的完整生命周期：校验、编译、后端路由、独立验收返回向量、必要时
-尝试回退后端，并构造 :class:`OptimizationResult`。业务模型构造保留在
-``portfolio_types``/``model.compiler``，原生求解器细节保留在 ``backends``。该边界十分重要：
-后端报告 ``solved`` 从来不足以直接返回组合权重。
-
-单期和多期便捷接口都是同一不可变 :class:`PortfolioProblem` 之上的无状态 facade；实盘请求
-传入的黑名单等临时指令不会保留在 :class:`PortfolioOptimizer` 中。
+模块提供单期与多期问题的组装、前置校验、求解和诊断入口。所有请求都基于不可变的
+:class:`PortfolioProblem`；实盘请求传入的黑名单等临时指令不会保留在优化器实例中。
 """
 
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
-import numpy as np
 import pandas as pd
 
-from .backends import (
-    BackendOptions,
-    ClarabelBackend,
-    HighsBackend,
-    MosekBackend,
-    PIQPBackend,
-)
-from .backends.base import BackendResult
-from .factor_qcqp import solve_factor_qcqp
-from .model import (
-    CompiledProblem,
-    FactorQCQP,
-    LinearProgram,
-    QuadraticProgram,
-    compile_problem,
-)
+from .model import compile_problem
+from ._solver_adapter import SolverAdapter
 from .portfolio_types import (
-    AlignmentReport,
     AssetTradeConstraints,
-    ConstraintViolation,
-    FailureReason,
-    MaximizeAlpha,
-    OptimalityCertificate,
     OptimizationResult,
-    PortfolioMetrics,
     PortfolioConstraints,
     PortfolioData,
     PortfolioObjective,
     PortfolioProblem,
-    ProofStatus,
-    RiskAdjustedAlpha,
+    ProblemFingerprint,
     SequencePolicy,
-    SolveStatus,
-    SolveTimings,
-    SolverAttempt,
     SolverPolicy,
 )
-from .solution import evaluate_solution, lift_weights
 from .validation import ValidationReport, validate_problem
 
 if TYPE_CHECKING:
@@ -71,11 +40,10 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class PreparedPortfolioProblem:
-    """已校验问题及其与求解器无关的 canonical 表示。
+    """已完成前置校验和数值准备的单期问题。
 
-    输入无效时仍返回对象，但 ``compiled=None``，调用方可在不建立后端的情况下查看完整
-    :class:`ValidationReport`。``prepare_s`` 包含静态校验和 canonical 编译。当前为审阅与
-    诊断直接暴露 ``compiled``；未来二进制 ``_core`` 分发可将其改为不透明句柄。
+    输入无效时仍返回对象，调用方可以查看完整 :class:`ValidationReport`。有效问题同时提供
+    fingerprint、已应用的等价结构优化标识和准备耗时。
 
     Attributes
     ----------
@@ -83,45 +51,26 @@ class PreparedPortfolioProblem:
         原始不可变业务问题。
     validation : ValidationReport
         在任何后端建立前生成的聚合静态校验报告。
-    compiled : CompiledProblem | None
-        校验通过后的 canonical 模型；存在错误时为 ``None``。
+    fingerprint : ProblemFingerprint | None
+        校验通过后的语义/canonical 身份；存在错误时为 ``None``。
+    compiler_optimizations : tuple[str, ...]
+        私有编译器实际采用、且已证明数学等价的结构优化标识。
     prepare_s : float
         校验和编译的合计 wall-clock 秒数。
+    _solver_handle : object | None
+        优化器内部使用的短生命周期准备状态；调用方不得读取、序列化或跨进程复用。
     """
 
     problem: PortfolioProblem
     validation: ValidationReport
-    compiled: CompiledProblem | None
+    fingerprint: ProblemFingerprint | None
+    compiler_optimizations: tuple[str, ...]
     prepare_s: float
-
-
-@dataclass(frozen=True)
-class _Evaluation:
-    """内部使用的单次后端候选解独立验收结果。
-
-    Attributes
-    ----------
-    metrics : PortfolioMetrics
-        从候选向量独立复算的业务指标。
-    violations : tuple
-        超过验收容差的 canonical 约束违约记录。
-    max_violation : float
-        全部行约束和变量边界中的最大绝对违约量。
-    accepted : bool
-        候选解是否通过独立数值验收。
-    validation_s : float
-        独立复算与可选权重清理耗费的 wall-clock 秒数。
-    """
-
-    metrics: PortfolioMetrics
-    violations: tuple
-    max_violation: float
-    accepted: bool
-    validation_s: float
+    _solver_handle: object | None = field(default=None, repr=False, compare=False)
 
 
 class PortfolioOptimizer:
-    """编译、路由、求解并独立验收组合优化问题。
+    """准备、求解并验收单期或多期组合优化问题。
 
     实例只保存不可变的求解策略，不累计 universe、基准、持仓、黑名单、workspace 或多期状态，
     因而可以安全地跨请求复用。
@@ -139,6 +88,7 @@ class PortfolioOptimizer:
 
     def __init__(self, policy: SolverPolicy | None = None):
         self.policy = SolverPolicy() if policy is None else policy
+        self._solver = SolverAdapter(self.policy)
 
     def validate(self, problem: PortfolioProblem) -> ValidationReport:
         """聚合输入及模型的低成本静态问题，不编译也不求解。
@@ -157,10 +107,9 @@ class PortfolioOptimizer:
         return validate_problem(problem)
 
     def prepare(self, problem: PortfolioProblem) -> PreparedPortfolioProblem:
-        """在建立后端前校验请求，并在有效时编译 canonical 模型。
+        """校验请求，并在有效时创建可重复求解的准备对象。
 
-        编译过程与求解器无关，并同时计算 semantic 和 canonical fingerprint。由于本方法已经
-        产生同一份校验报告，调用 ``compile_problem`` 时不会重复校验。
+        本方法同时生成问题 fingerprint 和完整校验报告；校验失败时不会执行求解准备。
 
         Parameters
         ----------
@@ -175,14 +124,60 @@ class PortfolioOptimizer:
 
         started = time.perf_counter()
         report = validate_problem(problem)
-        compiled = None
+        solver_handle = None
+        fingerprint = None
+        compiler_optimizations: tuple[str, ...] = ()
         if report.is_valid:
-            compiled = compile_problem(problem, validate=False)
+            solver_handle = self._solver.prepare(
+                compile_problem(problem, validate=False)
+            )
+            fingerprint, compiler_optimizations = self._solver.metadata(
+                solver_handle
+            )
         return PreparedPortfolioProblem(
             problem=problem,
             validation=report,
-            compiled=compiled,
+            fingerprint=fingerprint,
+            compiler_optimizations=compiler_optimizations,
             prepare_s=time.perf_counter() - started,
+            _solver_handle=solver_handle,
+        )
+
+    def _prepare_prevalidated(
+        self,
+        problem: PortfolioProblem,
+    ) -> PreparedPortfolioProblem:
+        """编译已通过序列全区间预检的问题，不重复执行静态校验。
+
+        该入口仅供序列状态机使用。序列层必须先验证全部模板；链式模式随后只会把模板中的
+        期初权重替换为由受控持仓漂移生成、坐标和预算均已确定的向量。
+        """
+
+        started = time.perf_counter()
+        solver_handle = self._solver.prepare(
+            compile_problem(problem, validate=False)
+        )
+        fingerprint, compiler_optimizations = self._solver.metadata(solver_handle)
+        return PreparedPortfolioProblem(
+            problem=problem,
+            validation=ValidationReport(),
+            fingerprint=fingerprint,
+            compiler_optimizations=compiler_optimizations,
+            prepare_s=time.perf_counter() - started,
+            _solver_handle=solver_handle,
+        )
+
+    def _solve_prevalidated(
+        self,
+        problem: PortfolioProblem,
+        *,
+        theta_seed: float | None = None,
+    ) -> OptimizationResult:
+        """求解已由序列状态机预检的问题，避免逐日重复静态校验。"""
+
+        return self.solve_prepared(
+            self._prepare_prevalidated(problem),
+            theta_seed=theta_seed,
         )
 
     def solve(
@@ -573,15 +568,13 @@ class PortfolioOptimizer:
             ``level`` 不受支持，或 ``prior_result`` 不属于同一问题。
         """
 
-        from .diagnostics import diagnose_problem
-
         prepared = self.prepare(problem)
         prepared.validation.raise_for_errors()
-        assert prepared.compiled is not None
-        return diagnose_problem(
+        if prepared._solver_handle is None:
+            raise RuntimeError("valid prepared problem has no solver handle")
+        return self._solver.diagnose(
             problem,
-            prepared.compiled,
-            self.policy,
+            prepared._solver_handle,
             prior_result=prior_result,
             level=level,
         )
@@ -592,17 +585,15 @@ class PortfolioOptimizer:
         *,
         theta_seed: float | None = None,
     ) -> OptimizationResult:
-        """路由一个 canonical 模型并验收每次主求解和回退尝试。
+        """求解一个已经完成前置校验和数值准备的问题。
 
-        当前路由刻意保持显式：LP 使用 HiGHS，QP 使用 PIQP，factor-QCQP 使用专用 frontier
-        策略。QP/QCQP 候选未通过验收时先尝试配置的 MOSEK；MOSEK 给出不可行或无界等确定
-        数学状态时立即停止，只有 MOSEK 不可用或自身求解失败时才尝试 Clarabel。所有回退求解
-        完全相同的 ``CompiledProblem`` 并经过同一独立验收；LP 当前没有回退路径。
+        结果会统一给出求解状态、可用权重、约束违约、最优性证据、求解路线和分阶段耗时，
+        调用方不需要根据问题类型选择具体求解方法。
 
         Parameters
         ----------
         prepared : PreparedPortfolioProblem
-            ``prepare`` 返回的校验及 canonical 编译结果。
+            ``prepare`` 返回的校验、审计元信息和内部准备状态。
         theta_seed : float | None
             factor-QCQP 的可选 theta 初始值。
 
@@ -616,477 +607,17 @@ class PortfolioOptimizer:
         PortfolioValidationError
             ``prepared`` 含静态校验错误。
         RuntimeError
-            校验有效但缺少 canonical 模型，表示准备对象内部不一致。
+            校验有效但缺少内部准备状态，表示准备对象不一致。
         TypeError
-            canonical 模型类型尚无路由实现。
+            句柄不是由当前核心版本创建，或内部数学结构尚无路由实现。
         """
 
-        total_started = time.perf_counter()
         prepared.validation.raise_for_errors()
-        if prepared.compiled is None:
-            raise RuntimeError("valid prepared problem has no canonical model")
-        compiled = prepared.compiled
-        model = compiled.model
-        options = self._backend_options()
-
-        if isinstance(model, LinearProgram):
-            primary = HighsBackend().solve(model, options)
-        elif isinstance(model, QuadraticProgram):
-            primary = PIQPBackend().solve(model, options)
-        elif isinstance(model, FactorQCQP):
-            assert prepared.problem.data.alpha_spec is not None
-            primary = solve_factor_qcqp(
-                model,
-                self.policy,
-                theta_seed=theta_seed,
-                objective_tolerance=self.policy.objective_tolerance.raw_limit(
-                    prepared.problem.data.alpha_spec
-                ),
-            )
-        else:
-            raise TypeError(f"unsupported canonical model: {type(model).__name__}")
-
-        attempts: list[BackendResult] = []
-        primary, evaluation = self._audit_backend_result(prepared, primary)
-        attempts.append(primary)
-        if not evaluation.accepted and isinstance(
-            model, (QuadraticProgram, FactorQCQP)
-        ):
-            licensed_terminal = False
-            if self.policy.licensed_fallback.lower() == "mosek":
-                fallback = MosekBackend().solve(model, options)
-                fallback, evaluation = self._audit_backend_result(prepared, fallback)
-                attempts.append(fallback)
-                licensed_terminal = _has_definitive_mathematical_status(fallback)
-            if (
-                not evaluation.accepted
-                and not licensed_terminal
-                and self.policy.free_fallback.lower() in {"clarabel", "clarabel_qdldl"}
-            ):
-                fallback = ClarabelBackend().solve(model, options)
-                fallback, evaluation = self._audit_backend_result(prepared, fallback)
-                attempts.append(fallback)
-        return self._result(prepared, attempts, evaluation, total_started)
-
-    def _backend_options(self) -> BackendOptions:
-        tuning = self.policy.tuning
-        return BackendOptions(
-            max_iter=tuning.piqp_max_iter,
-            eps_abs=tuning.final_eps,
-            eps_rel=tuning.final_eps,
-            objective_scale_target=tuning.alpha_target,
-            inequality_form=tuning.piqp_inequality_form,
-        )
-
-    def _audit_backend_result(
-        self,
-        prepared: PreparedPortfolioProblem,
-        backend_result: BackendResult,
-    ) -> tuple[BackendResult, _Evaluation]:
-        """将求解器原生结果转换为经独立验收的结果。
-
-        审计从返回向量重新计算 canonical 行、变量边界、跟踪风险和业务指标。可行的原始解
-        随后可以执行单独审计的小权重清理。数值验收失败统一规范化为
-        ``INVALID_NUMERICS``，使路由逻辑不依赖各后端的状态术语。
-        """
-
-        assert prepared.compiled is not None
-        validation_started = time.perf_counter()
-        metrics = PortfolioMetrics()
-        violations: tuple[ConstraintViolation, ...] = ()
-        max_violation = 0.0
-        accepted = (
-            backend_result.status.has_solution and backend_result.primal is not None
-        )
-        if accepted:
-            assert backend_result.primal is not None
-            metrics, violations, max_violation = evaluate_solution(
-                prepared.problem,
-                prepared.compiled,
-                backend_result.primal,
-            )
-            accepted = max_violation <= self.policy.tuning.feasibility_tolerance
-            if not accepted:
-                backend_result = replace(
-                    backend_result,
-                    status=SolveStatus.NUMERICAL_ERROR,
-                    reason=FailureReason.INVALID_NUMERICS,
-                    message=(
-                        f"backend solution failed independent validation: max violation "
-                        f"{max_violation:.3e}"
-                    ),
-                )
-            else:
-                backend_result, metrics, violations, max_violation = (
-                    self._clean_solution(
-                        prepared,
-                        backend_result,
-                        metrics,
-                        violations,
-                        max_violation,
-                    )
-                )
-        return backend_result, _Evaluation(
-            metrics,
-            violations,
-            max_violation,
-            accepted,
-            time.perf_counter() - validation_started,
-        )
-
-    def _clean_solution(
-        self,
-        prepared: PreparedPortfolioProblem,
-        backend_result: BackendResult,
-        raw_metrics: PortfolioMetrics,
-        raw_violations: tuple,
-        raw_max_violation: float,
-    ) -> tuple[BackendResult, PortfolioMetrics, tuple, float]:
-        """仅在证书仍然成立时应用 0.1bp 输出阈值。
-
-        绝对值小于 ``weight_zero_tolerance`` 的权重置零，其余权重重新缩放至配置预算。
-        修改权重后先重建全部辅助变量，再复算约束和指标。如果清理后的向量不可行，或其
-        目标损失使 LP/前沿证书超过调用方容差，则丢弃清理结果并保留原始解。
-        """
-
-        assert prepared.compiled is not None
-        assert backend_result.primal is not None
-        domain = prepared.compiled.model.domain
-        raw_weight = backend_result.primal[domain.weight_indices]
-        tolerance = self.policy.tuning.weight_zero_tolerance
-        small = np.abs(raw_weight) < tolerance
-        removed_l1 = float(np.abs(raw_weight[small]).sum())
-        if not np.any(small) or removed_l1 == 0.0:
-            return backend_result, raw_metrics, raw_violations, raw_max_violation
-        cleaned = raw_weight.copy()
-        cleaned[small] = 0.0
-        cleaned_sum = float(cleaned.sum())
-        if abs(cleaned_sum) <= 1e-15:
-            return backend_result, raw_metrics, raw_violations, raw_max_violation
-        cleaned *= prepared.problem.constraints.budget / cleaned_sum
-        cleaned_vector = lift_weights(prepared.problem, prepared.compiled, cleaned)
-        metrics, violations, max_violation = evaluate_solution(
+        if prepared._solver_handle is None:
+            raise RuntimeError("valid prepared problem has no solver handle")
+        return self._solver.solve(
             prepared.problem,
-            prepared.compiled,
-            cleaned_vector,
-        )
-        diagnostics = dict(backend_result.diagnostics)
-        diagnostics.update(
-            {
-                "weight_cleanup_threshold": tolerance,
-                "weight_cleanup_removed_l1": removed_l1,
-                "weight_cleanup_count": int(small.sum()),
-                "weight_cleanup_applied": max_violation
-                <= self.policy.tuning.feasibility_tolerance,
-            }
-        )
-        if max_violation > self.policy.tuning.feasibility_tolerance:
-            return (
-                replace(backend_result, diagnostics=diagnostics),
-                raw_metrics,
-                raw_violations,
-                raw_max_violation,
-            )
-        cleanup_loss = 0.0
-        if raw_metrics.objective is not None and metrics.objective is not None:
-            if isinstance(
-                prepared.problem.objective, (MaximizeAlpha, RiskAdjustedAlpha)
-            ):
-                cleanup_loss = max(0.0, raw_metrics.objective - metrics.objective)
-            else:
-                cleanup_loss = max(0.0, metrics.objective - raw_metrics.objective)
-        diagnostics["weight_cleanup_objective_loss"] = cleanup_loss
-        certificate_sensitive = bool(
-            "total_gap" in diagnostics
-            or diagnostics.get("lp_prescreen_certified") is True
-            or isinstance(prepared.compiled.model, LinearProgram)
-        )
-        if certificate_sensitive:
-            prior_gap = float(diagnostics.get("total_gap", 0.0))
-            certified_gap = prior_gap + cleanup_loss
-            diagnostics["certified_objective_gap"] = certified_gap
-            if "total_gap" in diagnostics:
-                diagnostics["total_gap"] = certified_gap
-            diagnostics["cleanup_objective_loss"] = cleanup_loss
-            alpha_spec = prepared.problem.data.alpha_spec
-            if alpha_spec is not None:
-                accepted_gap = self.policy.objective_tolerance.raw_limit(alpha_spec)
-                if certified_gap > accepted_gap:
-                    diagnostics["weight_cleanup_applied"] = False
-                    diagnostics["certified_objective_gap"] = prior_gap
-                    if "total_gap" in diagnostics:
-                        diagnostics["total_gap"] = prior_gap
-                    return (
-                        replace(backend_result, diagnostics=diagnostics),
-                        raw_metrics,
-                        raw_violations,
-                        raw_max_violation,
-                    )
-        return (
-            replace(backend_result, primal=cleaned_vector, diagnostics=diagnostics),
-            metrics,
-            violations,
-            max_violation,
-        )
-
-    def _result(
-        self,
-        prepared: PreparedPortfolioProblem,
-        backend_results: list[BackendResult],
-        evaluation: _Evaluation,
-        total_started: float,
-    ) -> OptimizationResult:
-        """将最终求解尝试规范化为公共不可变结果契约。
-
-        证书类型反映实际路由：LP 预筛选证明、因子前沿 Lagrangian 估计、锥规划
-        primal/dual 间隙、精确 LP 目标或后端估计。高容量 theta 轨迹不写入公共路由
-        元数据，但保留可审计的聚合诊断。
-        """
-
-        assert prepared.compiled is not None
-        compiled = prepared.compiled
-        problem = prepared.problem
-        backend_result = backend_results[-1]
-        metrics = evaluation.metrics
-        violations = evaluation.violations
-        max_violation = evaluation.max_violation
-        accepted = evaluation.accepted
-        status = backend_result.status
-        message = backend_result.message
-        if not accepted and not message:
-            message = _default_failure_message(backend_result)
-
-        weights = None
-        objective_value = None
-        certificate = None
-        if accepted and backend_result.primal is not None:
-            weight = backend_result.primal[compiled.model.domain.weight_indices]
-            weights = pd.Series(
-                weight.copy(),
-                index=pd.Index(compiled.model.domain.assets, name="sid"),
-                name="weight",
-            )
-            objective_value = metrics.objective
-            assert objective_value is not None
-            if (
-                isinstance(compiled.model, FactorQCQP)
-                and backend_result.diagnostics.get("lp_prescreen_certified") is True
-            ):
-                alpha_spec = problem.data.alpha_spec
-                assert alpha_spec is not None
-                certified_gap = float(
-                    backend_result.diagnostics.get("certified_objective_gap", 0.0)
-                )
-                certificate = OptimalityCertificate(
-                    kind="lp_global_optimum_feasible_for_factor_qcqp",
-                    proof_status=ProofStatus.VERIFIED,
-                    primal_value=float(objective_value),
-                    dual_bound=float(objective_value) + certified_gap,
-                    absolute_gap=certified_gap,
-                    normalized_gap=certified_gap / alpha_spec.scale,
-                    objective_units=alpha_spec.units,
-                    objective_scale=alpha_spec.scale,
-                    components={
-                        "weight_cleanup_objective_loss": certified_gap,
-                        "max_constraint_violation": max_violation,
-                    },
-                )
-            elif (
-                isinstance(compiled.model, FactorQCQP)
-                and "total_gap" in backend_result.diagnostics
-            ):
-                total_gap = float(backend_result.diagnostics["total_gap"])
-                alpha_spec = problem.data.alpha_spec
-                assert alpha_spec is not None
-                alpha_scale = alpha_spec.scale
-                certificate = OptimalityCertificate(
-                    kind="factor_qcqp_lagrangian",
-                    proof_status=ProofStatus.NUMERICAL_ESTIMATE,
-                    primal_value=float(objective_value),
-                    dual_bound=float(objective_value) + total_gap,
-                    absolute_gap=total_gap,
-                    normalized_gap=total_gap / alpha_scale,
-                    objective_units=alpha_spec.units,
-                    objective_scale=alpha_scale,
-                    components={
-                        "frontier_slack_gap": float(
-                            backend_result.diagnostics["frontier_gap"]
-                        ),
-                        "qp_subproblem_gap": float(
-                            backend_result.diagnostics["subproblem_gap"]
-                        ),
-                        "max_constraint_violation": max_violation,
-                    },
-                )
-            elif isinstance(compiled.model, FactorQCQP):
-                native_gap = backend_result.diagnostics.get("native_gap_unscaled")
-                native_gap = None if native_gap is None else float(native_gap)
-                alpha_spec = problem.data.alpha_spec
-                assert alpha_spec is not None
-                alpha_scale = alpha_spec.scale
-                certificate = OptimalityCertificate(
-                    kind="conic_primal_dual",
-                    proof_status=(
-                        ProofStatus.VERIFIED
-                        if native_gap is not None
-                        else ProofStatus.UNAVAILABLE
-                    ),
-                    primal_value=float(objective_value),
-                    dual_bound=(
-                        float(objective_value) + native_gap
-                        if native_gap is not None
-                        else None
-                    ),
-                    absolute_gap=native_gap,
-                    normalized_gap=(
-                        native_gap / alpha_scale if native_gap is not None else None
-                    ),
-                    objective_units=alpha_spec.units,
-                    objective_scale=alpha_scale,
-                    components={"max_constraint_violation": max_violation},
-                )
-            else:
-                proof_status = (
-                    ProofStatus.VERIFIED
-                    if isinstance(compiled.model, LinearProgram)
-                    and backend_result.status == SolveStatus.OPTIMAL
-                    else ProofStatus.NUMERICAL_ESTIMATE
-                )
-                certified_gap = float(
-                    backend_result.diagnostics.get("certified_objective_gap", 0.0)
-                )
-                certificate = OptimalityCertificate(
-                    kind=(
-                        "backend_primal_dual"
-                        if proof_status is ProofStatus.VERIFIED
-                        else "backend_kkt"
-                    ),
-                    proof_status=proof_status,
-                    primal_value=float(objective_value),
-                    dual_bound=(
-                        float(objective_value) + certified_gap
-                        if proof_status is ProofStatus.VERIFIED
-                        else None
-                    ),
-                    absolute_gap=(
-                        certified_gap if proof_status is ProofStatus.VERIFIED else None
-                    ),
-                    normalized_gap=(
-                        certified_gap / problem.data.alpha_spec.scale
-                        if proof_status is ProofStatus.VERIFIED
-                        and problem.data.alpha_spec is not None
-                        else None
-                    ),
-                    objective_units=(
-                        problem.data.alpha_spec.units
-                        if problem.data.alpha_spec is not None
-                        else "annualized_decimal"
-                    ),
-                    objective_scale=(
-                        problem.data.alpha_spec.scale
-                        if problem.data.alpha_spec is not None
-                        else None
-                    ),
-                    components={"max_constraint_violation": max_violation},
-                )
-
-        route = tuple(
-            SolverAttempt(
-                backend=item.backend,
-                status=item.status,
-                reason=item.reason,
-                native_status=item.native_status,
-                message=item.message,
-                solve_s=item.solve_s,
-                recovered=bool(item.diagnostics.get("workspace_rebuilds", 0)),
-                metadata={
-                    key: value
-                    for key, value in item.diagnostics.items()
-                    if key != "trace"
-                },
-            )
-            for item in backend_results
-        )
-        source_dates = {"portfolio": problem.data.date}
-        if problem.data.provenance.source_date is not None:
-            source_dates["portfolio_source"] = problem.data.provenance.source_date
-        if problem.data.risk_model is not None:
-            source_dates["risk_model"] = problem.data.risk_model.asof
-        metadata = problem.data.provenance.metadata
-        for field, label in (
-            ("benchmark_source_date", "benchmark"),
-            ("alpha_source_date", "alpha"),
-        ):
-            value = metadata.get(field)
-            if value is not None:
-                try:
-                    parsed_date = pd.Timestamp(value)
-                except (TypeError, ValueError):
-                    pass
-                else:
-                    # pandas 的类型声明允许 ``Timestamp(...)`` 返回 ``NaT``；来源日期映射
-                    # 只接受真实时间戳，避免把缺失日期写入审计结果。
-                    if isinstance(parsed_date, pd.Timestamp):
-                        source_dates[label] = parsed_date
-        timings = SolveTimings(
+            prepared._solver_handle,
             prepare_s=prepared.prepare_s,
-            backend_setup_s=sum(item.setup_s for item in backend_results),
-            backend_solve_s=sum(item.solve_s for item in backend_results),
-            validation_s=evaluation.validation_s,
-            total_s=time.perf_counter() - total_started + prepared.prepare_s,
+            theta_seed=theta_seed,
         )
-        return OptimizationResult(
-            status=status,
-            weights=weights,
-            objective_value=objective_value,
-            backend=backend_result.backend if accepted else None,
-            route=route,
-            metrics=metrics,
-            certificate=certificate,
-            violations=violations,
-            alignment=AlignmentReport(
-                benchmark_missing_mass=_metadata_float(
-                    metadata, "benchmark_missing_mass", 0.0
-                ),
-                benchmark_renormalization_factor=_metadata_float(
-                    metadata, "benchmark_renormalization_factor", 1.0
-                ),
-                holding_missing_mass=_metadata_float(
-                    metadata, "holding_missing_mass", 0.0
-                ),
-                source_dates=source_dates,
-            ),
-            diagnostics=None,
-            timings=timings,
-            fingerprint=compiled.fingerprint,
-            message=message,
-        )
-
-
-def _metadata_float(metadata, key: str, default: float) -> float:
-    try:
-        value = float(metadata.get(key, default))
-    except (TypeError, ValueError):
-        return default
-    return value if np.isfinite(value) else default
-
-
-def _has_definitive_mathematical_status(result: BackendResult) -> bool:
-    """判断商业回退是否已经给出不应被免费后端覆盖的确定数学状态。"""
-
-    return result.status in {SolveStatus.INFEASIBLE, SolveStatus.UNBOUNDED}
-
-
-def _default_failure_message(result: BackendResult) -> str:
-    """在后端没有提供文本时，为最终失败生成可读且可审计的摘要。"""
-
-    status_text = {
-        SolveStatus.INFEASIBLE: "报告 canonical 问题不可行",
-        SolveStatus.UNBOUNDED: "报告 canonical 问题无界",
-        SolveStatus.LIMIT_REACHED: "达到求解限制",
-        SolveStatus.NUMERICAL_ERROR: "发生数值错误",
-        SolveStatus.RESOURCE_ERROR: "发生资源错误",
-        SolveStatus.SOLVER_ERROR: "求解失败",
-    }.get(result.status, f"返回状态 {result.status.value}")
-    native = f"；原生状态：{result.native_status}" if result.native_status else ""
-    return f"{result.backend} {status_text}{native}"

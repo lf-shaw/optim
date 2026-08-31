@@ -19,11 +19,12 @@ from optim import (
     WeightBounds,
 )
 from optim import DataProvenance
-from optim.backends import resolve_piqp_inequality_form
-from optim.backends.base import BackendResult
-from optim.factor_qcqp import _extend_as_parametric_qp
+from optim._core.backends.piqp import resolve_piqp_inequality_form
+from optim._core.backends.base import BackendResult
+from optim._core.factor_qcqp import _extend_as_parametric_qp
 from optim.portfolio_types import FailureReason
-from optim.model import FactorQCQP, LinearProgram, QuadraticProgram, compile_problem
+from optim._core.canonical import FactorQCQP, LinearProgram, QuadraticProgram
+from optim.model import compile_problem
 
 
 def test_compiler_classifies_lp_qp_and_factor_qcqp(sample_data, sample_constraints):
@@ -278,10 +279,10 @@ def test_factor_qcqp_falls_back_to_clarabel_when_mosek_cannot_solve(
         reason=mosek_reason,
     )
     monkeypatch.setattr(
-        "optim.api.solve_factor_qcqp", lambda *args, **kwargs: failed_primary
+        "optim._core.engine.solve_factor_qcqp", lambda *args, **kwargs: failed_primary
     )
     monkeypatch.setattr(
-        "optim.api.MosekBackend.solve", lambda *args, **kwargs: failed_mosek
+        "optim._core.engine.MosekBackend.solve", lambda *args, **kwargs: failed_mosek
     )
     constraints = replace(
         sample_constraints,
@@ -327,14 +328,14 @@ def test_mosek_infeasible_is_terminal_and_skips_clarabel(
         )
 
     monkeypatch.setattr(
-        "optim.api.solve_factor_qcqp",
+        "optim._core.engine.solve_factor_qcqp",
         lambda *args, **kwargs: failed_primary,
     )
     monkeypatch.setattr(
-        "optim.api.MosekBackend.solve",
+        "optim._core.engine.MosekBackend.solve",
         lambda *args, **kwargs: infeasible_mosek,
     )
-    monkeypatch.setattr("optim.api.ClarabelBackend.solve", unexpected_clarabel)
+    monkeypatch.setattr("optim._core.engine.ClarabelBackend.solve", unexpected_clarabel)
     constraints = replace(
         sample_constraints,
         tracking_error=TrackingErrorLimit(annualized=0.03),
@@ -375,9 +376,9 @@ def test_invalid_primary_solution_is_rejected_before_fallback(
         native_status="forced_no_license",
         reason=FailureReason.BACKEND_UNAVAILABLE,
     )
-    monkeypatch.setattr("optim.api.PIQPBackend.solve", invalid_piqp)
+    monkeypatch.setattr("optim._core.engine.PIQPBackend.solve", invalid_piqp)
     monkeypatch.setattr(
-        "optim.api.MosekBackend.solve", lambda *args, **kwargs: failed_mosek
+        "optim._core.engine.MosekBackend.solve", lambda *args, **kwargs: failed_mosek
     )
     result = PortfolioOptimizer().solve(
         PortfolioProblem(sample_data, RiskAdjustedAlpha(), sample_constraints)

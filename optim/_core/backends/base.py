@@ -13,7 +13,10 @@ from typing import Any, Mapping, Protocol
 
 import numpy as np
 
-from ..portfolio_types import FailureReason, SolveStatus
+from ..contracts import (
+    CoreFailureReason as FailureReason,
+    CoreSolveStatus as SolveStatus,
+)
 
 
 @dataclass(frozen=True)

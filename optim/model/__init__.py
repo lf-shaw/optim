@@ -1,6 +1,7 @@
-"""canonical 数学模型与组合问题编译器。"""
+"""组合问题的 canonical 编译入口。"""
 
 from .canonical import (
+    CanonicalKind,
     CanonicalModel,
     CompiledProblem,
     ConstraintRecord,
@@ -11,10 +12,11 @@ from .canonical import (
     QuadraticProgram,
     VariableRecord,
 )
-from .compiler import CanonicalCompilationError, compile_problem, classify_problem
+from .compiler import CanonicalCompilationError, classify_problem, compile_problem
 
 __all__ = [
     "CanonicalCompilationError",
+    "CanonicalKind",
     "CanonicalModel",
     "CompiledProblem",
     "ConstraintRecord",

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -10,8 +9,11 @@ from typing import Any
 import numpy as np
 import scipy.sparse as sp
 
-from ..model.canonical import FactorQCQP, LinearDomain, QuadraticProgram
-from ..portfolio_types import FailureReason, SolveStatus
+from ..canonical import FactorQCQP, LinearDomain, QuadraticProgram
+from ..contracts import (
+    CoreFailureReason as FailureReason,
+    CoreSolveStatus as SolveStatus,
+)
 from .base import BackendOptions, BackendResult
 
 

@@ -31,6 +31,7 @@ from ..portfolio_types import (
 )
 from ..validation import validate_problem
 from .canonical import (
+    CanonicalKind,
     CompiledProblem,
     CanonicalModel,
     ConstraintRecord,
@@ -724,7 +725,7 @@ def _compile_lp(problem: PortfolioProblem) -> tuple[LinearProgram, tuple[str, ..
     assert problem.data.alpha is not None
     c = np.zeros(domain.n_variables, dtype=float)
     c[domain.weight_indices] = -np.asarray(problem.data.alpha, dtype=float)
-    return LinearProgram(ProblemKind.LP, domain, c), tuple(builder.optimizations)
+    return LinearProgram(CanonicalKind.LP, domain, c), tuple(builder.optimizations)
 
 
 def _compile_qp(problem: PortfolioProblem) -> tuple[QuadraticProgram, tuple[str, ...]]:
@@ -797,7 +798,7 @@ def _compile_qp(problem: PortfolioProblem) -> tuple[QuadraticProgram, tuple[str,
     )
     return (
         QuadraticProgram(
-            kind=ProblemKind.QP,
+            kind=CanonicalKind.QP,
             domain=domain,
             P=P,
             q=q,
@@ -821,7 +822,7 @@ def _compile_factor_qcqp(problem: PortfolioProblem) -> tuple[FactorQCQP, tuple[s
     builder.add_common_constraints()
     domain = builder.finish()
     model = FactorQCQP(
-        kind=ProblemKind.FACTOR_QCQP,
+        kind=CanonicalKind.FACTOR_QCQP,
         domain=domain,
         alpha=np.asarray(problem.data.alpha, dtype=float),
         risk_operator=_risk_operator(problem, domain),

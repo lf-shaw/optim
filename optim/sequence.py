@@ -250,7 +250,9 @@ def solve_sequence(
             )
 
         theta_seed = _theta_seed(policy, previous_theta, optimizer.policy.tuning.theta_initial)
-        result = optimizer.solve(problem, theta_seed=theta_seed)
+        # 全部模板已经在进入循环前完成静态校验。链式模式此处只替换由受控漂移产生的
+        # initial_weight，因此直接编译并求解，避免每个日期重复扫描风险矩阵和约束数组。
+        result = optimizer._solve_prevalidated(problem, theta_seed=theta_seed)
         recovered = False
         recovery_report = None
         configured_turnover = None

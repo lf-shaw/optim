@@ -25,6 +25,8 @@ psutil>=6,<8
 
 # Local build and test tooling
 Cython>=3,<4
+build>=1.2,<2
+wheel>=0.43,<1
 mypy>=1.11,<2
 pytest>=8,<10
 

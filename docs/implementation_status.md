@@ -1,6 +1,6 @@
 # 统一组合优化器实施状态
 
-更新日期：2026-08-30。本文用于周期性检查实现是否偏离已经冻结的架构和产品 policy。
+更新日期：2026-08-31。本文用于周期性检查实现是否偏离已经冻结的架构和产品 policy。
 
 面向代码审阅、严格按当前源码行为整理的分层、调用链、数学转换与已知边界见
 [`current_implementation_architecture.md`](current_implementation_architecture.md)。本文继续只维护
@@ -23,6 +23,8 @@
 | 手动数据 | 严格 `(dt,sid)`、同日 risk/benchmark/alpha、显式覆盖策略 | data-source tests |
 | 长序列 manifest | `PreparedPortfolioRun` 先逐日聚合预检、求解时仅物化当前日 | range tests |
 | tuda2 | 延迟导入；风险/基准/收益均全区间一次读取并复用；C2C 收益区间复合 | fake-adapter I/O tests |
+| 二进制核心 | 公共 Python facade + `py.typed`；数值 `_core` 选择性 Cython 编译且无 stub/source 分发 | 架构、wheel 与全量行为回归 |
+| AI 语料 | wheel 内置 `LIBRARY.toml` 及 `references/api_overview.md`、`recipes.md`、`gotchas.md` | TOML、版本和 wheel 内容检查 |
 
 正常求解失败返回结构化 `OptimizationResult`，用于批量统计、fallback 审计和按
 fingerprint 选择单日 deep 诊断；需要异常式取权重时调用 `result.require_weights()`。
@@ -33,7 +35,7 @@ fingerprint 选择单日 deep 诊断；需要异常式取权重时调用 `result
 1. 文档曾遗留“benchmark 缺口在阈值内默认归一化”，已修正为：任何缺口默认报错；只有
    显式选择 `renormalize_within_tolerance` 才允许阈值内归一化，超过阈值始终报错。
 2. Clarabel 运行依赖明确使用官方 `clarabel==0.11.1`。历史自编译 MKL wheel 只属于后端
-   benchmark 证据，不是生产要求；PIQP wheel 则必须保留项目修复标记。
+   benchmark 证据，不是生产要求；PIQP 强制使用已合入上游修复的官方 `piqp>=0.6.4`。
 3. factor-QCQP 公共风险单位保持年化 decimal。frontier 内部乘 10,000 只用于延续已测 theta
    数值尺度，certificate 已按相同尺度还原，不改变原模型或公开 TE。
 4. PIQP 每日重新建立 workspace；只有同一日 theta continuation 更新 q。修复后的 wheel 不做
@@ -46,6 +48,12 @@ fingerprint 选择单日 deep 诊断；需要异常式取权重时调用 `result
 6. tuda2 是本地 FizzDB 快速 I/O，风险模型、基准和日收益按完整优化区间各一次取足，预检后
    直接复用；因子名称元数据按 data source 缓存。组合优化的数据规模由日期数、样本空间和
    固定因子数决定，可在运行前估算，因此核心接口不增加 chunk/LRU 分支和重复 I/O。
+7. `_core` 依赖方向已冻结为单向：上层只通过 `_core` 根入口构造数值 payload、options 和
+   solve handle；core 不得导入 `portfolio_types/api/validation/diagnostics`。固定 policy 每个
+   optimizer 转换一次，多期每日只跨边界调用一次，theta continuation 不跨层往返。
+8. 多期问题在首个求解前完成全区间静态预检；逐日热路径直接编译经过预检的模板，不再重复
+   扫描风险矩阵和约束数组。链式模式每日唯一变化的期初权重由受控 C2C 漂移生成。
+9. 新架构发行版本从 `3.0.0` 开始；包内版本、wheel 元数据和 AI catalog 由自动测试保持一致。
 
 ## 单期实盘入口
 
@@ -105,8 +113,8 @@ resolver 改用共享不可变来源 tuple，普通资产 metadata 使用 `None`
 intern 不可变审计 mapping；只有黑名单、冻结等例外证券持有独立 metadata。数学模型、审计
 字段和 canonical fingerprint 覆盖范围不变。
 
-同一开发机 5200×47 合成 factor-QCQP 的 9 次 warm `prepare()` median 约 0.0459 秒
-（范围 0.0406–0.0731 秒），相比逐资产 metadata 优化前约 0.065 秒下降约 29%。该数字受
+同一开发机 5200×47 合成 factor-QCQP 的最新 7 次 warm `prepare()` median 约 0.0408 秒
+（范围 0.0368–0.0642 秒），相比逐资产 metadata 优化前约 0.065 秒下降约 37%。该数字受
 开发机调度波动影响，应持续以生产机 p50/p95 gate 为准。
 
 真实 v5 35 日独立冷启动（绝对权重 `[0,1]`、active cap 1%、风格 ±0.6、行业 ±0.05）：

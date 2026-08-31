@@ -22,7 +22,8 @@ import scipy.sparse as sp
 from .backends.base import BackendOptions, BackendResult
 from .backends.highs import HighsBackend
 from .backends.piqp import _constraint_data, resolve_piqp_inequality_form
-from .model.canonical import (
+from .canonical import (
+    CanonicalKind,
     ConstraintRecord,
     FactorQCQP,
     LinearDomain,
@@ -30,7 +31,11 @@ from .model.canonical import (
     QuadraticProgram,
     VariableRecord,
 )
-from .portfolio_types import AlphaSpec, FailureReason, ProblemKind, SolveStatus, SolverPolicy
+from .contracts import (
+    CoreFailureReason as FailureReason,
+    CoreSolveStatus as SolveStatus,
+    CoreSolverOptions,
+)
 
 
 # 公共风险输入使用年化小数单位。生产 theta 配置最初按百分数风险校准，其方差是小数
@@ -86,13 +91,13 @@ class _ParametricPIQPWorkspace:
     workspace 有意不跨日期共享。
     """
 
-    def __init__(self, model: QuadraticProgram, policy: SolverPolicy):
+    def __init__(self, model: QuadraticProgram, policy: CoreSolverOptions):
         import piqp
 
         self.piqp = piqp
         self.model = model
         self.policy = policy
-        self.form = resolve_piqp_inequality_form(policy.tuning.piqp_inequality_form)
+        self.form = resolve_piqp_inequality_form(policy.piqp_inequality_form)
         self.equality, self.equality_rhs, self.inequality, self.inequality_lower, self.inequality_upper = (
             _constraint_data(model, self.form)
         )
@@ -114,7 +119,7 @@ class _ParametricPIQPWorkspace:
         solver.settings.eps_rel = tolerance
         solver.settings.eps_duality_gap_abs = tolerance
         solver.settings.eps_duality_gap_rel = tolerance
-        solver.settings.max_iter = self.policy.tuning.piqp_max_iter
+        solver.settings.max_iter = self.policy.piqp_max_iter
         solver.settings.compute_timings = True
         started = time.perf_counter()
         solver.setup(
@@ -414,7 +419,7 @@ def _extend_as_parametric_qp(
     alpha_solver = np.zeros(n_variables, dtype=float)
     alpha_solver[base.weight_indices] = centered_alpha * alpha_scale
     qp = QuadraticProgram(
-        kind=ProblemKind.QP,
+        kind=CanonicalKind.QP,
         domain=extended_domain,
         P=P,
         q=q_base,
@@ -426,10 +431,10 @@ def _extend_as_parametric_qp(
 
 def solve_factor_qcqp(
     model: FactorQCQP,
-    policy: SolverPolicy,
+    policy: CoreSolverOptions,
     *,
     theta_seed: float | None = None,
-    objective_tolerance: float | None = None,
+    objective_tolerance: float,
 ) -> BackendResult:
     """求解因子 QCQP，并可选地用外层 LP 提供最优性证书。
 
@@ -442,12 +447,12 @@ def solve_factor_qcqp(
     ----------
     model : FactorQCQP
         已编译的单风险预算因子 QCQP。
-    policy : SolverPolicy
+    policy : CoreSolverOptions
         后端路由、前沿搜索和数值容差策略。
     theta_seed : float | None
         首个 theta 候选值；``None`` 使用策略默认值。
-    objective_tolerance : float | None
-        原始 alpha 单位下允许的绝对证书间隙；``None`` 按策略和 alpha 规格计算。
+    objective_tolerance : float
+        上层已经换算为原始 alpha 单位的绝对证书间隙。
 
     Returns
     -------
@@ -504,24 +509,23 @@ def solve_factor_qcqp(
 
 def _solve_lp_prescreen(
     model: FactorQCQP,
-    policy: SolverPolicy,
+    policy: CoreSolverOptions,
 ) -> tuple[BackendResult, float | None, bool]:
     """求解精确外层 LP，并检查保留风险裕量的 TE 证书。"""
 
     c = np.zeros(model.domain.n_variables, dtype=float)
     c[model.domain.weight_indices] = -np.asarray(model.alpha, dtype=float)
     lp = LinearProgram(
-        kind=ProblemKind.LP,
+        kind=CanonicalKind.LP,
         domain=model.domain,
         c=c,
     )
-    tuning = policy.tuning
     result = HighsBackend().solve(
         lp,
         BackendOptions(
-            max_iter=tuning.piqp_max_iter,
-            eps_abs=tuning.final_eps,
-            eps_rel=tuning.final_eps,
+            max_iter=policy.piqp_max_iter,
+            eps_abs=policy.final_eps,
+            eps_rel=policy.final_eps,
         ),
     )
     if result.status is not SolveStatus.OPTIMAL or result.primal is None:
@@ -530,17 +534,17 @@ def _solve_lp_prescreen(
     tracking_error = math.sqrt(max(0.0, variance))
     certified = bool(
         np.isfinite(tracking_error)
-        and tracking_error <= max(0.0, model.risk_limit - tuning.risk_margin)
+        and tracking_error <= max(0.0, model.risk_limit - policy.risk_margin)
     )
     return result, tracking_error, certified
 
 
 def _solve_factor_qcqp_frontier(
     model: FactorQCQP,
-    policy: SolverPolicy,
+    policy: CoreSolverOptions,
     *,
     theta_seed: float | None = None,
-    objective_tolerance: float | None = None,
+    objective_tolerance: float,
 ) -> BackendResult:
     r"""通过带保护的一维搜索求解因子 QCQP。
 
@@ -556,7 +560,7 @@ def _solve_factor_qcqp_frontier(
     仅仅得到接近预算的 TE 值并不构成停止证书。
     """
 
-    tuning = policy.tuning
+    tuning = policy
     started = time.perf_counter()
     try:
         qp, alpha_solver, alpha_scale, alpha_dispersion = _extend_as_parametric_qp(model)
@@ -579,8 +583,6 @@ def _solve_factor_qcqp_frontier(
     risk_budget_variance = model.risk_limit * model.risk_limit
     target_risk = max(0.0, model.risk_limit - tuning.risk_margin)
     target_variance = target_risk * target_risk
-    if objective_tolerance is None:
-        objective_tolerance = policy.objective_tolerance.raw_limit(_UNIT_ALPHA_SPEC)
     deadline = None
     # 公共总时间上限将通过 SolverPolicy 单独加入，而不会复用 PIQP 的逐 QP 迭代控制。
 
@@ -893,6 +895,3 @@ def _failure_result(
             "trace": tuple(workspace.trace),
         },
     )
-
-
-_UNIT_ALPHA_SPEC = AlphaSpec(units="unspecified", scale=1.0)

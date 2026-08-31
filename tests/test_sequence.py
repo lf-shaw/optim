@@ -85,6 +85,31 @@ def test_sequence_prechecks_all_required_return_dates_before_solving(
     assert called is False
 
 
+def test_sequence_does_not_repeat_static_validation_inside_daily_loop(
+    sample_lp_problem, monkeypatch
+):
+    """全区间预检后，每日热路径不得再次扫描完整静态输入。"""
+
+    second = _next_day(sample_lp_problem)
+    optimizer = PortfolioOptimizer()
+    original_validate = optimizer.validate
+    validated_dates = []
+
+    def counted_validate(problem):
+        validated_dates.append(problem.data.date)
+        return original_validate(problem)
+
+    monkeypatch.setattr(optimizer, "validate", counted_validate)
+    result = optimizer.solve_sequence(
+        [sample_lp_problem, second],
+        holding_period_returns={
+            second.data.date: pd.Series(0.0, index=sample_lp_problem.data.assets)
+        },
+    )
+    assert result.stopped_date is None
+    assert validated_dates == [sample_lp_problem.data.date, second.data.date]
+
+
 def test_factor_sequence_propagates_previous_theta(sample_lp_problem):
     first = replace(
         sample_lp_problem,
@@ -183,6 +208,9 @@ def test_factor_turnover_recovery_searches_full_convex_feasibility_boundary(
                     fingerprint=fingerprint,
                 )
             return replace(solved_template, fingerprint=fingerprint)
+
+        def _solve_prevalidated(self, candidate, *, theta_seed=None):
+            return self.solve(candidate, theta_seed=theta_seed)
 
         def diagnose(self, candidate, *, prior_result, level):
             return InfeasibilityReport(

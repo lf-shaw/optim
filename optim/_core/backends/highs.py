@@ -7,8 +7,11 @@ from typing import Any
 
 import numpy as np
 
-from ..model.canonical import LinearProgram
-from ..portfolio_types import FailureReason, SolveStatus
+from ..canonical import LinearProgram
+from ..contracts import (
+    CoreFailureReason as FailureReason,
+    CoreSolveStatus as SolveStatus,
+)
 from .base import BackendOptions, BackendResult
 
 
