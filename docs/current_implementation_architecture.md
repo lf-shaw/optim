@@ -377,6 +377,10 @@ x_pretrade(t) = normalize(x_target(t-1) * (1 + return(t-1, t)))
 [`v5_unified_optimizer_real_benchmark.md`](v5_unified_optimizer_real_benchmark.md)。当前 5200×47
 合成 factor-QCQP 的 warm `prepare()` 中位数约 0.046 秒。
 
+从用户调用角度审计单期、C2C 链式求解、结果读取和显式 deep diagnosis 的可运行范例见
+[`current_api_usage_audit_example.md`](current_api_usage_audit_example.md)。该范例只把 v5 当作真实
+输入样本，不把 v5 文件格式纳入公共 API 契约。
+
 ## 11. 当前已知边界与审阅关注点
 
 以下项目是当前真实边界，不能从已冻结的 contract 推断为已经实现：
