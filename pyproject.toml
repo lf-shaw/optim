@@ -5,10 +5,10 @@
 
 [build-system]
 requires = [
-    "setuptools>=69",
+    "setuptools>=77.0.3",
     "wheel",
     "Cython>=3,<4",
-    "setuptools-scm>=8,<10",
+    "setuptools-scm>=10.0.2,<11",
 ]
 build-backend = "setuptools.build_meta"
 
@@ -18,7 +18,7 @@ dynamic = ["version"]
 description = "面向 A 股因子风险模型的统一组合优化器"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "Proprietary"}
+license = "LicenseRef-Proprietary"
 authors = [{name = "shaolf"}]
 keywords = [
     "portfolio-optimization",
@@ -32,7 +32,6 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
-    "License :: Other/Proprietary License",
     "Operating System :: POSIX :: Linux",
 ]
 dependencies = [

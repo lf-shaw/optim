@@ -27,7 +27,9 @@ psutil>=6,<8
 Cython>=3,<4
 build>=1.2,<2
 wheel>=0.43,<1
-setuptools-scm>=8,<10
+setuptools>=77.0.3
+# 10.0.2 恢复了 10.0 切换 version_file 写入时机后的可编辑安装兼容性。
+setuptools-scm>=10.0.2,<11
 mypy>=1.11,<2
 pytest>=8,<10
 
