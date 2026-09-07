@@ -154,6 +154,10 @@ class Tuda2DataSource:
         exposure_raw = module.get_risk_model(
             "exposure", dts=requested, version=self.risk_model
         )
+
+        if "country" not in exposure_raw.columns:  # 如果原始数据不包含国家因子，补齐
+            exposure_raw.loc[:, "country"] = 1.0
+
         covariance = module.get_risk_model(
             "cov", dts=requested, version=self.risk_model
         )
