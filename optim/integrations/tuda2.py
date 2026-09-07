@@ -106,7 +106,7 @@ class Tuda2DataSource:
 
         module = self._module()
         try:
-            schema = module.get_risk_model_schema(model_type=self.risk_model)
+            schema = module.get_risk_model_schema(model=self.risk_model)
         except AttributeError as exc:
             raise Tuda2UnavailableError(
                 "installed tuda2 does not provide get_risk_model_schema; "
@@ -170,13 +170,11 @@ class Tuda2DataSource:
         # 有时候我们是每日优化，日期是完备的，再传入 dts 会减低数据读取效率。
 
         exposure_raw = module.get_risk_model(
-            "exposure", dts=requested, version=self.risk_model
+            "exposure", dts=requested, model=self.risk_model
         )
-        covariance = module.get_risk_model(
-            "cov", dts=requested, version=self.risk_model
-        )
+        covariance = module.get_risk_model("cov", dts=requested, model=self.risk_model)
         specific = module.get_risk_model(
-            "spec_risk", dts=requested, version=self.risk_model
+            "spec_risk", dts=requested, model=self.risk_model
         )
         _validate_covariance_schema(covariance, factor_order)
         exposure, virtual_constants = _expand_exposure(
@@ -507,7 +505,7 @@ class Tuda2DataSource:
             return import_module("tuda2")
         except ImportError as exc:
             raise Tuda2UnavailableError(
-                "tuda2>=2.0.33 is required by this optional integration; "
+                "tuda2>=2.0.40 is required by this optional integration; "
                 "install optim[tuda2]"
             ) from exc
 
@@ -633,8 +631,7 @@ def _validate_covariance_schema(
     missing = sorted(row_factors - set(columns))
     if missing:
         raise ValueError(
-            "tuda2 covariance columns do not cover row factors: "
-            f"{missing[:10]}"
+            f"tuda2 covariance columns do not cover row factors: {missing[:10]}"
         )
 
 

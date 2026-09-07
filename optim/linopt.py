@@ -540,14 +540,19 @@ def optimize(
     if constraint_extra_attrs_active:
         for k, v in constraint_extra_attrs_active.items():
             s.set_extra_attr_constrain(
-                v[0], v[1], extra_attrs[k].to_numpy(), is_active=True  # type: ignore
+                v[0],
+                v[1],
+                extra_attrs[k].to_numpy(),
+                is_active=True,  # type: ignore
             )
 
     if constraint_extra_attrs_abs:
-
         for k, v in constraint_extra_attrs_abs.items():
             s.set_extra_attr_constrain(
-                v[0], v[1], extra_attrs[k].to_numpy(), is_active=False  # type: ignore
+                v[0],
+                v[1],
+                extra_attrs[k].to_numpy(),
+                is_active=False,  # type: ignore
             )
 
     # 5 设置全部主动股票之和
@@ -648,7 +653,8 @@ def optimize(
             if active_ub is not None:
                 # 更新主动权重绝对值上限
                 _active_ub_[i] = max(
-                    abs(ww[0] - bench_arr[i]), abs(ww[1] - bench_arr[i])  # type: ignore
+                    abs(ww[0] - bench_arr[i]),
+                    abs(ww[1] - bench_arr[i]),  # type: ignore
                 )
 
     # 14 设置资产上限
@@ -844,9 +850,7 @@ def multioptimize(
             # TODO 检查日期覆盖度
         else:
             # 提取
-            exposure = tuda2.get_risk_model(
-                "exposure", since=opt_dts[0], version="cne5"
-            )
+            exposure = tuda2.get_risk_model("exposure", since=opt_dts[0], model="cne5")
 
         styles = carry.utils.reindex(exposure, index=universe.index)
         industry = styles.pop("industry")
@@ -870,7 +874,7 @@ def multioptimize(
                 # TODO 检查日期覆盖度
             else:
                 industry = tuda2.get_risk_model(
-                    "exposure", since=opt_dts[0], version="cne5", factor_type="industry"
+                    "exposure", since=opt_dts[0], model="cne5", factor_type="industry"
                 )["industry"]
             industry = carry.utils.reindex(industry, index=universe.index)
         industries = pd.get_dummies(industry, dtype=float)
@@ -961,7 +965,6 @@ def multioptimize(
 
         # 多期优化时要更新初始持仓
         if rtn is not None:
-
             if init_portfolio is not None:
                 # 丢弃 index 中的 dt
                 rtn_ = rtn.iloc[start : start + length].reset_index("dt", drop=True)
@@ -1045,7 +1048,6 @@ def multioptimize(
             if __turnover_limit is not None and turnover_limit_relax_range is not None:
                 # 放弃换手率约束
                 if turnover_limit_relax_range[0] == 0:
-
                     try:
                         opted_daily = optimize(
                             dt,

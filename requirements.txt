@@ -13,7 +13,7 @@ bottleneck>=1.4,<2
 tqdm>=4.66,<5
 
 # Optional standard data integration used by the full development/test environment
-tuda2>=2.0.33
+tuda2>=2.0.40
 
 # Production solver backends
 highspy>=1.15,<2

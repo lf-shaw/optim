@@ -255,7 +255,7 @@ attempt 覆盖此前证据”：MOSEK 给出的确定数学状态优先于后续
 - MOSEK 是可选商业 extra，运行到对应路由时才导入并检查 license；
 - Clarabel 是可选免费 fallback extra；
 - tuda2 是可选数据集成，不属于数学求解核心；需要时通过 `optim[tuda2]` 安装，最低版本为
-  2.0.33；
+  2.0.40；
 - CVXPY 不进入 LP/QP/factor-QP fast path。第一版可作为低频通用 fallback 的建模层，
   后续再决定是否改为 MOSEK/Clarabel 原生锥接口。
 

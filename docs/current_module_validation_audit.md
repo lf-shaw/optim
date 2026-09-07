@@ -198,7 +198,7 @@ CNE5 风格和行业列表。
 新版应统一由 universe/schedule 指定调仓日期，并通过当前 tuda2：
 
 ```python
-get_risk_model("exposure" / "cov" / "spec_risk", dts=dates, version=...)
+get_risk_model("exposure" / "cov" / "spec_risk", dts=dates, model=...)
 ```
 
 读取指定模型，因子名称来自风险模型元数据，不能硬编码。

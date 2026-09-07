@@ -389,9 +389,9 @@ series = optimizer.optimize_range(
 `Tuda2DataSource` 应批量调用：
 
 ```python
-tuda2.get_risk_model("exposure", ..., version="datayes")
-tuda2.get_risk_model("cov", ..., version="datayes")
-tuda2.get_risk_model("spec_risk", ..., version="datayes")
+tuda2.get_risk_model("exposure", ..., model="datayes")
+tuda2.get_risk_model("cov", ..., model="datayes")
+tuda2.get_risk_model("spec_risk", ..., model="datayes")
 tuda2.get_risk_model_factor_names(...)
 tuda2.get_index_weight(...)
 tuda2.get_universe(...)

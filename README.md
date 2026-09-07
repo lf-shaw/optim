@@ -48,7 +48,7 @@ python -m pip install -r requirements.txt
 python -m pip install "optim[tuda2]"
 ```
 
-该 extra 要求 `tuda2>=2.0.33`，以提供统一风险模型 schema、稳定资产顺序和跨历史行业分类
+该 extra 要求 `tuda2>=2.0.40`，以提供统一的 `model` 参数、风险模型 schema、稳定资产顺序和跨历史行业分类
 制度的协方差坐标契约。
 
 ---

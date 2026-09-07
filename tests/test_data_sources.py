@@ -143,8 +143,8 @@ class _FakeTuda2:
     def __init__(self):
         self.calls = []
 
-    def get_risk_model(self, kind, *, dts, version):
-        self.calls.append(("risk", kind, tuple(pd.DatetimeIndex(dts)), version))
+    def get_risk_model(self, kind, *, dts, model):
+        self.calls.append(("risk", kind, tuple(pd.DatetimeIndex(dts)), model))
         dates = pd.DatetimeIndex(dts)
         if kind == "exposure":
             index = pd.MultiIndex.from_product([dates, ["a", "b"]], names=["dt", "sid"])
@@ -165,12 +165,12 @@ class _FakeTuda2:
         index = pd.MultiIndex.from_product([dates, ["a", "b"]], names=["dt", "sid"])
         return pd.DataFrame({"spec_risk": 0.10}, index=index)
 
-    def get_risk_model_factor_names(self, kind, *, model_type):
-        self.calls.append(("factor_names", kind, model_type))
+    def get_risk_model_factor_names(self, kind, *, model):
+        self.calls.append(("factor_names", kind, model))
         return ["size"] if kind == "style" else ["bank", "tech"]
 
-    def get_risk_model_schema(self, model_type):
-        self.calls.append(("risk_schema", model_type))
+    def get_risk_model_schema(self, model):
+        self.calls.append(("risk_schema", model))
         return {
             "factor_order": ["country", "size", "bank", "tech"],
             "factor_types": {
@@ -302,16 +302,16 @@ def test_factor_risk_frames_align_exposure_and_specific_risk_by_asset_label():
 
 
 class _PhysicalCountryTuda2(_FakeTuda2):
-    def get_risk_model(self, kind, *, dts, version):
-        frame = super().get_risk_model(kind, dts=dts, version=version)
+    def get_risk_model(self, kind, *, dts, model):
+        frame = super().get_risk_model(kind, dts=dts, model=model)
         if kind == "exposure":
             frame.insert(0, "country", 1.0)
         return frame
 
 
 class _InvalidCountryTuda2(_FakeTuda2):
-    def get_risk_model(self, kind, *, dts, version):
-        frame = super().get_risk_model(kind, dts=dts, version=version)
+    def get_risk_model(self, kind, *, dts, model):
+        frame = super().get_risk_model(kind, dts=dts, model=model)
         if kind == "exposure":
             frame.insert(0, "country", [1.0, 0.0] * len(pd.DatetimeIndex(dts)))
         return frame
@@ -320,8 +320,8 @@ class _InvalidCountryTuda2(_FakeTuda2):
 class _HistoricDataYesTuda2(_FakeTuda2):
     """模拟跨越行业分类变更日的 DataYes 批量协方差布局。"""
 
-    def get_risk_model(self, kind, *, dts, version):
-        self.calls.append(("risk", kind, tuple(pd.DatetimeIndex(dts)), version))
+    def get_risk_model(self, kind, *, dts, model):
+        self.calls.append(("risk", kind, tuple(pd.DatetimeIndex(dts)), model))
         dates = pd.DatetimeIndex(dts)
         if kind == "exposure":
             index = pd.MultiIndex.from_product(
@@ -370,12 +370,12 @@ class _HistoricDataYesTuda2(_FakeTuda2):
         )
         return pd.DataFrame({"spec_risk": 0.10}, index=index)
 
-    def get_risk_model_factor_names(self, kind, *, model_type):
-        self.calls.append(("factor_names", kind, model_type))
+    def get_risk_model_factor_names(self, kind, *, model):
+        self.calls.append(("factor_names", kind, model))
         return ["size"] if kind == "style" else ["old", "new_a", "new_b"]
 
-    def get_risk_model_schema(self, model_type):
-        self.calls.append(("risk_schema", model_type))
+    def get_risk_model_schema(self, model):
+        self.calls.append(("risk_schema", model))
         return {
             "factor_order": ["country", "size", "old", "new_a", "new_b"],
             "factor_types": {
