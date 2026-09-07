@@ -220,6 +220,13 @@ deep 诊断给出一个加权 Phase-I 松弛方案、最小换手率的数值对
 单期结果保留 `problem` 引用；输入数组不可原地修改，诊断前验证 fingerprint。序列只保留
 `stopped_problem`，请与停止日结果一起传给 `diagnose(problem, prior_result=...)`。
 
-`diagnose` 同样接受尚未求解的问题和成功结果；`prior_result` 不要求失败状态。成功时仍会
-运行适用的额外 LP/QP，用于检查最小换手率或风险预算空间。当前解的指标直接查看
-`result.metrics`；只诊断不可行结果时，由调用方检查 `result.status is SolveStatus.INFEASIBLE`。
+`diagnose(result)` 或 `diagnose(problem, prior_result=result)` 在 `result.status.has_solution`
+为 True 时立即抛出 `ValueError`，包括 `OPTIMAL_INACCURATE`；阻断发生在校验和编译之前。
+成功解的指标读取 `result.metrics`。失败结果包括不可行、迭代上限和数值失败。单独传入
+`PortfolioProblem` 仍允许诊断，因为接口不查询求解历史；不提供 `force` 绕过参数。
+
+`report.dump("diagnosis.json")` 导出包含全部原生证据的 JSON，默认缩进 2 个空格。
+`report.dump("diagnosis.json.gz", indent=None)` 导出紧凑压缩文件；覆盖已有文件须显式
+`overwrite=True`。文件前部的 `field_descriptions` 集中说明字段，后面的 `report` 保存数据。
+综合证据冲突时 `linear_feasible=None`，冲突下界不参与恢复；换手率松弛 0.15 表示增加
+15 个百分点，不是相对增加 15%，也不等于保持其他约束时的最小换手率。

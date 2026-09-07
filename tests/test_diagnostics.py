@@ -78,6 +78,7 @@ def test_failure_returns_result_and_require_weights_raises():
 def test_diagnostic_rejects_prior_result_for_different_problem(sample_lp_problem):
     optimizer = PortfolioOptimizer()
     result = optimizer.solve(sample_lp_problem)
+    result = replace(result, status=SolveStatus.NUMERICAL_ERROR, weights=None)
     changed = replace(
         sample_lp_problem,
         data=replace(sample_lp_problem.data, alpha=sample_lp_problem.data.alpha + 0.1),
@@ -93,7 +94,10 @@ def test_single_result_keeps_problem_without_automatic_diagnosis(
     result = optimizer.solve(sample_lp_problem)
     assert result.problem is sample_lp_problem
     assert result.diagnostics is None
-    report = optimizer.diagnose(result)
+    with pytest.raises(ValueError, match="successful"):
+        optimizer.diagnose(result)
+    # 单独传入问题时不追踪求解历史，仍允许显式诊断。
+    report = optimizer.diagnose(sample_lp_problem)
     assert report.linear_feasible is True
     # 无风险预算的 LP 不需要额外执行最小风险 QP。
     assert report.minimum_tracking_error is None
@@ -340,9 +344,31 @@ def test_sequence_only_keeps_stopped_problem(sample_lp_problem):
 def test_diagnose_result_detects_mutated_input(sample_lp_problem):
     optimizer = PortfolioOptimizer()
     result = optimizer.solve(sample_lp_problem)
+    result = replace(result, status=SolveStatus.NUMERICAL_ERROR, weights=None)
     sample_lp_problem.data.alpha[0] += 1.0
     with pytest.raises(ValueError, match="fingerprint"):
         optimizer.diagnose(result)
+
+
+@pytest.mark.parametrize(
+    "status", [SolveStatus.OPTIMAL, SolveStatus.OPTIMAL_INACCURATE]
+)
+@pytest.mark.parametrize("via_prior", [False, True])
+def test_successful_diagnosis_is_blocked_before_prepare(
+    sample_lp_problem, monkeypatch, status, via_prior
+):
+    optimizer = PortfolioOptimizer()
+    result = replace(optimizer.solve(sample_lp_problem), status=status)
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("successful result must be rejected before preparation")
+
+    monkeypatch.setattr(optimizer, "prepare", forbidden)
+    with pytest.raises(ValueError, match="result.metrics"):
+        if via_prior:
+            optimizer.diagnose(sample_lp_problem, prior_result=result)
+        else:
+            optimizer.diagnose(result)
 
 
 def test_regular_lp_does_not_compute_diagnostic_bound(sample_lp_problem, monkeypatch):
@@ -353,3 +379,170 @@ def test_regular_lp_does_not_compute_diagnostic_bound(sample_lp_problem, monkeyp
 
     monkeypatch.setattr(highs, "_dual_lower_bound", forbidden)
     assert PortfolioOptimizer().solve(sample_lp_problem).status.has_solution
+
+
+@pytest.mark.parametrize(
+    "suffix,indent", [(".json", 2), (".json", None), (".json.gz", None)]
+)
+def test_dump_complete_report_with_descriptions(tmp_path, suffix, indent):
+    import gzip
+    import json
+    from dataclasses import fields
+    from optim import InfeasibilityReport, NativeInfeasibilityEvidence, ProofStatus
+
+    certificate = NativeInfeasibilityEvidence(
+        "highs",
+        "dual_ray",
+        ProofStatus.NUMERICAL_ESTIMATE,
+        "infeasible",
+        metadata={"signed_vector": np.array([1.0, -2.0]), "missing": np.nan},
+    )
+    report = InfeasibilityReport(
+        "deep",
+        False,
+        "中文诊断摘要",
+        native_certificates=(certificate,),
+        native_evidence={"date": pd.Timestamp("2026-01-02"), "bound": np.float64(0.02)},
+    )
+    path = tmp_path / ("diagnosis" + suffix)
+    assert report.dump(path, indent=indent) == path
+    text = (
+        gzip.open(path, "rt", encoding="utf-8").read()
+        if suffix.endswith(".gz")
+        else path.read_text(encoding="utf-8")
+    )
+    payload = json.loads(text)
+    assert list(payload) == ["format_version", "field_descriptions", "report"]
+    assert payload["format_version"] == 1
+    assert set(payload["field_descriptions"]) == {item.name for item in fields(report)}
+    assert all(payload["field_descriptions"].values())
+    assert (
+        "数值对偶下界" in payload["field_descriptions"]["turnover_linear_lower_bound"]
+    )
+    assert set(payload["report"]) == {item.name for item in fields(report)}
+    dumped_certificate = payload["report"]["native_certificates"][0]
+    assert dumped_certificate["metadata"]["signed_vector"] == [1.0, -2.0]
+    assert dumped_certificate["metadata"]["missing"] == "NaN"
+    assert dumped_certificate["proof_status"] == "numerical_estimate"
+    assert payload["report"]["native_evidence"]["date"] == "2026-01-02T00:00:00"
+    assert "中文诊断摘要" in text
+    assert "native_certificates" not in str(report)
+    assert "native_certificates" not in repr(report)
+    if indent is None:
+        assert text.count("\n") == 1
+    else:
+        assert '\n  "field_descriptions"' in text
+    with pytest.raises(FileExistsError):
+        report.dump(path)
+    report.dump(path, overwrite=True)
+
+
+def test_dump_rejects_unsupported_data_before_creating_file(tmp_path):
+    from optim import InfeasibilityReport
+
+    path = tmp_path / "bad.json"
+    report = InfeasibilityReport(
+        "deep", None, "", native_evidence={"unsupported": object()}
+    )
+    with pytest.raises(TypeError, match="unsupported report value"):
+        report.dump(path)
+    assert not path.exists()
+    with pytest.raises(ValueError, match="indent"):
+        report.dump(path, indent=-1)
+
+
+def test_turnover_lower_bound_can_resolve_unknown_phase(sample_lp_problem, monkeypatch):
+    from optim import _diagnostic_engine as engine
+    from optim._core import CoreBackendResult, CoreSolveStatus
+
+    unknown = CoreBackendResult(
+        "highs", CoreSolveStatus.LIMIT_REACHED, None, None, "limit"
+    )
+    monkeypatch.setattr(engine, "_solve_phase_one", lambda *args: (unknown, ()))
+    monkeypatch.setattr(
+        engine, "_minimum_linear_turnover", lambda *args: (unknown, 1.62)
+    )
+    problem = replace(
+        sample_lp_problem,
+        constraints=replace(
+            sample_lp_problem.constraints, turnover=TurnoverLimit(0.05)
+        ),
+    )
+    report = PortfolioOptimizer().diagnose(problem)
+    assert report.linear_feasible is False
+    assert report.native_evidence["phase_one_linear_feasible"] is None
+    assert report.native_evidence["conclusion_basis"] == "numerical_estimate"
+    assert "尚未确定" not in report.summary_text
+    assert "157.0000 个百分点" in report.summary_text
+
+
+def test_phase_turnover_summary_explains_units_and_other_slacks():
+    from optim import RequiredRelaxation
+    from optim._diagnostic_engine import _summary
+
+    relaxations = (
+        RequiredRelaxation("turnover:l1", "turnover", "upper", 0.15, 0.05, 1.0),
+        RequiredRelaxation("asset:a", "asset_bound", "lower", 0.20, 0.30, 1.0),
+    )
+    summary = _summary(False, relaxations, 1.62, 0.05, None, None)
+    assert "15.0000 个百分点" in summary
+    assert "从 5.0000% 变为 20.0000%" in summary
+    assert "162.0000%" in summary
+    assert "同时松弛了 asset_bound" in summary
+
+
+def test_contradictory_bound_is_quarantined_using_full_candidate(
+    sample_lp_problem, monkeypatch
+):
+    from optim import _diagnostic_engine as engine
+    from optim._core import CoreBackendResult, CoreSolveStatus
+    from optim.model import compile_problem
+    from optim.solution import lift_weights
+
+    problem = replace(
+        sample_lp_problem,
+        constraints=replace(
+            sample_lp_problem.constraints, turnover=TurnoverLimit(0.05)
+        ),
+    )
+    compiled = compile_problem(problem)
+    # 候选实际换手率 20%，其他约束保持可行。它直接反驳最小换手率下界 162%。
+    weight = problem.data.initial_weight.copy()
+    weight[0] += 0.1
+    weight[1] -= 0.1
+    vector = lift_weights(problem, compiled, weight)
+    phase = CoreBackendResult("highs", CoreSolveStatus.OPTIMAL, vector, 0.15, "optimal")
+    # 展示列表故意为空，保证冲突判断不依赖被过滤的松弛记录。
+    monkeypatch.setattr(engine, "_solve_phase_one", lambda *args: (phase, ()))
+    monkeypatch.setattr(engine, "_minimum_linear_turnover", lambda *args: (phase, 1.62))
+    report = PortfolioOptimizer().diagnose(problem)
+    assert report.linear_feasible is None
+    assert report.turnover_linear_lower_bound is None
+    assert report.native_evidence["reported_turnover_lower_bound"] == 1.62
+    assert report.native_evidence["conclusion_basis"] == "conflicting_evidence"
+    assert "20.0000%" in report.summary_text
+    assert "暂不采信" in report.summary_text
+    assert "至少需增加" not in report.summary_text
+
+
+def test_joint_relaxation_does_not_falsely_conflict_with_turnover_bound(
+    sample_lp_problem,
+):
+    from optim._diagnostic_engine import _combine_linear_evidence
+    from optim._core import CoreBackendResult, CoreSolveStatus
+    from optim.model import compile_problem
+
+    compiled = compile_problem(sample_lp_problem)
+    # 零持仓违反预算，不能作为“保持其余约束”的换手率可行上界。
+    phase = CoreBackendResult(
+        "highs",
+        CoreSolveStatus.OPTIMAL,
+        np.zeros(compiled.model.domain.n_variables),
+        1.0,
+        "optimal",
+    )
+    conclusion, conflict = _combine_linear_evidence(
+        None, phase, compiled.model.domain, sample_lp_problem, 1.62, 1e-5
+    )
+    assert conclusion is False
+    assert conflict is None

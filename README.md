@@ -731,12 +731,21 @@ deep 诊断会按问题结构尝试：
 
 `prior_result` 必须来自完全相同的 `PortfolioProblem`，fingerprint 不一致会被拒绝。
 
-诊断入口不限制先前求解状态：尚未求解的问题、失败结果和成功结果均可显式诊断。
-成功结果也会执行适用的诊断子问题，可用于检查保持其他约束时的最小换手率或风险预算空间；
-它不会因已成功而自动跳过计算。若只需查看当前解的换手率、TE 等指标，读取 `result.metrics`
-即可。若只诊断明确返回不可行的结果，由调用方使用
+诊断入口聚焦失败原因：传入成功结果，或通过 `prior_result` 提供成功结果时，会在校验、编译
+和额外求解之前立即抛出 `ValueError`。成功包括 `OPTIMAL` 和 `OPTIMAL_INACCURATE`，按
+`status.has_solution` 判断。当前解的换手率、TE 等指标请直接读取 `result.metrics`。
+失败结果不限于不可行，也允许诊断迭代上限或数值失败。单独传入 `PortfolioProblem` 时无法
+知道历史求解状态，仍允许显式诊断；不提供 `force` 绕过选项。若只诊断不可行结果，可用
 `if result.status is SolveStatus.INFEASIBLE:` 控制。报告类型名 `InfeasibilityReport` 不意味着
 问题必然不可行，具体结论以报告字段为准。
+
+诊断会综合 Phase-I 和最小换手率检查：即使 Phase-I 未确定，可信的数值换手率下界高于
+原上限仍支持线性不可行。若下界与已检查的原始候选冲突，报告返回 `linear_feasible=None`，
+暂不采信该下界，避免自动恢复使用它；原值和原因记录在 `native_evidence` 中。
+
+换手率松弛使用小数权重单位。例如 `amount=0.15` 表示增加 15 个百分点，5% 上限变为 20%。
+这是一组可能同时松弛其他约束的 Phase-I 方案，不等于保持其他约束时的最小换手率。
+摘要会列出其他受松弛的约束组，完整数值见 `relaxations`。
 
 单期 `solve`、`optimize` 的结果保留 `result.problem`，因此可直接 `optimizer.diagnose(result)`。
 它保留输入引用而非深复制，求解后不要原地修改输入数组；诊断前会重新检查 fingerprint。
@@ -758,6 +767,20 @@ if sequence_result.stopped_problem is not None:
 请求 fingerprint，锥转换会标记坐标来源。当前证据均标为数值估计，不承诺独立严格验证或 IIS。
 乘子大小受约束缩放影响，不是业务重要性或所需放宽量。原生读取失败只记录简短错误类别，
 不改变求解状态，不解析日志，也不会为补充证据额外求解。
+
+完整报告可导出为 UTF-8 JSON。文件前部集中放置从 Attributes 文档生成的
+`field_descriptions` 字典，之后的 `report` 包含所有数据，包括 `str` / `repr` 中省略的
+`native_certificates`。导出不会重新诊断或求解：
+
+```python
+report.dump("diagnosis.json")                         # 默认 indent=2，便于阅读
+report.dump("diagnosis.json.gz", indent=None)         # 紧凑格式 + gzip，便于传输
+report.dump("diagnosis.json", indent=4, overwrite=True)
+```
+
+默认不覆盖已有文件，父目录需存在。导出文件包含 `format_version=1`；枚举使用其值、日期使用
+ISO 格式、数组使用列表，非有限数值表示为字符串 `NaN` / `Infinity` / `-Infinity`。
+它包含完整诊断证据，不包含重放求解所需的原始风险模型等完整输入。
 
 前沿搜索的参数 QP 状态保留在求解路线中，不作为原 Factor-QCQP 的原生证书；最终 MOSEK /
 Clarabel 回退求解完整问题时，才可产生完整问题的锥证据。各后端的能力无需完全一致。

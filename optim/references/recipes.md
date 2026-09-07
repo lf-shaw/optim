@@ -243,11 +243,11 @@ if not result.status.has_solution:
         print(attempt.backend, attempt.status.value, attempt.native_status)
 
     report = optimizer.diagnose(
-        problem,
-        prior_result=result,
+        result,
         level="deep",
     )
     print(report.summary_text)
+    report.dump("diagnosis.json.gz", indent=None)
     for relaxation in report.relaxations[:10]:
         print(
             relaxation.group,
@@ -259,6 +259,10 @@ if not result.status.has_solution:
 
 不要把 `optimize(...)` 产生的结果与后来重新组装、数据或名单已变化的问题混用；fingerprint
 不同会被拒绝。
+
+成功结果（`status.has_solution=True`）会在校验、编译前拒绝诊断，包括通过 `prior_result`
+传入的成功结果。成功时读取 `result.metrics`，不要为检查已有指标运行额外 LP/QP。
+上述导出包含完整原生证据和集中字段说明，默认不覆盖已有文件。
 
 ---
 

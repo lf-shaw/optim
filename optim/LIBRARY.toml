@@ -50,8 +50,14 @@ group = "optimizer"
 
 [[symbols]]
 name = "optim.PortfolioOptimizer.diagnose"
-signature = "diagnose(problem: PortfolioProblem, *, prior_result: OptimizationResult | None = None, level='deep') -> InfeasibilityReport"
-summary = "显式诊断一个准确的不可行问题；普通失败路径不会自动调用"
+signature = "diagnose(problem: PortfolioProblem | OptimizationResult, *, prior_result: OptimizationResult | None = None, level='deep') -> InfeasibilityReport"
+summary = "显式诊断失败结果或准确问题；成功结果（含 prior_result）在校验编译前拒绝，成功指标读取 result.metrics；普通失败路径不自动调用"
+group = "diagnostics"
+
+[[symbols]]
+name = "optim.InfeasibilityReport.dump"
+signature = "dump(path: str | Path, *, indent: int | None = 2, overwrite: bool = False) -> Path"
+summary = "导出集中字段说明和完整报告（含原生证据）的 JSON；.gz 后缀启用压缩，indent=None 为紧凑输出；不重新诊断"
 group = "diagnostics"
 
 [[symbols]]
@@ -146,8 +152,8 @@ group = "policy"
 
 [[symbols]]
 name = "optim.OptimizationResult"
-signature = "OptimizationResult(status, weights, objective_value, backend, route, metrics, certificate, violations, alignment, diagnostics, timings, fingerprint, message)"
-summary = "标准化单期结果；先检查 status.has_solution，再读取权重、指标、路线和证书"
+signature = "OptimizationResult(status, weights, objective_value, backend, route, metrics, certificate, violations, alignment, diagnostics, timings, fingerprint, message='', native_infeasibility=(), problem=None)"
+summary = "标准化单期结果；先检查 status.has_solution；单期保留 problem 供失败后诊断，序列仅保留停止日问题，成功结果不允许诊断"
 group = "result"
 
 [[symbols]]

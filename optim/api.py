@@ -546,9 +546,9 @@ class PortfolioOptimizer:
         普通失败路径从不自动触发诊断。提供 ``prior_result`` 时，诊断层会先验证其问题
         fingerprint，再将它作为证据使用。
 
-        已成功求解的结果也可以诊断，例如检查保持其他约束时的最小换手率或风险预算空间。
-        成功状态不会跳过诊断计算。若只需查看当前解的指标，应优先读取 ``result.metrics``；
-        若仅希望诊断不可行结果，调用方可先判断 ``result.status is SolveStatus.INFEASIBLE``。
+        成功结果（包括已验收的近似最优结果）在校验和编译前立即拒绝，当前解的指标请读取
+        ``result.metrics``。失败结果不限于不可行，也可以是迭代上限或数值失败。单独传入
+        ``PortfolioProblem`` 时不查询求解历史，仍允许显式诊断；没有强制绕过成功检查的选项。
 
         Parameters
         ----------
@@ -556,7 +556,7 @@ class PortfolioOptimizer:
             需要诊断的准确业务问题，或单期求解返回的结果。传入结果时直接使用其中保留的
             原问题，并自动把该结果作为原生证据来源。
         prior_result : OptimizationResult | None
-            同一问题此前的求解结果，可以成功或失败；用于补充状态和路由证据。默认为
+            同一问题此前的失败结果；用于补充状态和路由证据。默认为
             ``None``；传入 ``OptimizationResult`` 作为首个参数时自动使用该结果。
         level : str
             诊断深度；当前公共值为 ``"deep"``。
@@ -571,9 +571,17 @@ class PortfolioOptimizer:
         PortfolioValidationError
             问题自身存在静态输入错误，无法进入数学不可行诊断。
         ValueError
-            ``level`` 不受支持、结果未保留原问题、同时提供冲突的 ``prior_result``，或先前
+            提供了成功结果、``level`` 不受支持、结果未保留原问题、同时提供冲突的 ``prior_result``，或先前
             结果不属于同一问题。
         """
+
+        if (
+            isinstance(problem, OptimizationResult) and problem.status.has_solution
+        ) or (prior_result is not None and prior_result.status.has_solution):
+            raise ValueError(
+                "cannot diagnose a successful optimization result; "
+                "inspect result.metrics for the solved portfolio"
+            )
 
         if isinstance(problem, OptimizationResult):
             if problem.problem is None:

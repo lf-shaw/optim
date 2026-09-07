@@ -75,6 +75,12 @@ BenchmarkCoveragePolicy(
 自动对每个失败日做 Phase-I、最小换手率和最小 TE 会显著拖慢长回测。先保留准确失败问题和
 结果，再对选定日期显式调用 `optimizer.diagnose(...)`。
 
+成功结果不能传给 `diagnose`（包括 `prior_result` 参数），会立即抛出 `ValueError`。
+请检查 `status.has_solution`，成功时读取 `result.metrics`。单独传入问题时不查询求解历史。
+失败不等于已确认不可行；`linear_feasible=None` 可能表示证据不足或冲突。Phase-I 的松弛
+方案可能同时改变多个约束，不能把单条松弛解释为必须单独放宽的幅度。导出完整证据可用
+`report.dump("diagnosis.json.gz", indent=None)`，无需在日志里打印全部原生乘子。
+
 ---
 
 ## 09. 链式多期必须使用自然漂移后的真实持仓

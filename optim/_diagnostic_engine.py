@@ -3,7 +3,7 @@
 普通求解不会自动进入本模块。调用方选择一个问题并请求 ``level='deep'``，
 才会计算 Phase-I 松弛、最小线性换手率下界，以及适用时的最小跟踪误差。诊断复用 canonical
 registry 元数据，因此证据以业务约束名称报告，而不是匿名矩阵行。
-成功结果同样允许显式诊断，且仍会执行适用的诊断子问题。
+公共入口在校验和编译前拒绝成功结果；单独传入问题时不查询历史求解状态。
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def diagnose_problem(
     policy : SolverPolicy
         诊断子问题使用的数值容差和后端设置。
     prior_result : OptimizationResult | None
-        同一问题此前的求解结果，可成功或失败；提供时必须具有完全相同的 fingerprint。
+        同一问题此前的失败结果；提供时必须具有完全相同的 fingerprint。
     level : str
         显式诊断深度；当前仅支持 ``"deep"``。
 
@@ -79,7 +79,7 @@ def diagnose_problem(
         )
 
     phase_result, relaxations = _solve_phase_one(compiled.model.domain, policy)
-    linear_feasible = _linear_feasibility(phase_result, compiled.model.domain, policy)
+    phase_feasible = _linear_feasibility(phase_result, compiled.model.domain, policy)
     attempts = [_attempt(phase_result, "diagnostic_phase_one")]
     turnover_lower = None
     if problem.constraints.turnover is not None:
@@ -89,6 +89,19 @@ def diagnose_problem(
             policy,
         )
         attempts.append(_attempt(turnover_result, "diagnostic_minimum_turnover"))
+
+    reported_turnover_lower = turnover_lower
+    linear_feasible, evidence_conflict = _combine_linear_evidence(
+        phase_feasible,
+        phase_result,
+        compiled.model.domain,
+        problem,
+        turnover_lower,
+        policy.tuning.feasibility_tolerance,
+    )
+    if evidence_conflict is not None:
+        # 不把相互矛盾的下界交给自动换手率恢复；原值仅保留为待核查遥测。
+        turnover_lower = None
 
     minimum_te = None
     if linear_feasible is True and problem.constraints.tracking_error is not None:
@@ -120,10 +133,12 @@ def diagnose_problem(
     summary = _summary(
         linear_feasible,
         relaxations,
-        turnover_lower,
+        reported_turnover_lower,
         turnover_limit,
         minimum_te,
         tracking_limit,
+        evidence_conflict=evidence_conflict,
+        tolerance=policy.tuning.feasibility_tolerance,
     )
     return InfeasibilityReport(
         stage="deep",
@@ -141,17 +156,74 @@ def diagnose_problem(
             "phase_one_dual_lower_bound": phase_result.diagnostics.get(
                 "dual_lower_bound"
             ),
-            "conclusion_basis": "numerical_estimate"
+            "conclusion_basis": "conflicting_evidence"
+            if evidence_conflict is not None
+            else "numerical_estimate"
             if linear_feasible is False
             else "primal_witness"
             if linear_feasible is True
             else "unavailable",
+            "phase_one_linear_feasible": phase_feasible,
+            "reported_turnover_lower_bound": reported_turnover_lower,
+            "evidence_conflict": evidence_conflict,
         },
         native_certificates=(
             () if prior_result is None else prior_result.native_infeasibility
         ),
         attempts=tuple(attempts),
     )
+
+
+def _combine_linear_evidence(
+    phase_feasible: bool | None,
+    phase_result: CoreBackendResult,
+    domain: LinearDomain,
+    problem: PortfolioProblem,
+    turnover_lower: float | None,
+    tolerance: float,
+) -> tuple[bool | None, str | None]:
+    """综合数值下界与可行候选；用原始候选检查冲突，不依赖展示用松弛列表。"""
+
+    if (
+        problem.constraints.turnover is None
+        or turnover_lower is None
+        or not np.isfinite(turnover_lower)
+    ):
+        return phase_feasible, None
+    limit = problem.constraints.turnover.l1_limit
+    if phase_feasible is True and turnover_lower > limit + tolerance:
+        return None, "原线性域已有可行候选，但最小换手率数值下界高于原上限。"
+    if phase_result.status.has_solution and phase_result.primal is not None:
+        x = phase_result.primal[: domain.n_variables]
+        if np.all(np.isfinite(x)) and problem.data.initial_weight is not None:
+            activity = domain.A @ x
+            keep = np.ones(domain.n_constraints, dtype=bool)
+            for record in domain.constraints:
+                if record.location == "row" and record.group == "turnover":
+                    keep[record.index] = False
+            violations = np.concatenate(
+                (
+                    domain.lower[keep] - activity[keep],
+                    activity[keep] - domain.upper[keep],
+                    domain.variable_lower - x,
+                    x - domain.variable_upper,
+                )
+            )
+            remaining_feasible = (
+                np.all(np.isfinite(activity))
+                and np.max(violations, initial=0.0) <= tolerance
+            )
+            observed_turnover = float(
+                np.abs(x[domain.weight_indices] - problem.data.initial_weight).sum()
+            )
+            if remaining_feasible and turnover_lower > observed_turnover + tolerance:
+                return None, (
+                    f"Phase-I 原始候选满足除换手率上限外的线性约束，实际双边换手率为 {observed_turnover:.4%}，"
+                    f"却低于最小换手率检查报告的数值下界 {turnover_lower:.4%}。"
+                )
+    if turnover_lower > limit + tolerance:
+        return False, None
+    return phase_feasible, None
 
 
 def _linear_feasibility(
@@ -399,22 +471,34 @@ def _summary(
     turnover_limit: float | None,
     minimum_te: float | None,
     tracking_limit: float | None,
+    *,
+    evidence_conflict: str | None = None,
+    tolerance: float = 1e-5,
 ) -> str:
     parts = [
         "已找到满足容差的线性可行候选。"
         if linear_feasible is True
-        else "Phase-I 数值对偶下界支持线性部分不可行。"
+        else "综合数值证据支持原问题的线性部分不可行。"
         if linear_feasible is False
         else "线性可行性尚未确定，诊断未得到充分证据。"
     ]
+    if evidence_conflict is not None:
+        parts = [
+            "诊断证据存在冲突，线性可行性暂不下结论。",
+            evidence_conflict,
+            "该换手率下界暂不采信，不能据此给出修复幅度；需检查数值误差或模型转换。",
+        ]
     if (
-        turnover_lower is not None
+        evidence_conflict is None
+        and turnover_lower is not None
         and turnover_limit is not None
-        and turnover_lower > turnover_limit
+        and turnover_lower > turnover_limit + tolerance
     ):
         parts.append(
             f"保持其他线性约束时，最小双边换手率的数值下界为 {turnover_lower:.4%}，"
-            f"高于约束 {turnover_limit:.4%}；此界为浮点数值估计。"
+            f"高于约束 {turnover_limit:.4%}。若仅放宽换手率，按此数值下界至少需增加 "
+            f"{(turnover_lower - turnover_limit) * 100:.4f} 个百分点；此界为浮点数值估计"
+            "，不保证放宽到下界就足够，尤其当还存在风险预算时。"
         )
     if (
         minimum_te is not None
@@ -426,9 +510,40 @@ def _summary(
             f"高于预算 {tracking_limit:.4%}；候选值是最小风险的上界，不能单凭它确认预算不可行。"
         )
     if relaxations:
-        leading = relaxations[0]
+        turnover_slack = next(
+            (
+                item
+                for item in relaxations
+                if item.group == "turnover" and item.side == "upper"
+            ),
+            None,
+        )
         parts.append(
-            f"一个加权 Phase-I 松弛方案涉及 {leading.constraint_id}，松弛 {leading.amount:.6g}；"
+            f"一个加权 Phase-I 方案列出了 {len(relaxations)} 条超过展示阈值的边界松弛。"
+        )
+        if turnover_slack is not None:
+            item = turnover_slack
+            parts.append(
+                f"其中 {item.constraint_id} 的松弛 {item.amount:.6g} 使用小数权重单位，即增加 "
+                f"{item.amount * 100:.4f} 个百分点，上限从 {item.configured_bound:.4%} "
+                f"变为 {item.configured_bound + item.amount:.4%}。"
+            )
+            others = [item for item in relaxations if item is not turnover_slack]
+            if others:
+                names = "、".join(dict.fromkeys(item.group for item in others))
+                parts.append(
+                    f"该方案还同时松弛了 {names} 等约束，应结合完整 relaxations 一起查看；它与保持其他约束不变的最小换手率检查不同。"
+                )
+            else:
+                parts.append(
+                    "展示列表中只有该项；是否与最小换手率下界矛盾，以完整原始候选检查为准，不能仅凭过滤后的列表判断。"
+                )
+        else:
+            leading = relaxations[0]
+            parts.append(
+                f"其中 {leading.constraint_id} 的松弛为 {leading.amount:.6g}（该约束原始单位）。"
+            )
+        parts.append(
             "该方案取决于松弛权重，不是唯一修复，也不代表每条边界必须放宽该数值。"
         )
     return "".join(parts)
