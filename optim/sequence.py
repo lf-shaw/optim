@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping
 
 import numpy as np
@@ -83,6 +83,9 @@ class PortfolioSequenceResult:
         本次运行使用的多期策略。
     schedule_prepare_s : float
         整段 schedule 预检耗时，单位为秒。
+    stopped_problem : PortfolioProblem | None
+        ``on_failure='stop'`` 时导致序列停止的准确动态问题，可直接用于显式诊断。完整运行或
+        ``hold`` 时为 ``None``。逐日结果不会保留问题，以免长回测持有全部风险模型。
     """
 
     steps: tuple[SequenceStep, ...]
@@ -90,6 +93,9 @@ class PortfolioSequenceResult:
     final_weight: pd.Series | None
     policy: SequencePolicy
     schedule_prepare_s: float = 0.0
+    stopped_problem: PortfolioProblem | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def result_for_date(self, date: Any) -> OptimizationResult:
         """返回指定已尝试日期的优化结果。
@@ -185,7 +191,9 @@ def solve_sequence(
     if not dates:
         raise SequenceDataError("portfolio sequence must contain at least one problem")
     if dates != sorted(dates) or len(set(dates)) != len(dates):
-        raise SequenceDataError("sequence problem dates must be unique and strictly increasing")
+        raise SequenceDataError(
+            "sequence problem dates must be unique and strictly increasing"
+        )
 
     # 在首个昂贵求解前校验所有静态日期和收益日期。后续链式期初权重虽为动态值，调用方仍
     # 提供 shape 正确的占位值，以便提前完成其余检查。
@@ -213,6 +221,7 @@ def solve_sequence(
     actual_weight: pd.Series | None = None
     previous_theta: float | None = None
     stopped_date: pd.Timestamp | None = None
+    stopped_problem: PortfolioProblem | None = None
 
     for position in range(len(dates)):
         template = first_template if position == 0 else problem_at(position)
@@ -235,7 +244,9 @@ def solve_sequence(
                 )
             problem = replace(
                 template,
-                data=replace(template.data, initial_weight=pretrade.to_numpy(copy=False)),
+                data=replace(
+                    template.data, initial_weight=pretrade.to_numpy(copy=False)
+                ),
             )
         else:
             problem = template
@@ -249,7 +260,9 @@ def solve_sequence(
                 )
             )
 
-        theta_seed = _theta_seed(policy, previous_theta, optimizer.policy.tuning.theta_initial)
+        theta_seed = _theta_seed(
+            policy, previous_theta, optimizer.policy.tuning.theta_initial
+        )
         # 全部模板已经在进入循环前完成静态校验。链式模式此处只替换由受控漂移产生的
         # initial_weight，因此直接编译并求解，避免每个日期重复扫描风险矩阵和约束数组。
         result = optimizer._solve_prevalidated(problem, theta_seed=theta_seed)
@@ -289,8 +302,12 @@ def solve_sequence(
             previous_theta = None
         else:
             stopped_date = date
+            if policy.on_failure == "stop":
+                stopped_problem = result.problem or problem
 
-        stored_result = _apply_output_policy(result, policy)
+        # 单期结果保留准确问题以便直接诊断；序列只在顶层保留一个 stop 问题，避免 2500 日
+        # 回测因每步结果反向持有风险矩阵而显著增加内存。
+        stored_result = replace(_apply_output_policy(result, policy), problem=None)
         steps.append(
             SequenceStep(
                 date=date,
@@ -314,6 +331,7 @@ def solve_sequence(
         final_weight=None if actual_weight is None else actual_weight.copy(),
         policy=policy,
         schedule_prepare_s=schedule_prepare_s,
+        stopped_problem=stopped_problem,
     )
 
 
@@ -372,18 +390,39 @@ def _recover_turnover(
     first_limit = min(recovery.max_turnover, lower + recovery.buffer)
     first_result = solve_limit(first_limit)
     if first_result.status.has_solution:
-        convex_minimum = first_limit if problem.constraints.tracking_error is not None else linear_lower
+        convex_minimum = (
+            first_limit
+            if problem.constraints.tracking_error is not None
+            else linear_lower
+        )
         report = _with_convex_turnover(report, convex_minimum, attempts)
         return first_result, True, report, configured, convex_minimum, first_limit
 
     # 没有 TE 约束时，线性最小值就是精确值；在 Tmin+buffer 处完整求解失败，不能证明继续
     # 放宽换手率是正确修复，因此保留为未恢复的求解器/模型失败。
-    if problem.constraints.tracking_error is None or first_limit >= recovery.max_turnover:
-        return first_result, False, replace(report, attempts=tuple(attempts)), configured, linear_lower, first_limit
+    if (
+        problem.constraints.tracking_error is None
+        or first_limit >= recovery.max_turnover
+    ):
+        return (
+            first_result,
+            False,
+            replace(report, attempts=tuple(attempts)),
+            configured,
+            linear_lower,
+            first_limit,
+        )
 
     maximum_result = solve_limit(recovery.max_turnover)
     if not maximum_result.status.has_solution:
-        return maximum_result, False, replace(report, attempts=tuple(attempts)), configured, linear_lower, recovery.max_turnover
+        return (
+            maximum_result,
+            False,
+            replace(report, attempts=tuple(attempts)),
+            configured,
+            linear_lower,
+            recovery.max_turnover,
+        )
 
     # 仅放宽单一上限时可行性具有单调性。二分只发生在显式开启的异常路径，普通日期不增加
     # 求解调用。失败中点保守地归入下侧，最终返回的上侧点始终经过独立验收。
@@ -433,7 +472,9 @@ def _mark_to_market(
 
     if isinstance(holding_return, pd.Series):
         if holding_return.index.has_duplicates:
-            raise SequenceDataError("holding-period return Series contains duplicate assets")
+            raise SequenceDataError(
+                "holding-period return Series contains duplicate assets"
+            )
         aligned_return = holding_return.reindex(previous_target.index)
         missing = aligned_return.isna().to_numpy()
         missing_mass = float(previous_target.to_numpy()[missing].sum())
@@ -460,7 +501,9 @@ def _mark_to_market(
     drifted /= total
     drifted_series = pd.Series(drifted, index=previous_target.index, name="weight")
     aligned = drifted_series.reindex(current_assets)
-    missing_mass = float(drifted_series.loc[~drifted_series.index.isin(current_assets)].sum())
+    missing_mass = float(
+        drifted_series.loc[~drifted_series.index.isin(current_assets)].sum()
+    )
     if missing_mass > policy.holding_missing_mass_tolerance:
         raise SequenceDataError(
             f"current optimization assets omit {missing_mass:.6%} of drifted holdings"

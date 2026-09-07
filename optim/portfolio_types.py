@@ -75,13 +75,14 @@ class DataProvenance:
     Attributes
     ----------
     source : str
-        稳定的数据源标识，例如 ``"memory"`` 或 ``"tuda2"``。
+        稳定的数据源标识，例如 ``"memory"`` 或 ``"tuda2"``；默认为 ``"memory"``。
     source_date : pandas.Timestamp | None
-        实际使用的数据日期；在严格同日语义下必须等于优化日期。
+        实际使用的数据日期；在严格同日语义下必须等于优化日期。默认为 ``None``，表示调用方
+        未声明来源日期。
     version : str | None
-        数据供应商、风险模型或适配器版本。
+        数据供应商、风险模型或适配器版本；默认为 ``None``。
     metadata : Mapping[str, Any]
-        只读的数据源专用审计信息。
+        只读的数据源专用审计信息；默认为空映射。
     """
 
     source: str = "memory"
@@ -100,10 +101,11 @@ class AlphaSpec:
     Attributes
     ----------
     units : str
-        业务单位说明，例如 ``"standardized_score"``；优化器不会推断或转换该单位。
+        业务单位说明，例如 ``"standardized_score"``；优化器不会推断或转换该单位。默认为
+        ``"standardized_score"``。
     scale : float
         一个归一化目标单位对应的正数原始 alpha 数量，用于将
-        ``ObjectiveTolerance.normalized`` 转换为原始目标差。
+        ``ObjectiveTolerance.normalized`` 转换为原始目标差；默认为 ``1.0``。
     """
 
     units: str = "standardized_score"
@@ -123,9 +125,9 @@ class ObjectiveTolerance:
     Attributes
     ----------
     absolute : float | None
-        以输入 alpha 原始单位计量的允许损失。
+        以输入 alpha 原始单位计量的允许损失；默认为 ``None``，即不额外增加绝对单位容差。
     normalized : float | None
-        以 :attr:`AlphaSpec.scale` 的倍数计量的允许损失。
+        以 :attr:`AlphaSpec.scale` 的倍数计量的允许损失；默认为 ``1e-4``。
     """
 
     absolute: float | None = None
@@ -134,9 +136,14 @@ class ObjectiveTolerance:
     def __post_init__(self) -> None:
         if self.absolute is None and self.normalized is None:
             raise ValueError("at least one objective tolerance must be provided")
-        for name, value in (("absolute", self.absolute), ("normalized", self.normalized)):
+        for name, value in (
+            ("absolute", self.absolute),
+            ("normalized", self.normalized),
+        ):
             if value is not None and (not np.isfinite(value) or value < 0.0):
-                raise ValueError(f"ObjectiveTolerance.{name} must be finite and non-negative")
+                raise ValueError(
+                    f"ObjectiveTolerance.{name} must be finite and non-negative"
+                )
 
     def raw_limit(self, alpha_spec: AlphaSpec) -> float:
         """将各容差分量换算为一个原始单位目标差上限。
@@ -153,7 +160,9 @@ class ObjectiveTolerance:
         """
 
         absolute = 0.0 if self.absolute is None else self.absolute
-        normalized = 0.0 if self.normalized is None else self.normalized * alpha_spec.scale
+        normalized = (
+            0.0 if self.normalized is None else self.normalized * alpha_spec.scale
+        )
         return float(absolute + normalized)
 
 
@@ -180,9 +189,9 @@ class FactorRiskModel:
     factor_types : tuple[str, ...]
         每个因子的语义类型，例如 ``"style"`` 或 ``"industry"``。
     provenance : DataProvenance
-        该日模型的数据来源和版本信息。
+        该日模型的数据来源和版本信息；默认构造内存数据来源记录。
     annualization : str
-        显式风险单位契约；当前编译器要求为 ``"annualized_decimal"``。
+        显式风险单位契约；默认为且当前编译器要求为 ``"annualized_decimal"``。
     """
 
     asof: pd.Timestamp
@@ -209,9 +218,9 @@ class FullCovarianceRiskModel:
     covariance : numpy.ndarray
         资产协方差矩阵，shape 为 ``(n_assets, n_assets)``，单位为年化小数方差。
     provenance : DataProvenance
-        矩阵的数据来源和版本信息。
+        矩阵的数据来源和版本信息；默认构造内存数据来源记录。
     annualization : str
-        显式风险单位契约，通常为 ``"annualized_decimal"``。
+        显式风险单位契约；默认为 ``"annualized_decimal"``。
     """
 
     asof: pd.Timestamp
@@ -245,13 +254,14 @@ class PortfolioData:
     tradable : numpy.ndarray
         是否可交易的布尔掩码，shape 为 ``(n_assets,)``。
     risk_model : RiskModel | None
-        风险目标或约束所需的严格同日风险模型。
+        风险目标或约束所需的严格同日风险模型；默认为 ``None``。
     alpha_spec : AlphaSpec | None
-        alpha 的单位和尺度；请求归一化目标证书时必须提供。
+        alpha 的单位和尺度；请求归一化目标证书时必须提供。默认为 ``None``。
     extra_attributes : Mapping[str, numpy.ndarray]
         命名的逐资产属性，每项 shape 均为 ``(n_assets,)``，用于自定义绝对或主动敞口约束。
+        默认为空映射。
     provenance : DataProvenance
-        组装后单日数据的来源信息。
+        组装后单日数据的来源信息；默认构造内存数据来源记录。
     """
 
     date: pd.Timestamp
@@ -293,9 +303,9 @@ class RiskAdjustedAlpha:
     Attributes
     ----------
     factor_aversion : float
-        乘在年化因子方差上的非负风险厌恶系数。
+        乘在年化因子方差上的非负风险厌恶系数；默认为 ``0.75``。
     specific_aversion : float
-        乘在年化特异方差上的非负风险厌恶系数。
+        乘在年化特异方差上的非负风险厌恶系数；默认为 ``0.75``。
 
     Notes
     -----
@@ -321,13 +331,15 @@ class MinimizeTrackingError:
     ----------
     alpha_floor : float | None
         $\alpha^{\mathsf T}x$ 的可选下限，单位为原始 alpha 目标单位；``None`` 表示允许
-        :attr:`PortfolioData.alpha` 缺失。
+        :attr:`PortfolioData.alpha` 缺失，也是默认值。
     """
 
     alpha_floor: float | None = None
 
 
-PortfolioObjective: TypeAlias = MaximizeAlpha | RiskAdjustedAlpha | MinimizeTrackingError
+PortfolioObjective: TypeAlias = (
+    MaximizeAlpha | RiskAdjustedAlpha | MinimizeTrackingError
+)
 
 
 AssetWeightOverride: TypeAlias = float | tuple[float, float]
@@ -347,18 +359,19 @@ class AssetTradeConstraints:
     Attributes
     ----------
     blacklist : tuple[Any, ...]
-        本次优化中目标权重强制为零的资产。
+        本次优化中目标权重强制为零的资产；默认为空元组。
     frozen : tuple[Any, ...]
-        固定在输入期初权重的资产。
+        固定在输入期初权重的资产；默认为空元组。
     not_buyable : tuple[Any, ...]
-        目标权重不得高于期初权重的资产。
+        目标权重不得高于期初权重的资产；默认为空元组。
     not_sellable : tuple[Any, ...]
-        目标权重不得低于期初权重的资产。
+        目标权重不得低于期初权重的资产；默认为空元组。
     weight_overrides : Mapping[Any, AssetWeightOverride]
         每只资产的精确目标（标量）或闭区间 ``(lower, upper)``；显式覆盖仍受绝对权重和
-        long-only 边界限制。
+        long-only 边界限制。默认为空映射。
     missing_asset : str
-        ``"error"`` 拒绝问题资产域以外的指令，``"ignore"`` 明确忽略这些指令。
+        ``"error"`` 拒绝问题资产域以外的指令，``"ignore"`` 明确忽略这些指令；默认为
+        ``"error"``。
     """
 
     blacklist: tuple[Any, ...] = ()
@@ -398,8 +411,12 @@ class WeightBounds:
 
     Attributes
     ----------
-    lower, upper : float | numpy.ndarray
-        广播到所有资产的闭区间标量边界，或 shape 为 ``(n_assets,)`` 的位置数组。
+    lower : float | numpy.ndarray
+        广播到所有资产的下限标量，或 shape 为 ``(n_assets,)`` 的位置数组；默认为
+        ``0.0``。
+    upper : float | numpy.ndarray
+        广播到所有资产的上限标量，或 shape 为 ``(n_assets,)`` 的位置数组；默认为
+        ``1.0``。
     """
 
     lower: float | np.ndarray = 0.0
@@ -433,7 +450,7 @@ class TurnoverLimit:
         $\lVert x-x_0\rVert_1$ 的非负上限，单位为小数权重。
     convention : str
         ``"l1"`` 是 canonical 定义；``"two_way"`` 是保留的描述性兼容别名，目前映射到
-        同一数值。
+        同一数值。默认为 ``"l1"``。
     """
 
     limit: float
@@ -475,9 +492,10 @@ class ExposureBounds:
     Attributes
     ----------
     default : tuple[float, float] | None
-        除显式覆盖外应用到所有匹配因子的闭区间；``None`` 表示只约束显式命名因子。
+        除显式覆盖外应用到所有匹配因子的闭区间；默认为 ``None``，表示只约束显式命名
+        因子。
     overrides : Mapping[str, tuple[float, float]]
-        不区分大小写的逐因子覆盖；对象构造时键会统一转为小写。
+        不区分大小写的逐因子覆盖；对象构造时键会统一转为小写。默认为空映射。
     """
 
     default: tuple[float, float] | None = None
@@ -487,7 +505,9 @@ class ExposureBounds:
         object.__setattr__(
             self,
             "overrides",
-            MappingProxyType({str(k).lower(): tuple(v) for k, v in self.overrides.items()}),
+            MappingProxyType(
+                {str(k).lower(): tuple(v) for k, v in self.overrides.items()}
+            ),
         )
 
 
@@ -518,31 +538,34 @@ class PortfolioConstraints:
     Attributes
     ----------
     long_only : bool
-        为真时，将每只资产的下限与零取交集。
+        为真时，将每只资产的下限与零取交集；默认为 ``True``。设为 ``False`` 只会移除
+        这一额外下限，不会自动把 :attr:`asset_weight` 的默认下限改成负数。
     budget : float
-        目标权重合计值。
+        目标权重合计值；默认为 ``1.0``。该参数不自动缩放其他权重类约束。
     asset_weight : WeightBounds
-        逐资产绝对目标权重区间。
+        逐资产绝对目标权重区间；默认使用 :class:`WeightBounds`，即每只资产位于
+        $[0,1]$。
     active_weight : SymmetricBound | None
-        每只资产 $x_i-b_i$ 的边界；配置后必须提供基准。
+        每只资产 $x_i-b_i$ 的边界；配置后必须提供基准。默认为 ``None``，即不施加该约束。
     total_active : float | None
-        $\lVert x-b\rVert_1$ 的上限。
+        $\lVert x-b\rVert_1$ 的上限；默认为 ``None``。
     turnover : TurnoverLimit | None
-        目标组合相对期初组合的换手率上限。
+        目标组合相对期初组合的换手率上限；默认为 ``None``。上限使用绝对权重单位，不随
+        :attr:`budget` 自动缩放。
     benchmark_member_weight : LowerBound | None
-        基准权重大于零的资产在目标组合中的最小合计权重。
+        基准权重大于零的资产在目标组合中的最小合计权重；默认为 ``None``。
     style, industry : ExposureBounds | None
-        对应风险模型类型的风格或行业主动敞口边界。
+        对应风险模型类型的风格或行业主动敞口边界；二者均默认为 ``None``。
     tracking_error : TrackingErrorLimit | None
-        非线性的年化跟踪误差预算。
+        非线性的年化跟踪误差预算；默认为 ``None``。
     freeze_nontradable : bool
-        是否将 ``tradable=False`` 的资产固定在期初权重。
+        是否将 ``tradable=False`` 的资产固定在期初权重；默认为 ``True``。
     asset_trade : AssetTradeConstraints | None
-        仅对本问题生效的黑名单、冻结、单边交易和权重覆盖指令。
+        仅对本问题生效的黑名单、冻结、单边交易和权重覆盖指令；默认为 ``None``。
     extra_active : Mapping[str, tuple[float, float]]
-        命名 ``extra_attributes`` 相对基准的主动敞口边界。
+        命名 ``extra_attributes`` 相对基准的主动敞口边界；默认为空映射。
     extra_absolute : Mapping[str, tuple[float, float]]
-        命名 ``extra_attributes`` 的组合绝对敞口边界。
+        命名 ``extra_attributes`` 的组合绝对敞口边界；默认为空映射。
     """
 
     long_only: bool = True
@@ -565,8 +588,12 @@ class PortfolioConstraints:
             self.asset_trade, AssetTradeConstraints
         ):
             raise TypeError("asset_trade must be AssetTradeConstraints or None")
-        object.__setattr__(self, "extra_active", MappingProxyType(dict(self.extra_active)))
-        object.__setattr__(self, "extra_absolute", MappingProxyType(dict(self.extra_absolute)))
+        object.__setattr__(
+            self, "extra_active", MappingProxyType(dict(self.extra_active))
+        )
+        object.__setattr__(
+            self, "extra_absolute", MappingProxyType(dict(self.extra_absolute))
+        )
 
 
 @dataclass(frozen=True)
@@ -618,7 +645,7 @@ class RunFingerprint:
     solver_policy_hash : str
         路由、回退、验收和数值设置的哈希。
     package_versions : Mapping[str, str]
-        与复现有关的只读求解器及软件包版本。
+        与复现有关的只读求解器及软件包版本；默认为空映射。
     """
 
     problem: ProblemFingerprint
@@ -626,7 +653,9 @@ class RunFingerprint:
     package_versions: Mapping[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "package_versions", MappingProxyType(dict(self.package_versions)))
+        object.__setattr__(
+            self, "package_versions", MappingProxyType(dict(self.package_versions))
+        )
 
 
 @dataclass(frozen=True)
@@ -655,7 +684,7 @@ class OptimalityCertificate:
     objective_scale : float | None
         一个归一化单位对应的原始目标数量。
     components : Mapping[str, float]
-        只读的路由专用分解，例如 frontier gap 和数值 gap。
+        只读的路由专用分解，例如 frontier gap 和数值 gap；默认为空映射。
     """
 
     kind: str
@@ -685,11 +714,11 @@ class ConstraintViolation:
     amount : float
         经尺度感知比较后的正数违约量。
     observed : float | None
-        独立复算的约束活动值或变量值。
+        独立复算的约束活动值或变量值；默认为 ``None``。
     lower, upper : float | None
-        适用的闭区间边界；不存在的一侧为 ``None``。
+        适用的闭区间边界；不存在的一侧默认为 ``None``。
     label : str | None
-        面向使用者的资产、因子或约束标签。
+        面向使用者的资产、因子或约束标签；默认为 ``None``。
     """
 
     constraint_id: str
@@ -702,10 +731,103 @@ class ConstraintViolation:
 
 
 @dataclass(frozen=True)
+class InfeasibilityContributor:
+    """原生不可行证书中一条已映射到业务约束的贡献。
+
+    ``multiplier`` 保留 Farkas/对偶证书坐标的原生符号，受约束缩放影响；它不是
+    权重、风险或“至少需要放宽多少”的业务量。需要可操作放宽量时，应显式调用
+    :meth:`PortfolioOptimizer.diagnose` 获取 Phase-I 结果。
+
+    Attributes
+    ----------
+    constraint_id : str
+        canonical registry 中的稳定约束标识；风险锥等非线性块使用专门稳定标识。
+    group : str
+        业务约束组，例如 ``"asset_bound"``、``"turnover"`` 或
+        ``"tracking_error"``。
+    location : str
+        ``"row"``、``"variable"`` 或 ``"cone"``。
+    side : str
+        证书作用的 ``"lower"``、``"upper"``、``"equal"`` 或 ``"cone"`` 侧。
+    multiplier : float
+        带原生符号的证书乘子，不能解释为业务重要性。
+    key : str | None
+        适用时的资产、因子或属性标签。
+    configured_bound : float | None
+        该侧 canonical 边界；风险锥等块可能为 ``None``。
+    sources : tuple[str, ...]
+        构成该有效边界的用户配置或运营指令来源。
+    metadata : Mapping[str, Any]
+        只读补充审计信息；公共逻辑不依赖后端专用键。
+    """
+
+    constraint_id: str
+    group: str
+    location: str
+    side: str
+    multiplier: float
+    key: str | None = None
+    configured_bound: float | None = None
+    sources: tuple[str, ...] = ()
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+
+
+@dataclass(frozen=True)
+class NativeInfeasibilityEvidence:
+    """一个后端在原求解过程中已经产生的结构化不可行证书。
+
+    该对象有意保持很小：不同求解器的 dual ray、Farkas certificate 和 conic certificate
+    都只统一成贡献坐标、残差和裕量。它不统一求解器专有 IIS，也不会为了生成结果而额外
+    求解，因此普通不可行返回仍是低开销路径。
+
+    Attributes
+    ----------
+    backend : str
+        产生证书的后端。
+    kind : str
+        原生证据类型。
+    proof_status : ProofStatus
+        证书是已验证、数值估计还是不可用。
+    native_status : str
+        产生证书时的原生状态。
+    contributors : tuple[InfeasibilityContributor, ...]
+        按原生坐标顺序保留的具名非零约束乘子；metadata 中 canonical_index 标记具体坐标。
+    certificate_residual : float | None
+        归一化平稳性残差；后端无法稳定计算时为 ``None``。
+    certificate_margin : float | None
+        归一化严格不可行裕量；正值代表后端适配方向下的有效证据。
+    metadata : Mapping[str, Any]
+        小型只读原生元数据。
+    fingerprint : ProblemFingerprint | None
+        证据所属请求的模型身份；与 ``scope`` 一起解释，不能把派生子问题当成原问题。
+    scope : str
+        ``original`` 表示完整原问题，``linear_relaxation`` 表示其线性松弛。
+    """
+
+    backend: str
+    kind: str
+    proof_status: ProofStatus
+    native_status: str
+    contributors: tuple[InfeasibilityContributor, ...] = ()
+    certificate_residual: float | None = None
+    certificate_margin: float | None = None
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+    fingerprint: ProblemFingerprint | None = None
+    scope: str = "original"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+
+
+@dataclass(frozen=True)
 class PortfolioMetrics:
     r"""验收候选解的独立复算业务指标。
 
-    所有权重使用小数单位，所有风险使用年化小数单位；``None`` 表示当前问题数据无法定义该指标。
+    所有权重使用小数单位，所有风险使用年化小数单位。所有字段均默认为 ``None``，表示尚未
+    计算或当前问题数据无法定义对应指标。
 
     Attributes
     ----------
@@ -750,6 +872,8 @@ class PortfolioMetrics:
 class SolveTimings:
     """一次公共求解调用的 wall-clock 耗时分解，单位为秒。
 
+    所有分项均默认为 ``0.0``；求解引擎只填写实际发生并可独立计量的阶段。
+
     Attributes
     ----------
     prepare_s : float
@@ -788,19 +912,19 @@ class SolverAttempt:
     status : SolveStatus
         标准化尝试状态。
     reason : FailureReason | None
-        适用时的标准化失败类别。
+        适用时的标准化失败类别；默认为 ``None``。
     native_status : str | None
-        原始求解器状态字符串。
+        原始求解器状态字符串；默认为 ``None``。
     message : str | None
-        可读的失败或路由说明。
+        可读的失败或路由说明；默认为 ``None``。
     solve_s : float
-        本次尝试耗时，单位为秒。
+        本次尝试耗时，单位为秒；默认为 ``0.0``。
     recovered : bool
-        是否在同一路径的前一次失败后恢复成功。
+        是否在同一路径的前一次失败后恢复成功；默认为 ``False``。
     backend_payload_hash : str | None
-        用于证明发送给后端的准确 canonical payload 的哈希。
+        用于证明发送给后端的准确 canonical payload 的哈希；默认为 ``None``。
     metadata : Mapping[str, Any]
-        只读的路由专用遥测信息。
+        只读的路由专用遥测信息；默认为空映射。
     """
 
     backend: str
@@ -824,13 +948,13 @@ class AlignmentReport:
     Attributes
     ----------
     benchmark_missing_mass : float
-        任何显式允许的归一化之前，被遗漏的基准权重。
+        任何显式允许的归一化之前，被遗漏的基准权重；默认为 ``0.0``。
     benchmark_renormalization_factor : float
-        应用于保留基准权重的归一化乘数。
+        应用于保留基准权重的归一化乘数；默认为 ``1.0``，即不缩放。
     holding_missing_mass : float
-        当前资产域中缺失的期初或承接持仓权重。
+        当前资产域中缺失的期初或承接持仓权重；默认为 ``0.0``。
     source_dates : Mapping[str, pandas.Timestamp]
-        每类输入实际使用的数据日期。
+        每类输入实际使用的数据日期；默认为空映射。
     """
 
     benchmark_missing_mass: float = 0.0
@@ -839,7 +963,9 @@ class AlignmentReport:
     source_dates: Mapping[str, pd.Timestamp] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "source_dates", MappingProxyType(dict(self.source_dates)))
+        object.__setattr__(
+            self, "source_dates", MappingProxyType(dict(self.source_dates))
+        )
 
 
 @dataclass(frozen=True)
@@ -877,7 +1003,13 @@ class OptimizationResult:
     fingerprint : ProblemFingerprint
         本结果对应的业务问题及 canonical 模型身份。
     message : str
-        面向调用方的简要状态说明。
+        面向调用方的简要状态说明；默认为空字符串。
+    native_infeasibility : tuple[NativeInfeasibilityEvidence, ...]
+        各次实际后端尝试顺带产生的原生不可行证书；默认为空，不会触发额外诊断计算。
+    problem : PortfolioProblem | None
+        产生本结果的准确单期问题。单期公共求解始终保留，便于随后直接调用 ``diagnose``；
+        多期结果为控制内存仅在顶层保留导致 ``stop`` 的问题。
+        此字段保留引用而非深复制；输入数组不应原地修改，诊断前会重新校验 fingerprint。
     """
 
     status: SolveStatus
@@ -893,6 +1025,8 @@ class OptimizationResult:
     timings: SolveTimings
     fingerprint: ProblemFingerprint
     message: str = ""
+    native_infeasibility: tuple[NativeInfeasibilityEvidence, ...] = ()
+    problem: PortfolioProblem | None = field(default=None, repr=False, compare=False)
 
     def require_weights(self) -> pd.Series:
         """返回可用目标权重，否则抛出异常。
@@ -909,7 +1043,9 @@ class OptimizationResult:
         """
 
         if not self.status.has_solution or self.weights is None:
-            raise RuntimeError(f"optimization did not produce usable weights: {self.status.value}")
+            raise RuntimeError(
+                f"optimization did not produce usable weights: {self.status.value}"
+            )
         return self.weights
 
 
@@ -925,31 +1061,32 @@ class SolverTuning:
     Attributes
     ----------
     alpha_target : float
-        将 alpha 系数缩放到的目标最大绝对量级；只改善数值条件，不改变最优解。
+        将 alpha 系数缩放到的目标最大绝对量级；只改善数值条件，不改变最优解。默认为
+        ``0.2``。
     theta_initial : float
-        factor-QCQP frontier 搜索的初始参数 QP 权重。
+        factor-QCQP frontier 搜索的初始参数 QP 权重；默认为 ``16384.0``。
     theta_growth : float
-        未建立风险边界 bracket 时 theta 的乘法扩张因子。
+        未建立风险边界 bracket 时 theta 的乘法扩张因子；默认为 ``4.0``。
     theta_max : float
-        theta 搜索允许达到的硬上限。
+        theta 搜索允许达到的硬上限；默认为 ``1e12``。
     max_outer_iters : int
-        frontier 扩张、插值和精修合计允许的最大外层迭代数。
+        frontier 扩张、插值和精修合计允许的最大外层迭代数；默认为 ``30``。
     intermediate_eps : float
-        中间 PIQP 子问题的绝对/相对数值容差。
+        中间 PIQP 子问题的绝对/相对数值容差；默认为 ``1e-5``。
     final_eps : float
-        最终候选 PIQP 子问题的绝对/相对数值容差。
+        最终候选 PIQP 子问题的绝对/相对数值容差；默认为 ``1e-8``。
     piqp_max_iter : int
-        每个 PIQP 子问题的最大原生迭代数。
+        每个 PIQP 子问题的最大原生迭代数；默认为 ``1000``。
     piqp_inequality_form : str
-        PIQP 线性不等式表示；官方 0.6.4+ 下 ``"auto"`` 选择 compact 形式。
+        PIQP 线性不等式表示；默认为 ``"auto"``，在官方 0.6.4+ 下选择 compact 形式。
     polish : bool
-        预留的最终解精修开关，当前 direct PIQP 路径尚未消费。
+        预留的最终解精修开关，默认为 ``True``；当前 direct PIQP 路径尚未消费。
     feasibility_tolerance : float
-        独立验收 canonical 约束时允许的最大绝对违约。
+        独立验收 canonical 约束时允许的最大绝对违约；默认为 ``1e-5``。
     risk_margin : float
-        factor-QCQP 候选相对风险预算预留的年化小数安全边际。
+        factor-QCQP 候选相对风险预算预留的年化小数安全边际；默认为 ``1e-7``。
     weight_zero_tolerance : float
-        输出及多期状态中将权重视为数值零的绝对阈值。
+        输出及多期状态中将权重视为数值零的绝对阈值；默认为 ``1e-5``。
     """
 
     alpha_target: float = 0.2
@@ -978,29 +1115,29 @@ class SolverPolicy:
     Attributes
     ----------
     lp : str
-        LP 首选后端标识，当前支持的生产值为 ``"highs"``。
+        LP 首选后端标识；默认为且当前支持的生产值为 ``"highs"``。
     qp : str
-        凸 QP 首选后端标识，当前支持的生产值为 ``"piqp"``。
+        凸 QP 首选后端标识；默认为且当前支持的生产值为 ``"piqp"``。
     factor_qcqp_strategy : str
-        因子风险预算问题的专用算法，当前为 ``"frontier"``。
+        因子风险预算问题的专用算法；默认为 ``"frontier"``。
     factor_qcqp_subproblem_backend : str
-        frontier 参数 QP 的后端，当前为 ``"piqp"``。
+        frontier 参数 QP 的后端；默认为 ``"piqp"``。
     licensed_fallback : str
-        可用 license 时优先使用的锥回退后端。
+        可用 license 时优先使用的锥回退后端；默认为 ``"mosek"``。
     free_fallback : str
-        无商业 license 时使用的锥回退后端。
+        无商业 license 时使用的锥回退后端；默认为 ``"clarabel_qdldl"``。
     lp_prescreen : bool
         是否显式开启 factor-QCQP 的严格 LP 最优解预筛；默认关闭。
     validate_solution : bool
-        预留的独立验收开关；当前独立验收仍强制执行。
+        预留的独立验收开关；默认为 ``True``，且当前独立验收仍强制执行。
     rebuild_after_update_failure : bool
-        PIQP workspace 更新失败后是否销毁并重建一次。
+        PIQP workspace 更新失败后是否销毁并重建一次；默认为 ``True``。
     repeat_failed_cold_solve : bool
-        预留的冷启动重复求解开关，当前未使用。
+        预留的冷启动重复求解开关；默认为 ``False``，当前未使用。
     objective_tolerance : ObjectiveTolerance
-        factor frontier 证书允许的业务目标损失。
+        factor frontier 证书允许的业务目标损失；默认构造 :class:`ObjectiveTolerance`。
     tuning : SolverTuning
-        数值容差、theta 搜索和权重清理参数。
+        数值容差、theta 搜索和权重清理参数；默认构造 :class:`SolverTuning`。
     """
 
     lp: str = "highs"
@@ -1026,11 +1163,11 @@ class TurnoverRecoveryPolicy:
     max_turnover : float
         用户授权的换手率硬上限；恢复过程不得超过该值。
     buffer : float
-        在诊断得到的最小可行换手率之上增加的数值缓冲。
+        在诊断得到的最小可行换手率之上增加的数值缓冲；默认为 ``1e-5``。
     require_turnover_only : bool
-        为真时，只有确认移除换手率后其余约束可行才允许恢复。
+        为真时，只有确认移除换手率后其余约束可行才允许恢复；默认为 ``True``。
     reset_next_period : bool
-        是否在下一调仓期恢复原换手率；第一版必须为真，避免永久放宽约束。
+        是否在下一调仓期恢复原换手率；默认为且第一版要求为 ``True``，避免永久放宽约束。
     """
 
     max_turnover: float
@@ -1057,24 +1194,25 @@ class SequencePolicy:
     ----------
     mode : str
         ``"chained"`` 使用上一期实际推进后的持仓；``"independent"`` 每日使用各问题自带
-        的期初权重，日期之间互不依赖。
+        的期初权重，日期之间互不依赖。默认为 ``"chained"``。
     holding_update : str
         相邻调仓日之间的持仓估值方式；当前只支持基于日度收益复合的
-        ``"mark_to_market"`` close-to-close 漂移。
+        ``"mark_to_market"`` close-to-close 漂移，也是默认值。
     on_failure : str
-        ``"stop"`` 在首个失败日停止；``"hold"`` 保持实际持仓并继续后续日期。
+        ``"stop"`` 在首个失败日停止；``"hold"`` 保持实际持仓并继续后续日期。默认为
+        ``"stop"``。
     theta_seed : str
         ``"fixed"`` 总用固定初值，``"previous"`` 使用上一成功日 theta，``"auto"`` 在
-        链式模式使用上一日、独立模式使用固定值。
+        链式模式使用上一日、独立模式使用固定值；默认为 ``"auto"``。
     turnover_recovery : TurnoverRecoveryPolicy | None
-        显式换手率恢复授权；``None`` 表示绝不自动放宽。
+        显式换手率恢复授权；默认为 ``None``，表示绝不自动放宽。
     holding_missing_mass_tolerance : float
-        当前风险资产域允许缺失的上一期实际持仓权重上限。
+        当前风险资产域允许缺失的上一期实际持仓权重上限；默认为 ``0.0``。
     renormalize_missing_holdings : bool
-        是否在缺失质量未超限时删除缺失持仓并对剩余权重归一化。
+        是否在缺失质量未超限时删除缺失持仓并对剩余权重归一化；默认为 ``False``。
     output_weights : str
         ``"none"`` 不保存逐日权重，``"sparse"`` 仅保存清理后的非零权重，``"all"`` 保存
-        完整权重。
+        完整权重；默认为 ``"sparse"``。
     """
 
     mode: str = "chained"
@@ -1090,7 +1228,9 @@ class SequencePolicy:
         if self.mode not in {"chained", "independent"}:
             raise ValueError("sequence mode must be 'chained' or 'independent'")
         if self.holding_update != "mark_to_market":
-            raise ValueError("only close-to-close mark_to_market holding updates are supported")
+            raise ValueError(
+                "only close-to-close mark_to_market holding updates are supported"
+            )
         if self.on_failure not in {"stop", "hold"}:
             raise ValueError("on_failure must be 'stop' or 'hold'")
         if self.theta_seed not in {"auto", "fixed", "previous"}:
@@ -1099,6 +1239,8 @@ class SequencePolicy:
             not np.isfinite(self.holding_missing_mass_tolerance)
             or self.holding_missing_mass_tolerance < 0.0
         ):
-            raise ValueError("holding missing-mass tolerance must be finite and non-negative")
+            raise ValueError(
+                "holding missing-mass tolerance must be finite and non-negative"
+            )
         if self.output_weights not in {"none", "sparse", "all"}:
             raise ValueError("output_weights must be 'none', 'sparse', or 'all'")

@@ -23,7 +23,7 @@ optimizer = PortfolioOptimizer()
 | 数据源驱动的多期调仓 | `optimizer.optimize_range(...)` |
 | 显式每日问题的高级研究 | `optimizer.solve_sequence(...)` |
 | 静态输入检查 | `optimizer.validate(problem)` |
-| 指定失败问题的深度诊断 | `optimizer.diagnose(problem, prior_result=result)` |
+| 显式诊断单个问题或结果 | `optimizer.diagnose(result)` 或 `optimizer.diagnose(problem)` |
 
 普通不可行、迭代上限或数值失败不会自动抛异常，而是返回 `OptimizationResult`。输入 shape、
 单位、日期或模型定义错误会在求解前抛出 `PortfolioValidationError`。
@@ -203,14 +203,23 @@ else:
 
 ## 8. 不可行诊断
 
-普通求解不会自动运行高成本诊断。对于一个准确的失败 `PortfolioProblem`：
+普通求解不会自动运行高成本诊断。失败后显式调用示例：
 
 ```python
 result = optimizer.solve(problem)
 if not result.status.has_solution:
-    report = optimizer.diagnose(problem, prior_result=result, level="deep")
+    report = optimizer.diagnose(result, level="deep")
     print(report.summary_text)
 ```
 
-deep 诊断可能给出：线性 Phase-I 松弛、满足其他线性约束时的最小换手率、线性域可行时的
-最小 TE，以及各诊断尝试。`prior_result` 的 fingerprint 必须与重新诊断的问题完全一致。
+deep 诊断给出一个加权 Phase-I 松弛方案、最小换手率的数值对偶下界、存在风险预算时的
+最小风险候选 TE，以及各诊断尝试。`linear_feasible=None` 表示未确定；候选 TE 高于预算
+不能独立证明不可行，Phase-I 松弛不是唯一修复方案。`native_certificates` 保存原求解中
+已经存在的可选后端证据，乘子不代表业务重要性。
+
+单期结果保留 `problem` 引用；输入数组不可原地修改，诊断前验证 fingerprint。序列只保留
+`stopped_problem`，请与停止日结果一起传给 `diagnose(problem, prior_result=...)`。
+
+`diagnose` 同样接受尚未求解的问题和成功结果；`prior_result` 不要求失败状态。成功时仍会
+运行适用的额外 LP/QP，用于检查最小换手率或风险预算空间。当前解的指标直接查看
+`result.metrics`；只诊断不可行结果时，由调用方检查 `result.status is SolveStatus.INFEASIBLE`。

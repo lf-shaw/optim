@@ -12,9 +12,10 @@ import scipy.sparse as sp
 from ..canonical import FactorQCQP, LinearDomain, QuadraticProgram
 from ..contracts import (
     CoreFailureReason as FailureReason,
+    CoreInfeasibilityEvidence,
     CoreSolveStatus as SolveStatus,
 )
-from .base import BackendOptions, BackendResult
+from .base import BackendOptions, BackendResult, capture_infeasibility, dual_entries
 
 
 @dataclass(frozen=True)
@@ -37,6 +38,8 @@ class _ConicData:
         返回给公共层的原始 canonical 变量数量；不包含仅供锥提升使用的内部列。
     objective_scale : float
         为改善数值条件应用于原始目标的正比例缩放。
+    domain : LinearDomain
+        实际锥转换使用的线性域引用，仅在失败时生成逆映射，普通求解不分配逐行证据对象。
     """
 
     P: sp.csc_matrix
@@ -46,6 +49,7 @@ class _ConicData:
     cones: tuple[object, ...]
     output_variables: int
     objective_scale: float
+    domain: LinearDomain
 
 
 class ClarabelBackend:
@@ -162,6 +166,12 @@ class ClarabelBackend:
         native_gap = None
         if primal_objective is not None and dual_objective is not None:
             native_gap = abs(primal_objective - dual_objective) / data.objective_scale
+        evidence_errors: dict[str, Any] = {}
+        evidence = None
+        if status is SolveStatus.INFEASIBLE:
+            evidence = capture_infeasibility(
+                lambda: _infeasibility(data, solution, self.name), evidence_errors
+            )
         return BackendResult(
             backend=self.name,
             status=status,
@@ -172,7 +182,9 @@ class ClarabelBackend:
             iterations=int(getattr(solution, "iterations", 0) or 0),
             setup_s=setup_s,
             solve_s=solve_s,
+            infeasibility=evidence,
             diagnostics={
+                **evidence_errors,
                 "objective_scale": data.objective_scale,
                 "primal_objective_scaled": primal_objective,
                 "dual_objective_scaled": dual_objective,
@@ -203,6 +215,7 @@ def _build_conic_data(
             cones=cones,
             output_variables=domain.n_variables,
             objective_scale=objective_scale,
+            domain=domain,
         )
 
     # 复用为前沿 QP 编译的精确因子变量等式。
@@ -269,6 +282,51 @@ def _build_conic_data(
         cones=cones,
         output_variables=model.domain.n_variables,
         objective_scale=objective_scale,
+        domain=domain,
+    )
+
+
+def _infeasibility(
+    data: _ConicData, solution: Any, backend: str
+) -> CoreInfeasibilityEvidence:
+    """按 _linear_cones 的块顺序恢复坐标，风险锥保留全部带符号分量。"""
+
+    d = data.domain
+    equal = (
+        np.isfinite(d.lower)
+        & np.isfinite(d.upper)
+        & np.isclose(d.lower, d.upper, rtol=0, atol=1e-14)
+    )
+    z = np.asarray(solution.z, dtype=float)
+    if z.shape != data.b.shape or not np.all(np.isfinite(z)):
+        raise ValueError("invalid Clarabel certificate")
+    entries = []
+    offset = 0
+    for location, side, mask in (
+        ("row", "equal", equal),
+        ("row", "upper", ~equal & np.isfinite(d.upper)),
+        ("row", "lower", ~equal & np.isfinite(d.lower)),
+        ("variable", "upper", np.isfinite(d.variable_upper)),
+        ("variable", "lower", np.isfinite(d.variable_lower)),
+    ):
+        indices = np.flatnonzero(mask)
+        entries += dual_entries(
+            location, indices, side, z[offset : offset + len(indices)]
+        )
+        offset += len(indices)
+    entries += dual_entries(
+        "cone", np.arange(len(z) - offset), "cone", z[offset:], "tracking_error"
+    )
+    scale = max(1.0, float(np.max(np.abs(z), initial=0)))
+    return CoreInfeasibilityEvidence(
+        backend,
+        "primal_infeasibility_certificate",
+        "numerical_estimate",
+        str(solution.status),
+        tuple(entries),
+        certificate_residual=float(np.max(np.abs(data.A.T @ z), initial=0)) / scale,
+        certificate_margin=float(-data.b @ z) / scale,
+        metadata={"coordinates": "conic_lift", "cone_component_indices": True},
     )
 
 
@@ -371,7 +429,11 @@ def _map_status(native: str) -> tuple[SolveStatus, FailureReason | None]:
     if "dualinfeasible" in normalized:
         return SolveStatus.UNBOUNDED, FailureReason.UNBOUNDED_REPORTED
     if "maxiterations" in normalized or "maxtime" in normalized:
-        reason = FailureReason.TIME_LIMIT if "maxtime" in normalized else FailureReason.MAX_ITER
+        reason = (
+            FailureReason.TIME_LIMIT
+            if "maxtime" in normalized
+            else FailureReason.MAX_ITER
+        )
         return SolveStatus.LIMIT_REACHED, reason
     if "numerical" in normalized or "insufficientprogress" in normalized:
         return SolveStatus.NUMERICAL_ERROR, FailureReason.NUMERICAL_FAILURE

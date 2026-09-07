@@ -77,13 +77,16 @@ class CoreSolver:
         *,
         theta_seed: float | None = None,
         objective_tolerance: float,
+        collect_dual_bound: bool = False,
     ) -> CoreSolveResult:
-        """在一次边界调用内完成主求解、独立复算和必要回退。"""
+        """完成求解及验收；仅显式诊断通过 ``collect_dual_bound`` 请求 LP 数值下界。"""
 
         if not isinstance(handle, CoreProblemHandle):
             raise TypeError("invalid core problem handle")
         model = handle.model
         backend_options = self._backend_options()
+        if collect_dual_bound:
+            backend_options = replace(backend_options, collect_dual_bound=True)
         if isinstance(model, LinearProgram):
             primary = HighsBackend().solve(model, backend_options)
         elif isinstance(model, QuadraticProgram):
@@ -113,8 +116,7 @@ class CoreSolver:
             if (
                 not accepted
                 and not licensed_terminal
-                and self.options.free_fallback.lower()
-                in {"clarabel", "clarabel_qdldl"}
+                and self.options.free_fallback.lower() in {"clarabel", "clarabel_qdldl"}
             ):
                 fallback = ClarabelBackend().solve(model, backend_options)
                 fallback, accepted, max_violation = self._audit(model, fallback)

@@ -17,9 +17,10 @@ import scipy.sparse as sp
 from ..canonical import QuadraticProgram
 from ..contracts import (
     CoreFailureReason as FailureReason,
+    CoreInfeasibilityEvidence,
     CoreSolveStatus as SolveStatus,
 )
-from .base import BackendOptions, BackendResult
+from .base import BackendOptions, BackendResult, capture_infeasibility, dual_entries
 
 
 def piqp_distribution_version() -> str | None:
@@ -80,7 +81,13 @@ def _constraint_data(
     general_lower = domain.lower[~equality].copy()
     general_upper = domain.upper[~equality].copy()
     if form == "compact":
-        return equality_matrix, equality_rhs, general_matrix, general_lower, general_upper
+        return (
+            equality_matrix,
+            equality_rhs,
+            general_matrix,
+            general_lower,
+            general_upper,
+        )
     finite_upper = np.isfinite(general_upper)
     finite_lower = np.isfinite(general_lower)
     inequality_matrix = sp.vstack(
@@ -133,8 +140,8 @@ class PIQPBackend:
         if not isinstance(model, QuadraticProgram):
             raise TypeError("PIQPBackend accepts QuadraticProgram only")
         form = resolve_piqp_inequality_form(options.inequality_form)
-        equality, equality_rhs, inequality, inequality_lower, inequality_upper = _constraint_data(
-            model, form
+        equality, equality_rhs, inequality, inequality_lower, inequality_upper = (
+            _constraint_data(model, form)
         )
         objective_scale = _objective_scale(model, options.objective_scale_target)
         P = (model.P * objective_scale).tocsc()
@@ -172,7 +179,10 @@ class PIQPBackend:
                 reason=FailureReason.INVALID_NUMERICS,
                 message=f"{type(exc).__name__}: {exc}",
                 setup_s=time.perf_counter() - setup_started,
-                diagnostics={"inequality_form": form, "objective_scale": objective_scale},
+                diagnostics={
+                    "inequality_form": form,
+                    "objective_scale": objective_scale,
+                },
             )
         setup_s = time.perf_counter() - setup_started
         solve_started = time.perf_counter()
@@ -189,7 +199,10 @@ class PIQPBackend:
                 message=f"{type(exc).__name__}: {exc}",
                 setup_s=setup_s,
                 solve_s=time.perf_counter() - solve_started,
-                diagnostics={"inequality_form": form, "objective_scale": objective_scale},
+                diagnostics={
+                    "inequality_form": form,
+                    "objective_scale": objective_scale,
+                },
             )
         solve_s = time.perf_counter() - solve_started
         result = solver.result
@@ -214,6 +227,12 @@ class PIQPBackend:
             "solver_setup_s": _number(info, "setup_time"),
             "solver_solve_s": _number(info, "solve_time", "run_time"),
         }
+        evidence = None
+        if status is SolveStatus.INFEASIBLE:
+            evidence = capture_infeasibility(
+                lambda: _infeasibility(model, result, form, str(native_status)),
+                diagnostics,
+            )
         return BackendResult(
             backend=self.name,
             status=status,
@@ -225,7 +244,37 @@ class PIQPBackend:
             setup_s=setup_s,
             solve_s=solve_s,
             diagnostics=diagnostics,
+            infeasibility=evidence,
         )
+
+
+def _infeasibility(
+    model: QuadraticProgram, result: Any, form: str, native: str
+) -> CoreInfeasibilityEvidence:
+    """映射单次 QP 的原生对偶估计；前沿搜索的参数 QP 不通过此入口冒充原问题证书。"""
+
+    d = model.domain
+    equal = (
+        np.isfinite(d.lower)
+        & np.isfinite(d.upper)
+        & np.isclose(d.lower, d.upper, rtol=0, atol=1e-14)
+    )
+    rows = np.flatnonzero(~equal)
+    entries = dual_entries("row", np.flatnonzero(equal), "equal", result.y)
+    if form == "compact":
+        entries += dual_entries("row", rows, "lower", result.z_l)
+        entries += dual_entries("row", rows, "upper", result.z_u)
+    else:
+        upper = rows[np.isfinite(d.upper[rows])]
+        lower = rows[np.isfinite(d.lower[rows])]
+        entries += dual_entries("row", upper, "upper", result.z_u[: len(upper)])
+        entries += dual_entries("row", lower, "lower", result.z_u[len(upper) :])
+    columns = np.arange(d.n_variables)
+    entries += dual_entries("variable", columns, "lower", result.z_bl)
+    entries += dual_entries("variable", columns, "upper", result.z_bu)
+    return CoreInfeasibilityEvidence(
+        "piqp", "native_dual_estimate", "numerical_estimate", native, tuple(entries)
+    )
 
 
 def _objective_scale(model: QuadraticProgram, target: float | None) -> float:

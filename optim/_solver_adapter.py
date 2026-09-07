@@ -13,7 +13,9 @@ from .portfolio_types import (
     AlignmentReport,
     ConstraintViolation,
     FailureReason,
+    InfeasibilityContributor,
     MaximizeAlpha,
+    NativeInfeasibilityEvidence,
     OptimalityCertificate,
     OptimizationResult,
     PortfolioMetrics,
@@ -163,7 +165,9 @@ class SolverAdapter:
     @staticmethod
     def _require_handle(handle: object) -> SolverHandle:
         if not isinstance(handle, SolverHandle):
-            raise TypeError("prepared problem does not contain a valid optim core handle")
+            raise TypeError(
+                "prepared problem does not contain a valid optim core handle"
+            )
         return handle
 
     def _audit_backend_result(
@@ -178,7 +182,9 @@ class SolverAdapter:
         metrics = PortfolioMetrics()
         violations: tuple[ConstraintViolation, ...] = ()
         max_violation = 0.0
-        accepted = backend_result.status.has_solution and backend_result.primal is not None
+        accepted = (
+            backend_result.status.has_solution and backend_result.primal is not None
+        )
         if accepted:
             assert backend_result.primal is not None
             metrics, violations, max_violation = evaluate_solution(
@@ -196,13 +202,15 @@ class SolverAdapter:
                     ),
                 )
             else:
-                backend_result, metrics, violations, max_violation = self._clean_solution(
-                    problem,
-                    compiled,
-                    backend_result,
-                    metrics,
-                    violations,
-                    max_violation,
+                backend_result, metrics, violations, max_violation = (
+                    self._clean_solution(
+                        problem,
+                        compiled,
+                        backend_result,
+                        metrics,
+                        violations,
+                        max_violation,
+                    )
                 )
         return backend_result, _Evaluation(
             metrics=metrics,
@@ -413,7 +421,125 @@ class SolverAdapter:
             timings=timings,
             fingerprint=compiled.fingerprint,
             message=message,
+            native_infeasibility=tuple(
+                evidence
+                for item in backend_results
+                if (evidence := _native_infeasibility(item, compiled)) is not None
+            ),
+            problem=problem,
         )
+
+
+def _native_infeasibility(
+    result: BackendResult,
+    compiled: CompiledProblem,
+) -> NativeInfeasibilityEvidence | None:
+    """将核心证书坐标映射回稳定业务约束；不解释任何后端日志或专用文本。"""
+
+    evidence = result.infeasibility
+    if evidence is None:
+        return None
+    domain = compiled.model.domain
+    records = {(record.location, record.index): record for record in domain.constraints}
+    contributors: list[InfeasibilityContributor] = []
+    for item in evidence.contributors:
+        record = records.get((item.location, item.index))
+        if record is None and item.location != "cone":
+            # 编译器的硬辅助行不一定进入公共 registry。保留稳定 canonical 坐标，避免
+            # 因展示层缺少标签而丢失求解器证据。
+            constraint_id = f"canonical:{item.location}:{item.index}"
+            group = "canonical_internal"
+            key = None
+            configured_bound = _configured_bound(
+                domain, item.location, item.index, item.side
+            )
+            sources = ("compiler",)
+            metadata: dict[str, Any] = {}
+        elif record is not None:
+            constraint_id = record.constraint_id
+            group = record.group
+            key = record.key
+            configured_bound = _configured_bound(
+                domain, item.location, item.index, item.side
+            )
+            source_key = f"{item.side}_sources"
+            raw_sources = record.metadata.get(source_key)
+            if raw_sources is None:
+                sources = (record.source,)
+            elif isinstance(raw_sources, str):
+                sources = (raw_sources,)
+            else:
+                sources = tuple(str(value) for value in raw_sources)
+            metadata = dict(record.metadata)
+        else:
+            constraint_id = item.identifier or f"canonical:cone:{item.index}"
+            group = item.identifier or "conic_constraint"
+            key = None
+            configured_bound = (
+                float(compiled.model.risk_limit)
+                if item.identifier == "tracking_error"
+                and isinstance(compiled.model, FactorQCQP)
+                else None
+            )
+            sources = (
+                ("tracking_error",)
+                if item.identifier == "tracking_error"
+                else ("compiler",)
+            )
+            metadata = {}
+        contributors.append(
+            InfeasibilityContributor(
+                constraint_id=constraint_id,
+                group=group,
+                location=item.location,
+                side=item.side,
+                multiplier=float(item.multiplier),
+                key=key,
+                configured_bound=configured_bound,
+                sources=sources,
+                metadata={**metadata, "canonical_index": item.index},
+            )
+        )
+    return NativeInfeasibilityEvidence(
+        backend=evidence.backend,
+        kind=evidence.kind,
+        proof_status=ProofStatus(evidence.proof_status),
+        native_status=evidence.native_status,
+        contributors=tuple(contributors),
+        certificate_residual=evidence.certificate_residual,
+        certificate_margin=evidence.certificate_margin,
+        metadata=evidence.metadata,
+        fingerprint=compiled.fingerprint,
+        scope=(
+            "linear_relaxation"
+            if isinstance(compiled.model, FactorQCQP) and evidence.backend == "highs"
+            else "original"
+        ),
+    )
+
+
+def _configured_bound(
+    domain: Any,
+    location: str,
+    index: int,
+    side: str,
+) -> float | None:
+    """读取一个 canonical 证书坐标所对应的原始边界。"""
+
+    if location == "row":
+        values = domain.lower if side in {"lower", "equal"} else domain.upper
+    elif location == "variable":
+        values = (
+            domain.variable_lower
+            if side in {"lower", "equal"}
+            else domain.variable_upper
+        )
+    else:
+        return None
+    if index < 0 or index >= len(values):
+        return None
+    value = float(values[index])
+    return value if np.isfinite(value) else None
 
 
 def _certificate(
@@ -427,7 +553,10 @@ def _certificate(
 
     model = compiled.model
     diagnostics = result.diagnostics
-    if isinstance(model, FactorQCQP) and diagnostics.get("lp_prescreen_certified") is True:
+    if (
+        isinstance(model, FactorQCQP)
+        and diagnostics.get("lp_prescreen_certified") is True
+    ):
         alpha_spec = problem.data.alpha_spec
         assert alpha_spec is not None
         gap = float(diagnostics.get("certified_objective_gap", 0.0))
@@ -477,7 +606,9 @@ def _certificate(
                 else ProofStatus.UNAVAILABLE
             ),
             primal_value=objective_value,
-            dual_bound=(objective_value + native_gap if native_gap is not None else None),
+            dual_bound=(
+                objective_value + native_gap if native_gap is not None else None
+            ),
             absolute_gap=native_gap,
             normalized_gap=(
                 native_gap / alpha_spec.scale if native_gap is not None else None
@@ -488,14 +619,15 @@ def _certificate(
         )
 
     verified = (
-        isinstance(model, LinearProgram)
-        and result.status is CoreSolveStatus.OPTIMAL
+        isinstance(model, LinearProgram) and result.status is CoreSolveStatus.OPTIMAL
     )
     gap = float(diagnostics.get("certified_objective_gap", 0.0))
     alpha_spec = problem.data.alpha_spec
     return OptimalityCertificate(
         kind="backend_primal_dual" if verified else "backend_kkt",
-        proof_status=ProofStatus.VERIFIED if verified else ProofStatus.NUMERICAL_ESTIMATE,
+        proof_status=ProofStatus.VERIFIED
+        if verified
+        else ProofStatus.NUMERICAL_ESTIMATE,
         primal_value=objective_value,
         dual_bound=objective_value + gap if verified else None,
         absolute_gap=gap if verified else None,

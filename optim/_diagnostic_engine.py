@@ -1,8 +1,9 @@
 """显式且可能较昂贵的不可行诊断。
 
-普通求解失败会立即返回，不自动进入本模块。调用方选择一个失败问题并请求 ``level='deep'``，
+普通求解不会自动进入本模块。调用方选择一个问题并请求 ``level='deep'``，
 才会计算 Phase-I 松弛、最小线性换手率下界，以及适用时的最小跟踪误差。诊断复用 canonical
 registry 元数据，因此证据以业务约束名称报告，而不是匿名矩阵行。
+成功结果同样允许显式诊断，且仍会执行适用的诊断子问题。
 """
 
 from __future__ import annotations
@@ -55,7 +56,7 @@ def diagnose_problem(
     policy : SolverPolicy
         诊断子问题使用的数值容差和后端设置。
     prior_result : OptimizationResult | None
-        同一问题此前的失败结果；提供时必须具有完全相同的 fingerprint。
+        同一问题此前的求解结果，可成功或失败；提供时必须具有完全相同的 fingerprint。
     level : str
         显式诊断深度；当前仅支持 ``"deep"``。
 
@@ -73,14 +74,12 @@ def diagnose_problem(
     if level != "deep":
         raise ValueError("only explicit level='deep' diagnostics are supported")
     if prior_result is not None and prior_result.fingerprint != compiled.fingerprint:
-        raise ValueError("prior result fingerprint does not match the diagnosed problem")
+        raise ValueError(
+            "prior result fingerprint does not match the diagnosed problem"
+        )
 
     phase_result, relaxations = _solve_phase_one(compiled.model.domain, policy)
-    linear_feasible = bool(
-        phase_result.status.has_solution
-        and sum(item.amount for item in relaxations)
-        <= policy.tuning.feasibility_tolerance
-    )
+    linear_feasible = _linear_feasibility(phase_result, compiled.model.domain, policy)
     attempts = [_attempt(phase_result, "diagnostic_phase_one")]
     turnover_lower = None
     if problem.constraints.turnover is not None:
@@ -92,7 +91,7 @@ def diagnose_problem(
         attempts.append(_attempt(turnover_result, "diagnostic_minimum_turnover"))
 
     minimum_te = None
-    if linear_feasible and problem.data.risk_model is not None and problem.data.benchmark is not None:
+    if linear_feasible is True and problem.constraints.tracking_error is not None:
         from .api import PortfolioOptimizer
 
         min_risk_problem = replace(
@@ -100,6 +99,9 @@ def diagnose_problem(
             objective=MinimizeTrackingError(),
             constraints=replace(problem.constraints, tracking_error=None),
         )
+        # 原目标中的 alpha_floor 实际也是约束；改变目标时必须保留其可行域。
+        if isinstance(problem.objective, MinimizeTrackingError):
+            min_risk_problem = replace(min_risk_problem, objective=problem.objective)
         min_risk_result = PortfolioOptimizer(policy).solve(min_risk_problem)
         attempts.extend(min_risk_result.route)
         if min_risk_result.status.has_solution:
@@ -136,9 +138,46 @@ def diagnose_problem(
         native_evidence={
             "phase_one_status": phase_result.native_status,
             "phase_one_objective": phase_result.objective_value,
+            "phase_one_dual_lower_bound": phase_result.diagnostics.get(
+                "dual_lower_bound"
+            ),
+            "conclusion_basis": "numerical_estimate"
+            if linear_feasible is False
+            else "primal_witness"
+            if linear_feasible is True
+            else "unavailable",
         },
+        native_certificates=(
+            () if prior_result is None else prior_result.native_infeasibility
+        ),
         attempts=tuple(attempts),
     )
+
+
+def _linear_feasibility(
+    result: CoreBackendResult, domain: LinearDomain, policy: SolverPolicy
+) -> bool | None:
+    """以完整原域残差确认可行，以数值对偶下界支持不可行，其余情况保留未确定。"""
+
+    tolerance = policy.tuning.feasibility_tolerance
+    if result.status.has_solution and result.primal is not None:
+        x = result.primal[: domain.n_variables]
+        activity = domain.A @ x
+        if np.all(np.isfinite(x)) and np.all(np.isfinite(activity)):
+            violations = np.concatenate(
+                (
+                    domain.lower - activity,
+                    activity - domain.upper,
+                    domain.variable_lower - x,
+                    x - domain.variable_upper,
+                )
+            )
+            if np.max(violations, initial=0.0) <= tolerance:
+                return True
+        lower = result.diagnostics.get("dual_lower_bound")
+        if lower is not None and np.isfinite(lower) and lower > tolerance:
+            return False
+    return None
 
 
 def _solve_phase_one(
@@ -153,12 +192,16 @@ def _solve_phase_one(
     variable_records = {
         item.index: item for item in domain.constraints if item.location == "variable"
     }
-    row_specs: list[tuple[sp.csc_matrix, float, float, ConstraintRecord | None, str, float]] = []
+    row_specs: list[
+        tuple[sp.csc_matrix, float, float, ConstraintRecord | None, str, float]
+    ] = []
     for index in range(domain.n_constraints):
         record = row_records.get(index)
         row = domain.A[index].tocsc()
         if record is None or not record.relaxable:
-            row_specs.append((row, domain.lower[index], domain.upper[index], record, "hard", 0.0))
+            row_specs.append(
+                (row, domain.lower[index], domain.upper[index], record, "hard", 0.0)
+            )
             continue
         if np.isfinite(domain.lower[index]):
             row_specs.append((row, domain.lower[index], np.inf, record, "lower", 1.0))
@@ -171,14 +214,16 @@ def _solve_phase_one(
         record = variable_records.get(index)
         if record is None or not record.relaxable:
             continue
-        unit_row = sp.csc_matrix(
-            ([1.0], ([0], [index])), shape=(1, domain.n_variables)
-        )
+        unit_row = sp.csc_matrix(([1.0], ([0], [index])), shape=(1, domain.n_variables))
         if np.isfinite(domain.variable_lower[index]):
-            row_specs.append((unit_row, domain.variable_lower[index], np.inf, record, "lower", 1.0))
+            row_specs.append(
+                (unit_row, domain.variable_lower[index], np.inf, record, "lower", 1.0)
+            )
             variable_lower[index] = -np.inf
         if np.isfinite(domain.variable_upper[index]):
-            row_specs.append((unit_row, -np.inf, domain.variable_upper[index], record, "upper", -1.0))
+            row_specs.append(
+                (unit_row, -np.inf, domain.variable_upper[index], record, "upper", -1.0)
+            )
             variable_upper[index] = np.inf
 
     slack_specs = [item for item in row_specs if item[4] != "hard"]
@@ -190,7 +235,9 @@ def _solve_phase_one(
     slack_values: list[float] = []
     slack_meta: list[tuple[ConstraintRecord, str, float, float]] = []
     slack_index = 0
-    for row_index, (_, row_lower, row_upper, record, side, sign) in enumerate(row_specs):
+    for row_index, (_, row_lower, row_upper, record, side, sign) in enumerate(
+        row_specs
+    ):
         if side == "hard":
             continue
         assert record is not None
@@ -247,10 +294,23 @@ def _solve_phase_one(
                         configured_bound=bound,
                         diagnostic_scale=scale,
                         key=record.key,
+                        sources=_record_sources(record, side),
+                        metadata=record.metadata,
                     )
                 )
     relaxations.sort(key=lambda item: item.amount / item.diagnostic_scale, reverse=True)
     return result, tuple(relaxations)
+
+
+def _record_sources(record: ConstraintRecord, side: str) -> tuple[str, ...]:
+    """返回有效边界的配置来源；普通约束退回其单一 ``source``。"""
+
+    raw = record.metadata.get(f"{side}_sources")
+    if raw is None:
+        return (record.source,)
+    if isinstance(raw, str):
+        return (raw,)
+    return tuple(str(value) for value in raw)
 
 
 def _minimum_linear_turnover(
@@ -293,7 +353,14 @@ def _minimum_linear_turnover(
         for item in turnover_aux:
             c[item.index] = 1.0
     result = _solve_core_lp(LinearProgram(CanonicalKind.LP, reduced, c), policy)
-    value = result.objective_value if result.status.has_solution else None
+    # 可行候选目标是最小化问题的上界；不能作为后续恢复的不可行排除下界。
+    value = (
+        result.diagnostics.get("dual_lower_bound")
+        if result.status.has_solution
+        else None
+    )
+    if value is not None:
+        value = max(0.0, float(value))
     return result, value
 
 
@@ -309,6 +376,7 @@ def _solve_core_lp(
     return core.solve(
         core.prepare(model),
         objective_tolerance=0.0,
+        collect_dual_bound=True,
     ).final
 
 
@@ -316,9 +384,7 @@ def _attempt(result: CoreBackendResult, phase: str) -> SolverAttempt:
     return SolverAttempt(
         backend=result.backend,
         status=SolveStatus(result.status.value),
-        reason=(
-            None if result.reason is None else FailureReason(result.reason.value)
-        ),
+        reason=(None if result.reason is None else FailureReason(result.reason.value)),
         native_status=result.native_status,
         message=result.message,
         solve_s=result.solve_s,
@@ -327,27 +393,42 @@ def _attempt(result: CoreBackendResult, phase: str) -> SolverAttempt:
 
 
 def _summary(
-    linear_feasible: bool,
+    linear_feasible: bool | None,
     relaxations: tuple[RequiredRelaxation, ...],
     turnover_lower: float | None,
     turnover_limit: float | None,
     minimum_te: float | None,
     tracking_limit: float | None,
 ) -> str:
-    parts = ["线性约束可行。" if linear_feasible else "问题的线性部分不可行。"]
-    if turnover_lower is not None and turnover_limit is not None and turnover_lower > turnover_limit:
+    parts = [
+        "已找到满足容差的线性可行候选。"
+        if linear_feasible is True
+        else "Phase-I 数值对偶下界支持线性部分不可行。"
+        if linear_feasible is False
+        else "线性可行性尚未确定，诊断未得到充分证据。"
+    ]
+    if (
+        turnover_lower is not None
+        and turnover_limit is not None
+        and turnover_lower > turnover_limit
+    ):
         parts.append(
-            f"保持其他线性约束时，最小双边换手率为 {turnover_lower:.4%}，"
-            f"高于约束 {turnover_limit:.4%}，至少需增加 {turnover_lower-turnover_limit:.4%}。"
+            f"保持其他线性约束时，最小双边换手率的数值下界为 {turnover_lower:.4%}，"
+            f"高于约束 {turnover_limit:.4%}；此界为浮点数值估计。"
         )
-    if minimum_te is not None and tracking_limit is not None and minimum_te > tracking_limit:
+    if (
+        minimum_te is not None
+        and tracking_limit is not None
+        and minimum_te > tracking_limit
+    ):
         parts.append(
-            f"线性可行域内最小年化跟踪误差为 {minimum_te:.4%}，"
-            f"高于预算 {tracking_limit:.4%}，至少需增加 {minimum_te-tracking_limit:.4%}。"
+            f"风险最小化候选的年化跟踪误差为 {minimum_te:.4%}，"
+            f"高于预算 {tracking_limit:.4%}；候选值是最小风险的上界，不能单凭它确认预算不可行。"
         )
     if relaxations:
         leading = relaxations[0]
         parts.append(
-            f"最大 Phase-I 松弛来自 {leading.constraint_id}，所需松弛 {leading.amount:.6g}。"
+            f"一个加权 Phase-I 松弛方案涉及 {leading.constraint_id}，松弛 {leading.amount:.6g}；"
+            "该方案取决于松弛权重，不是唯一修复，也不代表每条边界必须放宽该数值。"
         )
     return "".join(parts)

@@ -10,9 +10,11 @@ import numpy as np
 from ..canonical import LinearProgram
 from ..contracts import (
     CoreFailureReason as FailureReason,
+    CoreInfeasibilityContributor,
+    CoreInfeasibilityEvidence,
     CoreSolveStatus as SolveStatus,
 )
-from .base import BackendOptions, BackendResult
+from .base import BackendOptions, BackendResult, capture_infeasibility
 
 
 class HighsBackend:
@@ -108,10 +110,25 @@ class HighsBackend:
         )
         diagnostics = {
             "run_status": str(run_status),
-            "max_primal_infeasibility": float(getattr(info, "max_primal_infeasibility", np.nan)),
-            "max_dual_infeasibility": float(getattr(info, "max_dual_infeasibility", np.nan)),
-            "native_objective": float(getattr(info, "objective_function_value", np.nan)),
+            "max_primal_infeasibility": float(
+                getattr(info, "max_primal_infeasibility", np.nan)
+            ),
+            "max_dual_infeasibility": float(
+                getattr(info, "max_dual_infeasibility", np.nan)
+            ),
+            "native_objective": float(
+                getattr(info, "objective_function_value", np.nan)
+            ),
         }
+        if options.collect_dual_bound and status.has_solution and solution.dual_valid:
+            diagnostics["dual_lower_bound"] = _dual_lower_bound(
+                model, solution.row_dual
+            )
+        evidence = None
+        if status is SolveStatus.INFEASIBLE:
+            evidence = capture_infeasibility(
+                lambda: _dual_ray(solver, model, highspy, str(native)), diagnostics
+            )
         return BackendResult(
             backend=self.name,
             status=status,
@@ -123,10 +140,69 @@ class HighsBackend:
             setup_s=setup_s,
             solve_s=solve_s,
             diagnostics=diagnostics,
+            infeasibility=evidence,
         )
 
 
-def _map_status(native: object, highspy: Any) -> tuple[SolveStatus, FailureReason | None]:
+def _dual_lower_bound(model: LinearProgram, dual: Any) -> float | None:
+    """以原矩阵复算 LP 拉格朗日下界；无穷变量侧有不利残差时放弃该界。
+
+    保留浮点数值估计语义，不通过截断残差把不可用的界提升为严格证书。
+    """
+
+    d = model.domain
+    y = np.asarray(dual, dtype=float)
+    reduced = model.c - d.A.T @ y
+    row_bound = np.where(y > 0, d.lower, d.upper)
+    col_bound = np.where(reduced > 0, d.variable_lower, d.variable_upper)
+    row_mask, col_mask = y != 0, reduced != 0
+    if not (np.all(np.isfinite(y)) and np.all(np.isfinite(reduced))):
+        return None
+    if not (
+        np.all(np.isfinite(row_bound[row_mask]))
+        and np.all(np.isfinite(col_bound[col_mask]))
+    ):
+        return None
+    return float(
+        y[row_mask] @ row_bound[row_mask]
+        + reduced[col_mask] @ col_bound[col_mask]
+        + model.objective_offset
+    )
+
+
+def _dual_ray(
+    solver: Any, model: LinearProgram, highspy: Any, native: str
+) -> CoreInfeasibilityEvidence | None:
+    """仅获取已经存在的 ray；presolve 没有留下 ray 时不触发 HiGHS 补充求解。"""
+
+    status, exists = solver.getDualRayExist()
+    if status != highspy.HighsStatus.kOk or not exists:
+        return None
+    status, exists, ray = solver.getDualRay()
+    if status != highspy.HighsStatus.kOk or not exists:
+        return None
+    y = np.asarray(ray, dtype=float)
+    if not np.all(np.isfinite(y)):
+        return None
+    entries = []
+    for i in np.flatnonzero(y):
+        side = "lower" if y[i] > 0 else "upper"
+        entries.append(CoreInfeasibilityContributor("row", int(i), side, float(y[i])))
+    # HiGHS ray 给出行乘子；变量边界参与抵消行系数，因此也要映射回原变量域。
+    reduced = -model.domain.A.T @ y
+    for i in np.flatnonzero(reduced):
+        side = "lower" if reduced[i] > 0 else "upper"
+        entries.append(
+            CoreInfeasibilityContributor("variable", int(i), side, float(reduced[i]))
+        )
+    return CoreInfeasibilityEvidence(
+        "highs", "dual_ray", "numerical_estimate", native, tuple(entries)
+    )
+
+
+def _map_status(
+    native: object, highspy: Any
+) -> tuple[SolveStatus, FailureReason | None]:
     model_status = highspy.HighsModelStatus
     if native in {model_status.kOptimal, model_status.kObjectiveTarget}:
         return SolveStatus.OPTIMAL, None

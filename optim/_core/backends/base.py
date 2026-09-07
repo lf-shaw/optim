@@ -15,6 +15,8 @@ import numpy as np
 
 from ..contracts import (
     CoreFailureReason as FailureReason,
+    CoreInfeasibilityEvidence,
+    CoreInfeasibilityContributor,
     CoreSolveStatus as SolveStatus,
 )
 
@@ -37,6 +39,8 @@ class BackendOptions:
         适配器改善条件数时使用的目标缩放量级；``None`` 禁用后端侧目标缩放。
     inequality_form : str
         PIQP 不等式表示（``"auto"``、``"compact"`` 或 ``"one_sided"``）；其他后端忽略。
+    collect_dual_bound : bool
+        显式诊断 LP 是否复算拉格朗日下界；默认关闭，避免普通优化增加矩阵运算。
     """
 
     verbose: bool = False
@@ -46,6 +50,7 @@ class BackendOptions:
     eps_rel: float = 1e-8
     objective_scale_target: float | None = 0.2
     inequality_form: str = "auto"
+    collect_dual_bound: bool = False
 
 
 @dataclass(frozen=True)
@@ -76,6 +81,9 @@ class BackendResult:
         适配器测得的建立与求解秒数。
     diagnostics : Mapping[str, Any]
         只读后端专用遥测；调用方不得将其当作独立可行性证书。
+    infeasibility : CoreInfeasibilityEvidence | None
+        求解时已经产生的结构化原生不可行证书；不可用时为 ``None``。该字段不会触发额外
+        求解，也不替代显式 Phase-I 诊断。
     """
 
     backend: str
@@ -89,9 +97,12 @@ class BackendResult:
     setup_s: float = 0.0
     solve_s: float = 0.0
     diagnostics: Mapping[str, Any] = field(default_factory=dict)
+    infeasibility: CoreInfeasibilityEvidence | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "diagnostics", MappingProxyType(dict(self.diagnostics)))
+        object.__setattr__(
+            self, "diagnostics", MappingProxyType(dict(self.diagnostics))
+        )
 
 
 class SolverBackend(Protocol):
@@ -115,3 +126,31 @@ class SolverBackend(Protocol):
             标准化原生状态、候选向量和遥测。
         """
         ...
+
+
+def capture_infeasibility(
+    reader: Any, diagnostics: dict[str, Any]
+) -> CoreInfeasibilityEvidence | None:
+    """隔离可选原生证据读取失败；不改变原求解状态，也不执行额外求解。"""
+
+    try:
+        return reader()
+    except Exception as exc:
+        diagnostics["infeasibility_evidence_error"] = type(exc).__name__
+        return None
+
+
+def dual_entries(
+    location: str, indices: Any, side: str, values: Any, identifier: str | None = None
+) -> list[CoreInfeasibilityContributor]:
+    """按原生顺序保留非零带符号乘子；不按幅度裁剪证书，不推导冲突排名。"""
+
+    vector = np.asarray(values, dtype=float).reshape(-1)
+    positions = np.asarray(indices).reshape(-1)
+    if len(vector) != len(positions) or not np.all(np.isfinite(vector)):
+        raise ValueError("invalid native certificate shape or numerics")
+    return [
+        CoreInfeasibilityContributor(location, int(i), side, float(v), identifier)
+        for i, v in zip(positions, vector)
+        if v != 0.0
+    ]

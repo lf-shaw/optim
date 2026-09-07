@@ -18,6 +18,8 @@ from .canonical import (
 )
 from .contracts import (
     CoreFailureReason,
+    CoreInfeasibilityContributor,
+    CoreInfeasibilityEvidence,
     CoreSolveStatus,
     CoreSolverOptions,
 )
@@ -35,6 +37,8 @@ __all__ = [
     "CanonicalModel",
     "ConstraintRecord",
     "CoreFailureReason",
+    "CoreInfeasibilityContributor",
+    "CoreInfeasibilityEvidence",
     "CoreBackendResult",
     "CoreProblemHandle",
     "CoreSolveResult",

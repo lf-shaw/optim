@@ -94,7 +94,7 @@ else:
 | 已显式构造每日问题 | `optimizer.solve_sequence(...)` |
 | 只检查静态输入 | `optimizer.validate(problem)` |
 | 复用已准备的单日问题 | `optimizer.prepare(problem)` + `solve_prepared(prepared)` |
-| 深度诊断指定失败问题 | `optimizer.diagnose(problem, prior_result=result)` |
+| 显式诊断单个问题或结果 | `optimizer.diagnose(result)` 或 `optimizer.diagnose(problem)` |
 
 推荐层级：
 
@@ -704,16 +704,14 @@ alpha 的预处理或 scale 改变后，必须重新确认该容差的经济含�
 
 ## 16. 不可行诊断
 
-深度诊断可能包含额外 LP/QP，因此不会在普通失败路径自动运行。对一个准确的失败问题显式
-调用：
+深度诊断可能包含额外 LP/QP，因此不会在普通求解路径自动运行。下面是失败后显式诊断的例子：
 
 ```python
 result = optimizer.solve(problem)
 
 if not result.status.has_solution:
     report = optimizer.diagnose(
-        problem,
-        prior_result=result,
+        result,
         level="deep",
     )
     print(report.summary_text)
@@ -726,12 +724,46 @@ if not result.status.has_solution:
 
 deep 诊断会按问题结构尝试：
 
-1. 线性 Phase-I，报告需要放宽的具名约束；
-2. 删除总换手率上限后，计算满足其余线性约束的最小 L1 换手率；
-3. 线性域可行且有风险模型时，计算最小 TE；
+1. 线性 Phase-I，报告一个加权松弛方案及边界的配置来源；
+2. 配置了换手率时，删除该上限并计算最小 L1 换手率的数值对偶下界；
+3. 线性域可行且配置了风险预算时，求解最小风险问题，报告已验收候选的 TE；
 4. 保留所有诊断尝试及原生状态。
 
 `prior_result` 必须来自完全相同的 `PortfolioProblem`，fingerprint 不一致会被拒绝。
+
+诊断入口不限制先前求解状态：尚未求解的问题、失败结果和成功结果均可显式诊断。
+成功结果也会执行适用的诊断子问题，可用于检查保持其他约束时的最小换手率或风险预算空间；
+它不会因已成功而自动跳过计算。若只需查看当前解的换手率、TE 等指标，读取 `result.metrics`
+即可。若只诊断明确返回不可行的结果，由调用方使用
+`if result.status is SolveStatus.INFEASIBLE:` 控制。报告类型名 `InfeasibilityReport` 不意味着
+问题必然不可行，具体结论以报告字段为准。
+
+单期 `solve`、`optimize` 的结果保留 `result.problem`，因此可直接 `optimizer.diagnose(result)`。
+它保留输入引用而非深复制，求解后不要原地修改输入数组；诊断前会重新检查 fingerprint。
+多期为控制内存仅保留停止时的 `sequence_result.stopped_problem`：
+
+```python
+if sequence_result.stopped_problem is not None:
+    failed = sequence_result.result_for_date(sequence_result.stopped_date)
+    report = optimizer.diagnose(sequence_result.stopped_problem, prior_result=failed)
+```
+
+`linear_feasible` 为 `True` 表示找到了满足容差的线性候选，`False` 表示数值对偶下界支持
+不可行，`None` 表示证据不足。超时、数值失败不会自动解释成不可行。Phase-I 松弛取决于
+惩罚尺度，可能有多个最优方案，不代表每条边界都必须放宽该数值。最小风险候选 TE 是最小值
+的上界；即使高于预算，也不能单凭它证明预算不可行。
+
+`result.native_infeasibility` 和 `report.native_certificates` 是可选的原生证据。只有实际到达的
+后端在原求解中留下可读取证据时才有内容；没有证据不代表可行。接口保留原生带符号乘子和
+请求 fingerprint，锥转换会标记坐标来源。当前证据均标为数值估计，不承诺独立严格验证或 IIS。
+乘子大小受约束缩放影响，不是业务重要性或所需放宽量。原生读取失败只记录简短错误类别，
+不改变求解状态，不解析日志，也不会为补充证据额外求解。
+
+前沿搜索的参数 QP 状态保留在求解路线中，不作为原 Factor-QCQP 的原生证书；最终 MOSEK /
+Clarabel 回退求解完整问题时，才可产生完整问题的锥证据。各后端的能力无需完全一致。
+
+冻结、黑名单等指令依照既定优先级可能覆盖常规主动权重边界。诊断针对最终有效模型，
+`sources` / `metadata` 提供配置来源与覆盖记录，不会把已被覆盖的规则报告为数学冲突。
 
 ---
 

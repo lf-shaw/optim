@@ -536,22 +536,28 @@ class PortfolioOptimizer:
 
     def diagnose(
         self,
-        problem: PortfolioProblem,
+        problem: PortfolioProblem | OptimizationResult,
         *,
         prior_result: OptimizationResult | None = None,
         level: str = "deep",
     ):
-        """对指定单个问题显式运行高成本不可行诊断。
+        """对指定单个问题显式运行高成本可行性与约束诊断。
 
         普通失败路径从不自动触发诊断。提供 ``prior_result`` 时，诊断层会先验证其问题
         fingerprint，再将它作为证据使用。
 
+        已成功求解的结果也可以诊断，例如检查保持其他约束时的最小换手率或风险预算空间。
+        成功状态不会跳过诊断计算。若只需查看当前解的指标，应优先读取 ``result.metrics``；
+        若仅希望诊断不可行结果，调用方可先判断 ``result.status is SolveStatus.INFEASIBLE``。
+
         Parameters
         ----------
-        problem : PortfolioProblem
-            需要诊断的准确业务问题。
+        problem : PortfolioProblem | OptimizationResult
+            需要诊断的准确业务问题，或单期求解返回的结果。传入结果时直接使用其中保留的
+            原问题，并自动把该结果作为原生证据来源。
         prior_result : OptimizationResult | None
-            同一问题此前的失败结果；用于补充状态和路由证据。
+            同一问题此前的求解结果，可以成功或失败；用于补充状态和路由证据。默认为
+            ``None``；传入 ``OptimizationResult`` 作为首个参数时自动使用该结果。
         level : str
             诊断深度；当前公共值为 ``"deep"``。
 
@@ -565,8 +571,22 @@ class PortfolioOptimizer:
         PortfolioValidationError
             问题自身存在静态输入错误，无法进入数学不可行诊断。
         ValueError
-            ``level`` 不受支持，或 ``prior_result`` 不属于同一问题。
+            ``level`` 不受支持、结果未保留原问题、同时提供冲突的 ``prior_result``，或先前
+            结果不属于同一问题。
         """
+
+        if isinstance(problem, OptimizationResult):
+            if problem.problem is None:
+                raise ValueError(
+                    "optimization result does not retain a problem; for a stopped "
+                    "sequence, diagnose sequence_result.stopped_problem"
+                )
+            if prior_result is not None and prior_result is not problem:
+                raise ValueError(
+                    "prior_result must be omitted when diagnosing an OptimizationResult"
+                )
+            prior_result = problem
+            problem = problem.problem
 
         prepared = self.prepare(problem)
         prepared.validation.raise_for_errors()
