@@ -96,21 +96,25 @@ class Tuda2DataSource:
             raise ValueError("benchmark_weight_type must be 'free' or 'daily'")
 
     @cached_property
-    def _factor_schema(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    def _risk_schema(self) -> Mapping[str, Any]:
+        """返回 tuda2 已校验的完整风险模型 schema。
+
+        optim 不再从若干独立接口拼接 country、风格和行业因子。完整因子顺序、类型、
+        常量敞口及物理存储列均由 tuda2 的单一 schema 契约声明，避免两层实现随模型
+        演进发生漂移。
+        """
+
         module = self._module()
-        style = tuple(
-            str(name)
-            for name in module.get_risk_model_factor_names(
-                "style", model_type=self.risk_model
-            )
-        )
-        industry = tuple(
-            str(name)
-            for name in module.get_risk_model_factor_names(
-                "industry", model_type=self.risk_model
-            )
-        )
-        return style, industry
+        try:
+            schema = module.get_risk_model_schema(model_type=self.risk_model)
+        except AttributeError as exc:
+            raise Tuda2UnavailableError(
+                "installed tuda2 does not provide get_risk_model_schema; "
+                "upgrade tuda2 before using the risk-model adapter"
+            ) from exc
+        if not isinstance(schema, Mapping):
+            raise TypeError("tuda2 get_risk_model_schema must return a mapping")
+        return schema
 
     def load(
         self,
@@ -148,33 +152,45 @@ class Tuda2DataSource:
         if len(requested) == 0:
             raise ValueError("dates must not be empty")
 
+        # schema 只读取一次并被 cached_property 缓存；先验证接口契约，再进行较昂贵的
+        # 批量风险数据和基准 I/O。
+        schema = self._risk_schema
+        style = tuple(str(name) for name in schema["style"])
+        industry = tuple(str(name) for name in schema["industry"])
+        factor_order = tuple(str(name) for name in schema["factor_order"])
+        factor_types = {
+            str(name): str(kind) for name, kind in schema["factor_types"].items()
+        }
+        schema_constants = {
+            str(name): float(value)
+            for name, value in schema["constant_exposures"].items()
+        }
+
         # TODO 根据 dts 的稠密程度（跟完整交易日比）决定是读取时直接过滤（传入 dts）还是读取完了之后再过滤
         # 有时候我们是每日优化，日期是完备的，再传入 dts 会减低数据读取效率。
 
         exposure_raw = module.get_risk_model(
             "exposure", dts=requested, version=self.risk_model
         )
-
-        if "country" not in exposure_raw.columns:  # 如果原始数据不包含国家因子，补齐
-            exposure_raw.loc[:, "country"] = 1.0
-
         covariance = module.get_risk_model(
             "cov", dts=requested, version=self.risk_model
         )
         specific = module.get_risk_model(
             "spec_risk", dts=requested, version=self.risk_model
         )
-        style, industry = self._factor_schema
-        exposure = _expand_exposure(exposure_raw, style, industry)
+        _validate_covariance_schema(covariance, factor_order)
+        exposure, virtual_constants = _expand_exposure(
+            exposure_raw,
+            style,
+            industry,
+            factor_order,
+            schema_constants,
+        )
         benchmark = module.get_index_weight(
             benchmark_sid,
             dts=requested,
             type=self.benchmark_weight_type,
         )
-        factor_types = {
-            **{name: "style" for name in style},
-            **{name: "industry" for name in industry},
-        }
         provenance = DataProvenance(
             source="tuda2",
             version=_module_version(module),
@@ -189,6 +205,7 @@ class Tuda2DataSource:
                 covariance=covariance,
                 specific_volatility=specific,
                 factor_types=factor_types,
+                constant_exposures=virtual_constants,
                 provenance=provenance,
             ),
             benchmark=benchmark,
@@ -490,7 +507,8 @@ class Tuda2DataSource:
             return import_module("tuda2")
         except ImportError as exc:
             raise Tuda2UnavailableError(
-                "tuda2 is optional; install the internal tuda2 package to use this adapter"
+                "tuda2>=2.0.33 is required by this optional integration; "
+                "install optim[tuda2]"
             ) from exc
 
 
@@ -498,18 +516,42 @@ def _expand_exposure(
     exposure: pd.DataFrame,
     style_factors: tuple[str, ...],
     industry_factors: tuple[str, ...],
-) -> pd.DataFrame:
+    factor_order: tuple[str, ...],
+    constant_exposures: Mapping[str, float],
+) -> tuple[pd.DataFrame, Mapping[str, float]]:
+    """将 tuda2 风格列和行业分类转换为与风险协方差兼容的敞口。
+
+    schema 声明的常数因子（当前为 ``country=1``）不必在整个时间区间物理存储。
+    最终逐日数组仍严格按协方差的当日行因子顺序物化，因此不会丢失常数因子的方差
+    或与其他因子的协方差项。
+    """
+
     if not isinstance(exposure.index, pd.MultiIndex) or tuple(exposure.index.names) != (
         "dt",
         "sid",
     ):
         raise ValueError("tuda2 exposure must use a (dt, sid) MultiIndex")
-    missing_style = [name for name in style_factors if name not in exposure.columns]
+    constants = {str(name): float(value) for name, value in constant_exposures.items()}
+    constant_names = set(constants)
+    physical_style = tuple(name for name in style_factors if name not in constant_names)
+    declared = set(physical_style) | set(industry_factors) | constant_names
+    unknown_schema = [name for name in factor_order if name not in declared]
+    if unknown_schema:
+        raise ValueError(
+            "tuda2 factor_order contains factors absent from exposure metadata: "
+            f"{unknown_schema[:10]}"
+        )
+    missing_schema = [name for name in declared if name not in factor_order]
+    if missing_schema:
+        raise ValueError(
+            f"tuda2 factor_order is missing declared factors {missing_schema[:10]}"
+        )
+    missing_style = [name for name in physical_style if name not in exposure.columns]
     if missing_style:
         raise ValueError(
             f"tuda2 exposure is missing style factors {missing_style[:10]}"
         )
-    style = exposure.loc[:, list(style_factors)].astype(float, copy=False)
+    style = exposure.loc[:, list(physical_style)].astype(float, copy=False)
     if industry_factors:
         if "industry" in exposure.columns:
             labels = exposure["industry"]
@@ -532,12 +574,68 @@ def _expand_exposure(
         result = pd.concat([style, industry], axis=1, copy=False)
     else:
         result = style
-    ordered = list(style_factors) + list(industry_factors)
-    result = result.loc[:, ordered]
+
+    virtual_constants: dict[str, float] = {}
+    for name, expected in constants.items():
+        if name in exposure.columns:
+            values = pd.to_numeric(exposure[name], errors="coerce").astype(float)
+            if not np.allclose(
+                values.to_numpy(copy=False), expected, rtol=0.0, atol=1e-12
+            ):
+                raise ValueError(
+                    f"tuda2 constant exposure {name!r} must equal {expected}"
+                )
+            result = pd.concat([result, values.rename(name)], axis=1, copy=False)
+        else:
+            virtual_constants[name] = expected
+
+    physical_order = [name for name in factor_order if name in result.columns]
+    if list(result.columns) != physical_order:
+        result = result.loc[:, physical_order]
     values = result.to_numpy(copy=False)
     if not np.all(np.isfinite(values)):
         raise ValueError("tuda2 exposure contains NaN or infinity after expansion")
-    return result
+    return result, virtual_constants
+
+
+def _validate_covariance_schema(
+    covariance: pd.DataFrame,
+    factor_order: tuple[str, ...],
+) -> None:
+    """验证批量协方差坐标服从 tuda2 风险模型 schema。
+
+    DataYes 的协方差列是全历史因子并集；2019-12-03 行业分类变更前后，每个日期的
+    有效因子集合并不相同，权威坐标是 ``(dt, factor)`` 行索引。这里只验证行因子
+    属于 schema 且存在同名列，不把批量 columns 错当成每日因子集合。
+    """
+
+    if not isinstance(covariance, pd.DataFrame):
+        raise TypeError("tuda2 covariance must be a pandas DataFrame")
+    if not isinstance(covariance.index, pd.MultiIndex) or tuple(
+        covariance.index.names
+    ) != ("dt", "factor"):
+        raise ValueError("tuda2 covariance must use a (dt, factor) MultiIndex")
+    columns = tuple(str(name) for name in covariance.columns)
+    if len(columns) != len(set(columns)):
+        raise ValueError("tuda2 covariance contains duplicate factor columns")
+    row_values = tuple(
+        str(name) for name in covariance.index.get_level_values("factor")
+    )
+    if len(row_values) == 0:
+        raise ValueError("tuda2 covariance contains no row factors")
+    row_factors = set(row_values)
+    schema_factors = set(factor_order)
+    unknown = sorted(row_factors - schema_factors)
+    if unknown:
+        raise ValueError(
+            f"tuda2 covariance contains factors absent from schema: {unknown[:10]}"
+        )
+    missing = sorted(row_factors - set(columns))
+    if missing:
+        raise ValueError(
+            "tuda2 covariance columns do not cover row factors: "
+            f"{missing[:10]}"
+        )
 
 
 def _single_date_schedule(

@@ -178,7 +178,8 @@ benchmark 在 universe 外存在任何非容差内的质量缺口时默认报错
 
 ### 4.3 tuda2 入口
 
-`Tuda2DataSource.load()` 对一个区间分别调用一次 exposure、covariance、specific risk 和
+`Tuda2DataSource.load()` 先调用一次 `get_risk_model_schema()` 获取完整因子顺序、因子类型、
+常数敞口和物理存储协议，再对一个区间分别调用一次 exposure、covariance、specific risk 和
 benchmark 接口。行业标签只展开一次。链式序列若没有手工提供持有期收益，则再一次性读取
 日度 close-to-close return，并对相邻调仓日之间的区间复合：
 
@@ -187,6 +188,13 @@ R(t-1, t) = product(1 + r_daily) - 1
 ```
 
 缺失收益保持 NaN，由序列层按实际持仓质量判断是否可接受；不会在复合时静默跳过。
+
+country 按 schema 声明的常数因子处理：批量 exposure 不必存储全 1 列，
+`FactorRiskFrames.constant_exposures` 保存其名称和值，按日物化时再严格按 covariance
+当日行因子顺序写入完整 exposure 数组。DataYes 协方差的 columns 可以是全历史因子并集；
+2019-12-03 行业分类变更前后的每日有效因子集合以 `(dt, factor)` 行索引为准，物化时选择
+同名列构成当日方阵。exposure 和 specific risk 共用完全相同的
+`(dt, sid)` 顺序时共用一次 indexer；顺序不同时仍分别按标签对齐。
 
 tuda2 不改变 facade 方向：单期和多期分别使用
 `optimizer.optimize(data_source=Tuda2DataSource(...), ...)` 与

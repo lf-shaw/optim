@@ -148,6 +148,8 @@ $$
 `InMemoryDataSource` 接受：
 
 - `FactorRiskFrames`：批量 exposure、covariance、specific volatility；
+- `FactorRiskFrames.constant_exposures`：不在批量 exposure 中重复存储的常数因子，
+  例如 `{"country": 1.0}`；
 - 严格 `(dt, sid)` 基准权重；
 - 显式 `BenchmarkCoveragePolicy`。
 
@@ -159,6 +161,10 @@ from optim.integrations.tuda2 import Tuda2DataSource
 
 `Tuda2DataSource` 对完整区间一次读取 exposure、covariance、specific risk、benchmark；链式
 模式需要时再一次读取日度 close-to-close 收益。逐日求解循环不会回源 I/O。
+适配器通过 tuda2 的 `get_risk_model_schema()` 获取完整因子坐标。schema 将 country 声明为
+恒为 1 的常数敞口时，批量 exposure 不重复存储该列，每日进入数值核心前才物化。协方差
+跨越 DataYes 2019-12-03 行业分类变更时，columns 可以包含全历史因子并集；每个日期严格以
+`(dt, factor)` 行索引选择同名列构造当日方阵。
 
 基准在样本空间外存在权重缺口时默认报错。只有显式传入
 `BenchmarkCoveragePolicy(action="renormalize_within_tolerance", ...)` 才允许阈值内归一化。

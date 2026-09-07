@@ -12,6 +12,9 @@ pandas>=2.2
 bottleneck>=1.4,<2
 tqdm>=4.66,<5
 
+# Optional standard data integration used by the full development/test environment
+tuda2>=2.0.33
+
 # Production solver backends
 highspy>=1.15,<2
 piqp>=0.6.4
@@ -33,6 +36,5 @@ setuptools-scm>=10.0.2,<11
 mypy>=1.11,<2
 pytest>=8,<10
 
-# tuda2 and carry/carry2 are optional internal data-source/alignment adapters.
-# They are maintained and installed from their own repositories, rather than
-# being coupled to this package's solver runtime dependencies.
+# carry/carry2 remain independently maintained optional alignment tools and are
+# intentionally not installed by this complete project requirements file.

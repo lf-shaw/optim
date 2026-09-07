@@ -138,3 +138,24 @@ close-to-close 收益复合并归一化，然后再计算 turnover。当前不�
 
 指数调整造成的换手冲突若只选择继续持有，后续多日可能持续不可行。默认 `stop` 更安全；
 确有业务授权时应使用有上限、可诊断的 turnover recovery，而不是盲目 hold。
+
+---
+
+## 18. country 可以虚拟存储，但不能从风险矩阵中丢弃
+
+DataYes 协方差可包含 country，而原始 exposure 不存储恒为 1 的 country 列。
+`Tuda2DataSource` 会使用 `constant_exposures={"country": 1.0}` 延迟物化；不要从
+covariance 中删除 country，否则在非标准 budget 或其他模型中可能改变风险语义。
+
+exposure 和 specific risk 即使来自同一数据源也不得盲目按位置组合。完全同序时
+可走快速路径；否则必须按 sid 标签对齐。
+
+---
+
+## 19. DataYes 批量协方差的列不是每日有效因子集合
+
+DataYes 在 2019-12-03 调整过行业分类。跨越该日期批量读取时，协方差 columns 可以是
+全历史因子并集，而每个日期的 `(dt, factor)` 行索引才是当日有效因子集合。不得要求每日
+行列集合等于批量 columns，也不得把无效历史行业带入当日风险矩阵；应按当日行顺序选择
+同名列构造方阵。行业 exposure 的 category 可以覆盖跨期行业并集，逐日物化时仅选择当日
+协方差行中存在的行业。

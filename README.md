@@ -10,7 +10,7 @@
 - 换手率、主动权重、风格/行业敞口、基准成员覆盖和逐资产交易指令；
 - 单期实盘优化、链式多期优化和独立冷启动研究；
 - 标准化结果、最优性证书、求解路线审计和显式不可行诊断；
-- 手工数组、已加载内存数据，以及可选的 tuda2 批量数据适配。
+- 手工数组、已加载内存数据，以及 tuda2 批量数据适配。
 
 用户只负责表达业务问题。具体数值路径和必要回退由优化器自动处理，并通过结果对象报告实际
 行为。
@@ -41,7 +41,15 @@ wheel 带 CPython ABI 和平台标记。不同 Python 次版本或操作系统�
 python -m pip install -r requirements.txt
 ```
 
-`tuda2` 是可选内部数据适配，不属于 optim 的强制运行依赖；需要时从其独立项目安装。
+核心 wheel 不强制依赖 tuda2；手工 `PortfolioData` 和 `InMemoryDataSource` 可独立使用。
+需要标准数据集成时安装可选 extra：
+
+```bash
+python -m pip install "optim[tuda2]"
+```
+
+该 extra 要求 `tuda2>=2.0.33`，以提供统一风险模型 schema、稳定资产顺序和跨历史行业分类
+制度的协方差坐标契约。
 
 ---
 
@@ -200,6 +208,10 @@ risk_model = FactorRiskModel(
 ```
 
 `exposure` 列、`covariance` 两个轴、`factor_names` 和 `factor_types` 必须使用完全一致的因子顺序。
+
+DataYes 协方差包含 country 因子，但批量敞口可以不物理存储全 1 列。
+`FactorRiskFrames.constant_exposures={"country": 1.0}` 会在逐日物化时将其按协方差
+因子顺序补入；最终 `FactorRiskModel.exposure` 仍是包含 country 的完整数值矩阵。
 
 ---
 
@@ -424,7 +436,9 @@ result = PortfolioOptimizer().optimize(
 ```
 
 单期入口只读取指定日期，不额外获取持仓漂移收益。数据适配器负责把 tuda2 的风险模型和指数
-权重转换为严格同日、统一资产坐标的 `PortfolioData`。
+权重转换为严格同日、统一资产坐标的 `PortfolioData`。适配器要求 tuda2 提供
+`get_risk_model_schema()`，并从这一接口读取完整因子顺序、因子类型和常数敞口；不会再从
+多个因子名称接口自行拼接模型定义。
 
 ---
 
@@ -486,6 +500,7 @@ risk_frames = FactorRiskFrames(
     covariance=factor_covariance_frame,       # (dt, factor) 行索引
     specific_volatility=specific_risk_frame,  # (dt, sid) 行索引
     factor_types=factor_type_by_name,
+    constant_exposures={"country": 1.0},     # 协方差含 country 且敞口恒为 1 时
 )
 memory_source = InMemoryDataSource(
     risk_data=risk_frames,

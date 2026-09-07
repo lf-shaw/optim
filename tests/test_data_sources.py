@@ -154,12 +154,13 @@ class _FakeTuda2:
             )
         if kind == "cov":
             index = pd.MultiIndex.from_product(
-                [dates, ["size", "bank", "tech"]], names=["dt", "factor"]
+                [dates, ["country", "size", "bank", "tech"]],
+                names=["dt", "factor"],
             )
             return pd.DataFrame(
-                np.tile(np.diag([0.04, 0.02, 0.03]), (len(dates), 1)),
+                np.tile(np.diag([0.01, 0.04, 0.02, 0.03]), (len(dates), 1)),
                 index=index,
-                columns=["size", "bank", "tech"],
+                columns=["country", "size", "bank", "tech"],
             )
         index = pd.MultiIndex.from_product([dates, ["a", "b"]], names=["dt", "sid"])
         return pd.DataFrame({"spec_risk": 0.10}, index=index)
@@ -167,6 +168,22 @@ class _FakeTuda2:
     def get_risk_model_factor_names(self, kind, *, model_type):
         self.calls.append(("factor_names", kind, model_type))
         return ["size"] if kind == "style" else ["bank", "tech"]
+
+    def get_risk_model_schema(self, model_type):
+        self.calls.append(("risk_schema", model_type))
+        return {
+            "factor_order": ["country", "size", "bank", "tech"],
+            "factor_types": {
+                "country": "country",
+                "size": "style",
+                "bank": "industry",
+                "tech": "industry",
+            },
+            "constant_exposures": {"country": 1.0},
+            "physical_exposure_columns": ["size", "industry"],
+            "style": ["size"],
+            "industry": ["bank", "tech"],
+        }
 
     def get_index_weight(self, sid, *, dts, type):
         self.calls.append(("benchmark", sid, tuple(pd.DatetimeIndex(dts)), type))
@@ -242,9 +259,217 @@ def test_tuda2_adapter_batches_dates_and_expands_industry_once():
         "spec_risk",
     ]
     assert list(loaded.risk_data.exposure.columns) == ["size", "bank", "tech"]
+    assert dict(loaded.risk_data.constant_exposures) == {"country": 1.0}
     first = loaded.risk_data.materialize(dates[0], pd.Index(["a", "b"], name="sid"))
-    np.testing.assert_allclose(first.exposure, [[1.0, 1.0, 0.0], [-1.0, 0.0, 1.0]])
+    assert first.factor_names == ("country", "size", "bank", "tech")
+    assert first.factor_types == ("country", "style", "industry", "industry")
+    np.testing.assert_allclose(
+        first.exposure,
+        [[1.0, 1.0, 1.0, 0.0], [1.0, -1.0, 0.0, 1.0]],
+    )
     assert first.annualization == "annualized_decimal"
+
+
+def test_factor_risk_frames_align_exposure_and_specific_risk_by_asset_label():
+    date = pd.Timestamp("2026-01-02")
+    exposure_index = pd.MultiIndex.from_product(
+        [[date], ["a", "b"]], names=["dt", "sid"]
+    )
+    specific_index = pd.MultiIndex.from_product(
+        [[date], ["b", "a"]], names=["dt", "sid"]
+    )
+    covariance_index = pd.MultiIndex.from_product(
+        [[date], ["country", "size"]], names=["dt", "factor"]
+    )
+    frames = FactorRiskFrames(
+        exposure=pd.DataFrame({"size": [1.0, -1.0]}, index=exposure_index),
+        covariance=pd.DataFrame(
+            np.diag([0.01, 0.04]),
+            index=covariance_index,
+            columns=["country", "size"],
+        ),
+        specific_volatility=pd.Series(
+            [0.20, 0.10], index=specific_index, name="spec_risk"
+        ),
+        factor_types={"country": "country", "size": "style"},
+        constant_exposures={"country": 1.0},
+    )
+
+    model = frames.materialize(date, pd.Index(["b", "a"], name="sid"))
+
+    np.testing.assert_allclose(model.exposure, [[1.0, -1.0], [1.0, 1.0]])
+    np.testing.assert_allclose(model.specific_volatility, [0.20, 0.10])
+
+
+class _PhysicalCountryTuda2(_FakeTuda2):
+    def get_risk_model(self, kind, *, dts, version):
+        frame = super().get_risk_model(kind, dts=dts, version=version)
+        if kind == "exposure":
+            frame.insert(0, "country", 1.0)
+        return frame
+
+
+class _InvalidCountryTuda2(_FakeTuda2):
+    def get_risk_model(self, kind, *, dts, version):
+        frame = super().get_risk_model(kind, dts=dts, version=version)
+        if kind == "exposure":
+            frame.insert(0, "country", [1.0, 0.0] * len(pd.DatetimeIndex(dts)))
+        return frame
+
+
+class _HistoricDataYesTuda2(_FakeTuda2):
+    """模拟跨越行业分类变更日的 DataYes 批量协方差布局。"""
+
+    def get_risk_model(self, kind, *, dts, version):
+        self.calls.append(("risk", kind, tuple(pd.DatetimeIndex(dts)), version))
+        dates = pd.DatetimeIndex(dts)
+        if kind == "exposure":
+            index = pd.MultiIndex.from_product(
+                [dates, ["a", "b"]], names=["dt", "sid"]
+            )
+            return pd.DataFrame(
+                {
+                    "size": [1.0, -1.0, 0.5, -0.5],
+                    "industry": pd.Categorical(
+                        ["old", "old", "new_a", "new_b"],
+                        categories=["old", "new_a", "new_b"],
+                    ),
+                },
+                index=index,
+            )
+        if kind == "cov":
+            columns = ["new_b", "old", "country", "new_a", "size"]
+            old = pd.DataFrame(
+                [
+                    [np.nan, 0.002, 0.01, np.nan, 0.001],
+                    [np.nan, 0.003, 0.001, np.nan, 0.04],
+                    [np.nan, 0.02, 0.002, np.nan, 0.003],
+                ],
+                index=pd.MultiIndex.from_product(
+                    [[dates[0]], ["country", "size", "old"]],
+                    names=["dt", "factor"],
+                ),
+                columns=columns,
+            )
+            new = pd.DataFrame(
+                [
+                    [0.004, np.nan, 0.01, 0.002, 0.001],
+                    [0.006, np.nan, 0.001, 0.005, 0.04],
+                    [0.007, np.nan, 0.002, 0.03, 0.005],
+                    [0.05, np.nan, 0.004, 0.007, 0.006],
+                ],
+                index=pd.MultiIndex.from_product(
+                    [[dates[1]], ["country", "size", "new_a", "new_b"]],
+                    names=["dt", "factor"],
+                ),
+                columns=columns,
+            )
+            return pd.concat([old, new])
+        index = pd.MultiIndex.from_product(
+            [dates, ["a", "b"]], names=["dt", "sid"]
+        )
+        return pd.DataFrame({"spec_risk": 0.10}, index=index)
+
+    def get_risk_model_factor_names(self, kind, *, model_type):
+        self.calls.append(("factor_names", kind, model_type))
+        return ["size"] if kind == "style" else ["old", "new_a", "new_b"]
+
+    def get_risk_model_schema(self, model_type):
+        self.calls.append(("risk_schema", model_type))
+        return {
+            "factor_order": ["country", "size", "old", "new_a", "new_b"],
+            "factor_types": {
+                "country": "country",
+                "size": "style",
+                "old": "industry",
+                "new_a": "industry",
+                "new_b": "industry",
+            },
+            "constant_exposures": {"country": 1.0},
+            "physical_exposure_columns": ["size", "industry"],
+            "style": ["size"],
+            "industry": ["old", "new_a", "new_b"],
+        }
+
+
+def test_tuda2_adapter_accepts_but_does_not_virtualize_physical_country():
+    date = pd.Timestamp("2026-01-02")
+    loaded = Tuda2DataSource(module=_PhysicalCountryTuda2()).load(
+        dates=[date], benchmark_sid="000852.SH"
+    )
+
+    assert list(loaded.risk_data.exposure.columns) == [
+        "country",
+        "size",
+        "bank",
+        "tech",
+    ]
+    assert not loaded.risk_data.constant_exposures
+    model = loaded.risk_data.materialize(date, pd.Index(["a", "b"], name="sid"))
+    np.testing.assert_allclose(model.exposure[:, 0], 1.0)
+
+
+def test_virtual_country_is_numerically_identical_to_physical_country():
+    date = pd.Timestamp("2026-01-02")
+    assets = pd.Index(["b", "a"], name="sid")
+    virtual = Tuda2DataSource(module=_FakeTuda2()).load(
+        dates=[date], benchmark_sid="000852.SH"
+    ).risk_data.materialize(date, assets)
+    physical = Tuda2DataSource(module=_PhysicalCountryTuda2()).load(
+        dates=[date], benchmark_sid="000852.SH"
+    ).risk_data.materialize(date, assets)
+
+    np.testing.assert_allclose(virtual.exposure, physical.exposure)
+    np.testing.assert_allclose(virtual.covariance, physical.covariance)
+    np.testing.assert_allclose(
+        virtual.specific_volatility,
+        physical.specific_volatility,
+    )
+    active = np.array([0.60, -0.20])
+    virtual_factor = virtual.exposure.T @ active
+    physical_factor = physical.exposure.T @ active
+    assert virtual_factor[0] == pytest.approx(0.40)
+    np.testing.assert_allclose(virtual_factor, physical_factor)
+    assert (
+        virtual_factor @ virtual.covariance @ virtual_factor
+        == pytest.approx(physical_factor @ physical.covariance @ physical_factor)
+    )
+
+
+def test_tuda2_adapter_rejects_nonconstant_country_exposure():
+    with pytest.raises(ValueError, match="constant exposure 'country' must equal 1.0"):
+        Tuda2DataSource(module=_InvalidCountryTuda2()).load(
+            dates=[pd.Timestamp("2026-01-02")], benchmark_sid="000852.SH"
+        )
+
+
+def test_tuda2_adapter_uses_daily_covariance_rows_across_industry_regimes():
+    dates = pd.to_datetime(["2019-12-02", "2019-12-03"])
+    loaded = Tuda2DataSource(module=_HistoricDataYesTuda2()).load(
+        dates=dates,
+        benchmark_sid="000852.SH",
+    )
+
+    old = loaded.risk_data.materialize(dates[0], pd.Index(["a", "b"], name="sid"))
+    new = loaded.risk_data.materialize(dates[1], pd.Index(["a", "b"], name="sid"))
+
+    assert old.factor_names == ("country", "size", "old")
+    assert new.factor_names == ("country", "size", "new_a", "new_b")
+    np.testing.assert_allclose(
+        old.covariance,
+        [[0.01, 0.001, 0.002], [0.001, 0.04, 0.003], [0.002, 0.003, 0.02]],
+    )
+    np.testing.assert_allclose(
+        new.covariance,
+        [
+            [0.01, 0.001, 0.002, 0.004],
+            [0.001, 0.04, 0.005, 0.006],
+            [0.002, 0.005, 0.03, 0.007],
+            [0.004, 0.006, 0.007, 0.05],
+        ],
+    )
+    np.testing.assert_allclose(old.exposure[:, 2], [1.0, 1.0])
+    np.testing.assert_allclose(new.exposure[:, 2:], [[1.0, 0.0], [0.0, 1.0]])
 
 
 def test_tuda2_daily_close_returns_are_compounded_and_preserve_missing():
@@ -318,7 +543,8 @@ def test_tuda2_default_fetches_each_full_range_once_and_reuses_it():
         assert len(calls) == 1
         assert len(calls[0][2]) == len(dates)
     assert len([call for call in fake.calls if call[0] == "benchmark"]) == 1
-    assert len([call for call in fake.calls if call[0] == "factor_names"]) == 2
+    assert len([call for call in fake.calls if call[0] == "risk_schema"]) == 1
+    assert not [call for call in fake.calls if call[0] == "factor_names"]
     assert len([call for call in fake.calls if call[0] == "returns"]) == 1
 
 

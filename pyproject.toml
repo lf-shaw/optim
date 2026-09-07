@@ -46,6 +46,9 @@ dependencies = [
     "Mosek>=11.2,<12",
 ]
 
+[project.optional-dependencies]
+tuda2 = ["tuda2>=2.0.33"]
+
 [tool.setuptools_scm]
 version_file = "optim/_version.py"
 tag_regex = "^v(?P<version>\\d+\\.\\d+\\.\\d+)$"
