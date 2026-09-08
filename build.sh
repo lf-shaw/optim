@@ -65,7 +65,8 @@ if [[ "$PUSH" -eq 1 ]]; then
     [[ "$WHEEL_VERSION" == "${RELEASE_TAG#v}" ]] \
         || { echo "❌ wheel 版本 $WHEEL_VERSION 与 tag $RELEASE_TAG 不一致" >&2; exit 1; }
     command -v twine >/dev/null || { echo "❌ 未找到 twine" >&2; exit 1; }
-    twine upload -r "$REPOSITORY" --skip-existing "$WHL"
+    # Twine 不允许私有仓库使用 --skip-existing，重复文件交由服务端处理。
+    twine upload -r "$REPOSITORY" "$WHL"
     echo "✅ 已上传到 [$REPOSITORY]: $(basename "$WHL")"
 else
     echo "=== [4/4] 跳过上传（如需发布，加 --push）==="
