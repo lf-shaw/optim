@@ -169,6 +169,10 @@ DataYes 在 2019-12-03 调整过行业分类。跨越该日期批量读取时，
 协方差行中存在的行业。
 # 复现与对照边界
 
+- 报告 load 只接受 format_version 为整数 2；软件包版本不代替文件格式版本。
+  摘要丢弃的贡献无法恢复，检查 contributors_complete；不能把摘要重新导出为 full。
+  报告加载不能重建原问题，求解复现仍需 load_repro。
+
 - 手动 backend 不回退；指定 mosek 缺 license 不会改用 Clarabel。piqp 不接受
   Factor-QCQP，使用 auto 才会运行 PIQP 参数 QP 前沿搜索。
 - 松弛 amount 是幅度而非新边界；lower 用减法。优先读取 relaxed_bound 和 description。

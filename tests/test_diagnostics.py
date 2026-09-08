@@ -43,6 +43,103 @@ def test_relaxation_displays_direction_and_original_units(tmp_path):
     assert item["description"] == lower.description
 
 
+def test_contributors_frame_stable_schema_and_filter():
+    from optim import (InfeasibilityReport, NativeInfeasibilityEvidence,
+                       InfeasibilityContributor, ProofStatus)
+    first = InfeasibilityContributor(
+        "asset_bound:a", "asset_bound", "variable", "lower", -2.5, key="a",
+        configured_bound=0.0, sources=("asset_weight",),
+        metadata={"canonical_index": 3, "detail": [1]},
+    )
+    cone = InfeasibilityContributor("tracking_error", "tracking_error", "cone", "cone", 0.3)
+    certificates = tuple(NativeInfeasibilityEvidence(
+        backend, "primal_infeasibility_certificate", ProofStatus.NUMERICAL_ESTIMATE,
+        "infeasible", contributors=(first, cone),
+    ) for backend in ("mosek", "clarabel_qdldl"))
+    report = InfeasibilityReport("deep", False, "test", native_certificates=certificates)
+    frame = report.contributors_frame()
+    assert len(frame) == 4
+    assert frame.certificate_index.tolist() == [0, 0, 1, 1]
+    assert frame.multiplier.tolist() == [-2.5, 0.3, -2.5, 0.3]
+    assert "metadata" not in frame.columns
+    filtered = report.contributors_frame(groups="asset_bound", include_metadata=True)
+    assert len(filtered) == 2
+    filtered.iloc[0]["metadata"]["detail"].append(2)
+    assert first.metadata["detail"] == [1]
+    assert report.contributors_frame(groups=[]).columns.tolist() == frame.columns.tolist()
+    empty = InfeasibilityReport("deep", None, "no evidence").contributors_frame()
+    assert empty.empty
+    assert empty.columns.tolist() == frame.columns.tolist()
+
+
+@pytest.mark.parametrize("suffix", [".json", ".json.gz"])
+def test_report_load_v2_full_and_summary(tmp_path, suffix):
+    import json
+    from optim import (InfeasibilityReport, NativeInfeasibilityEvidence,
+                       InfeasibilityContributor, ProofStatus, RequiredRelaxation, SolverAttempt)
+    contribution = InfeasibilityContributor(
+        "asset_bound:a", "asset_bound", "variable", "lower", -0.25,
+        configured_bound=float("inf"), sources=("asset_weight",), metadata={"canonical_index": 2},
+    )
+    certificate = NativeInfeasibilityEvidence(
+        "mosek", "primal_infeasibility_certificate", ProofStatus.NUMERICAL_ESTIMATE,
+        "infeasible", contributors=(contribution,),
+    )
+    report = InfeasibilityReport("deep", False, "测试", native_certificates=(certificate,),
+        relaxations=(RequiredRelaxation("asset_bound:a", "asset_bound", "lower", 0.01, 0.02, 1),),
+        attempts=(SolverAttempt("highs", SolveStatus.OPTIMAL),))
+    full_path = report.dump(tmp_path / ("full" + suffix), evidence="full")
+    loaded = InfeasibilityReport.load(full_path)
+    assert loaded.contributors_complete
+    assert loaded.native_certificates[0].contributors[0] == contribution
+    assert loaded.attempts == report.attempts
+    assert loaded.relaxations == report.relaxations
+    assert len(loaded.contributors_frame()) == 1
+    summary_path = report.dump(tmp_path / ("summary" + suffix))
+    summary = InfeasibilityReport.load(summary_path)
+    assert not summary.contributors_complete
+    assert summary.contributor_summaries[0]["contributor_count"] == 1
+    with pytest.raises(ValueError, match="omitted"):
+        summary.contributors_frame()
+    with pytest.raises(ValueError, match="omitted"):
+        summary.dump(tmp_path / "not_full.json", evidence="full")
+    again = summary.dump(tmp_path / "again.json")
+    assert json.loads(again.read_text())["report"]["native_certificates"][0]["contributor_count"] == 1
+    assert not InfeasibilityReport.load(again).contributors_complete
+    with pytest.raises(ValueError, match="size limit"):
+        InfeasibilityReport.load(full_path, max_uncompressed_bytes=1)
+
+
+@pytest.mark.parametrize("version", [None, 1, 3, "2", 2.0, True])
+def test_report_load_rejects_unsupported_version(tmp_path, version):
+    import json
+    from optim import InfeasibilityReport
+    path = tmp_path / "bad.json"
+    payload = {} if version is None else {"format_version": version}
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="format_version"):
+        InfeasibilityReport.load(path)
+
+
+def test_report_load_empty_and_malformed_columns(tmp_path):
+    import json
+    from optim import InfeasibilityReport
+    path = InfeasibilityReport("deep", None, "没有原生证据").dump(tmp_path / "empty.json")
+    loaded = InfeasibilityReport.load(path)
+    assert loaded.contributors_complete
+    assert loaded.contributors_frame().empty
+    payload = json.loads(path.read_text())
+    payload["evidence_mode"] = "full"
+    payload["report"]["native_certificates"] = [{
+        "backend": "mosek", "kind": "test", "proof_status": "numerical_estimate",
+        "native_status": "infeasible", "contributor_count": 1, "group_counts": {"asset_bound": 1},
+        "contributors": {"encoding": "columns", "columns": {}},
+    }]
+    path.write_text(json.dumps(payload))
+    with pytest.raises(ValueError, match="columns"):
+        InfeasibilityReport.load(path)
+
+
 def test_deep_diagnostic_reports_minimum_required_turnover():
     data = PortfolioData(
         date=pd.Timestamp("2026-01-02"),

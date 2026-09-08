@@ -278,6 +278,23 @@ if not result.status.has_solution:
 
 ### 同进程对照与跨进程复现
 
+原生贡献无需经 dump 再读取：
+
+如果接收的是文件，先 `report = InfeasibilityReport.load("full.json.gz")`，仅支持 v2。
+摘要报告的 `contributors_complete` 为 False（存在省略贡献时），可查看
+`contributor_summaries`，但调用 contributors_frame 会明确报错，需发送方重新提供 full。
+缺少版本、v1 和未知版本拒绝加载。加载仅恢复诊断对象，不恢复 PortfolioProblem。
+
+```python
+frame = report.contributors_frame(groups=("asset_bound", "turnover"))
+one_certificate = frame.loc[frame["certificate_index"] == 0]
+one_asset = one_certificate.loc[one_certificate["key"] == "000001.SZ"]
+# 仅深入排查原生坐标时，使用 include_metadata=True。
+```
+
+各证书单独阅读，不能把不同后端的行拼成一个证明；表格仅便利查询，不是 IIS 或冲突排名。
+缺少原生证据时返回固定列空表，仍可阅读 Phase-I 等诊断结果。
+
 后端对照不修改业务问题：
 
 ```python
@@ -291,7 +308,10 @@ direct = PortfolioOptimizer(SolverPolicy(backend="mosek")).solve(problem)
 自动路线使用原设计；显式后端跳过预筛与回退，仍独立验收。
 highs 只接受 LP，piqp 只接受 QP（不是通用锥求解器）；不支持的类型在准备阶段拒绝。
 比较时核对 fingerprint、目标和约束残差，不能要求权重逐项相同。
-复现包会保存 backend 策略；诊断辅助模型仍自动路由，不受原问题选用的后端限制。
+复现包会保存 backend 策略；诊断辅助模型默认自动路由，不继承原问题的后端选择。
+可显式 `optimizer.diagnose(result, backend="mosek")` 或 `backend="clarabel"` 进行对照，
+不会回退，原结果证书来源不变。piqp 不支持必需的 Phase-I LP；highs 不能求最小风险 QP。
+当前 MOSEK/Clarabel 没有输出诊断需要的数值对偶下界，相关下界可能为 None，候选目标不充当下界。
 
 松弛条目可直接读取 `item.description`，例如“下界从 2.0000% 降低至 1.5000%”。
 `item.relaxed_bound` 给出计算后的新边界，JSON 导出也包含该值和单位。

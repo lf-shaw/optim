@@ -150,6 +150,7 @@ class SolverAdapter:
         *,
         prior_result: OptimizationResult | None,
         level: str,
+        backend: str = "auto",
     ) -> InfeasibilityReport:
         """显式运行私有深度不可行诊断。"""
 
@@ -161,6 +162,7 @@ class SolverAdapter:
             self.policy,
             prior_result=prior_result,
             level=level,
+            backend=backend,
         )
 
     @staticmethod

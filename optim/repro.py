@@ -284,6 +284,10 @@ def export_repro(
     ]
     report_snapshot = None
     if report is not None:
+        if not report.contributors_complete:
+            raise ValueError(
+                "repro requires a full report; contributors were omitted, pass report=None instead"
+            )
         report_snapshot = {
             f.name: _json_value(getattr(report, f.name))
             for f in fields(report)

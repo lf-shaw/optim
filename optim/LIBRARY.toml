@@ -68,7 +68,7 @@ group = "optimizer"
 
 [[symbols]]
 name = "optim.PortfolioOptimizer.diagnose"
-signature = "diagnose(problem: PortfolioProblem | OptimizationResult, *, prior_result: OptimizationResult | None = None, level='deep') -> InfeasibilityReport"
+signature = "diagnose(problem: PortfolioProblem | OptimizationResult, *, prior_result: OptimizationResult | None = None, level='deep', backend='auto') -> InfeasibilityReport"
 summary = "显式诊断失败结果或准确问题；成功结果（含 prior_result）在校验编译前拒绝，成功指标读取 result.metrics；普通失败路径不自动调用"
 group = "diagnostics"
 
@@ -76,6 +76,18 @@ group = "diagnostics"
 name = "optim.InfeasibilityReport.dump"
 signature = "dump(path: str | Path, *, indent: int | None = 2, overwrite: bool = False, evidence: str = 'summary') -> Path"
 summary = "导出字段说明、松弛方案和原生证据摘要；evidence='full' 导出全部带符号坐标的列式数组；格式版本2，.gz 压缩，indent=None 紧凑；不重新诊断"
+group = "diagnostics"
+
+[[symbols]]
+name = "optim.InfeasibilityReport.contributors_frame"
+signature = "contributors_frame(*, groups=None, include_metadata=False) -> pandas.DataFrame"
+summary = "已有贡献转固定列 DataFrame，保留证书编号/后端/范围，可按约束组过滤；空证据返回空表，不求解、不依赖dump，不按乘子排名"
+group = "diagnostics"
+
+[[symbols]]
+name = "optim.InfeasibilityReport.load"
+signature = "load(path, *, max_uncompressed_bytes=268435456) -> InfeasibilityReport"
+summary = "仅加载整数格式版本2的JSON/gzip；full恢复贡献，摘要contributors_complete=False并保留contributor_summaries，不能生成贡献表或冒充full；不恢复模型不求解"
 group = "diagnostics"
 
 [[symbols]]

@@ -40,6 +40,7 @@ def diagnose_problem(
     *,
     prior_result: OptimizationResult | None = None,
     level: str = "deep",
+    backend: str = "auto",
 ) -> InfeasibilityReport:
     """对一个准确 fingerprint 执行当前全部深度诊断阶段。
 
@@ -59,6 +60,8 @@ def diagnose_problem(
         同一问题此前的失败结果；提供时必须具有完全相同的 fingerprint。
     level : str
         显式诊断深度；当前仅支持 ``"deep"``。
+    backend : str
+        辅助问题的独立后端选择；默认 auto，显式选择不回退。
 
     Returns
     -------
@@ -80,8 +83,8 @@ def diagnose_problem(
 
     from .model.compiler import _diagnostic_domain
 
-    # 诊断辅助模型与原问题类型不同，仍使用固定自动路径；保留原数值容差和原结果证据。
-    policy = replace(policy, backend="auto")
+    # 默认不继承原后端；显式覆盖只改变辅助模型求解，保留数值容差和原结果证据。
+    policy = replace(policy, backend=backend)
     domain = _diagnostic_domain(problem)
     phase_result, relaxations = _solve_phase_one(domain, policy)
     phase_feasible = _linear_feasibility(phase_result, domain, policy)

@@ -131,9 +131,7 @@ class PortfolioOptimizer:
             solver_handle = self._solver.prepare(
                 compile_problem(problem, validate=False)
             )
-            fingerprint, compiler_optimizations = self._solver.metadata(
-                solver_handle
-            )
+            fingerprint, compiler_optimizations = self._solver.metadata(solver_handle)
         return PreparedPortfolioProblem(
             problem=problem,
             validation=report,
@@ -154,9 +152,7 @@ class PortfolioOptimizer:
         """
 
         started = time.perf_counter()
-        solver_handle = self._solver.prepare(
-            compile_problem(problem, validate=False)
-        )
+        solver_handle = self._solver.prepare(compile_problem(problem, validate=False))
         fingerprint, compiler_optimizations = self._solver.metadata(solver_handle)
         return PreparedPortfolioProblem(
             problem=problem,
@@ -544,6 +540,7 @@ class PortfolioOptimizer:
         *,
         prior_result: OptimizationResult | None = None,
         level: str = "deep",
+        backend: str = "auto",
     ):
         """对指定单个问题显式运行高成本可行性与约束诊断。
 
@@ -564,6 +561,11 @@ class PortfolioOptimizer:
             ``None``；传入 ``OptimizationResult`` 作为首个参数时自动使用该结果。
         level : str
             诊断深度；当前公共值为 ``"deep"``。
+        backend : str
+            辅助模型的后端，默认 auto，独立于原求解策略。mosek 或 clarabel 可直接对比；
+            显式值不回退，不支持辅助模型的类型则报错。piqp 不支持必需的 Phase-I LP；
+            highs 仅适合无需最小风险 QP 的诊断。原结果证书保持原后端来源。
+            后端未提供数值对偶下界时，相关下界字段为 None，不以候选目标冒充下界。
 
         Returns
         -------
@@ -600,7 +602,16 @@ class PortfolioOptimizer:
             prior_result = problem
             problem = problem.problem
 
-        prepared = self.prepare(problem)
+        # 诊断的编译准备不继承原后端的模型类型限制；具体辅助模型使用独立选择的后端。
+        replace(self.policy, backend=backend)  # 在昂贵编译前校验选项。
+        if backend == "piqp":
+            raise ValueError("diagnostic backend='piqp' does not support Phase-I LP")
+        preparation = (
+            self
+            if self.policy.backend == "auto"
+            else PortfolioOptimizer(replace(self.policy, backend="auto"))
+        )
+        prepared = preparation.prepare(problem)
         prepared.validation.raise_for_errors()
         if prepared._solver_handle is None:
             raise RuntimeError("valid prepared problem has no solver handle")
@@ -609,6 +620,7 @@ class PortfolioOptimizer:
             prepared._solver_handle,
             prior_result=prior_result,
             level=level,
+            backend=backend,
         )
 
     def solve_prepared(

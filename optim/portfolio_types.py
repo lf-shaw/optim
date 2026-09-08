@@ -1193,7 +1193,7 @@ class SolverPolicy:
     backend : str
         默认 auto；mosek、clarabel 支持 LP/QP/Factor-QCQP；highs 仅支持 LP，piqp
         仅支持 QP。不支持的模型在准备阶段报错；缺 license 或数值失败按标准结果返回。
-        显式 diagnose 的辅助问题仍自动选择后端，不受此比较用开关限制。
+        diagnose 默认独立自动路由，可通过其 backend 参数覆盖，不继承此开关。
     lp : str
         自动路线预留字段，仅允许默认 highs；切换后端使用 backend，非默认值报错。
     qp : str

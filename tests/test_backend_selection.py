@@ -90,9 +90,11 @@ def test_diagnose_auxiliary_models_ignore_pinned_backend(sample_lp_problem):
     from optim import TurnoverLimit
     import numpy as np
 
-    problem = sample_lp_problem.with_objective(RiskAdjustedAlpha()).with_constraints(
-        turnover=TurnoverLimit(0.0)
-    ).with_data(initial_weight=np.array([1.0, 0.0, 0.0, 0.0]))
+    problem = (
+        sample_lp_problem.with_objective(RiskAdjustedAlpha())
+        .with_constraints(turnover=TurnoverLimit(0.0))
+        .with_data(initial_weight=np.array([1.0, 0.0, 0.0, 0.0]))
+    )
     optimizer = PortfolioOptimizer(SolverPolicy(backend="piqp"))
     result = optimizer.solve(problem)
     assert not result.status.has_solution
@@ -106,3 +108,47 @@ def test_policy_rejects_ignored_selection():
         SolverPolicy(backend="unknown")
     with pytest.raises(ValueError, match="use backend"):
         SolverPolicy(qp="mosek")
+
+
+@pytest.mark.parametrize("backend", ["clarabel", "mosek"])
+def test_diagnostic_explicit_backend_covers_lp_and_risk_qp(sample_lp_problem, backend):
+    import numpy as np
+    from optim import TurnoverLimit
+
+    problem = sample_lp_problem.with_constraints(
+        turnover=TurnoverLimit(0.0), tracking_error=TrackingErrorLimit(0.001)
+    ).with_data(initial_weight=np.array([0.5, 0.3, 0.1, 0.1]))
+    optimizer = PortfolioOptimizer()
+    report = optimizer.diagnose(problem, backend=backend)
+    if backend == "mosek" and any(
+        attempt.reason is not None and "unavailable" in attempt.reason.value
+        for attempt in report.attempts
+    ):
+        pytest.skip("本机缺少 MOSEK 或可用 license")
+    expected = "clarabel_qdldl" if backend == "clarabel" else backend
+    assert all(attempt.backend == expected for attempt in report.attempts)
+    assert len(report.attempts) >= 3
+    assert report.linear_feasible is True
+    assert report.minimum_tracking_error > 0.001
+    assert report.turnover_linear_lower_bound is None
+
+
+@pytest.mark.parametrize("backend", ["unknown", "piqp"])
+def test_diagnostic_bad_backend_rejected_before_prepare(
+    monkeypatch, sample_lp_problem, backend
+):
+    optimizer = PortfolioOptimizer()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("非法选择不应进入编译")
+
+    monkeypatch.setattr(optimizer, "prepare", forbidden)
+    with pytest.raises(ValueError):
+        optimizer.diagnose(sample_lp_problem, backend=backend)
+
+
+def test_diagnostic_does_not_inherit_original_model_restriction(sample_lp_problem):
+    optimizer = PortfolioOptimizer(SolverPolicy(backend="piqp"))
+    report = optimizer.diagnose(sample_lp_problem, backend="highs")
+    assert report.linear_feasible is True
+    assert all(attempt.backend == "highs" for attempt in report.attempts)

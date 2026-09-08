@@ -712,6 +712,28 @@ alpha 的预处理或 scale 改变后，必须重新确认该容差的经济含�
 
 ## 16. 不可行诊断
 
+接收他人导出的报告后，可直接恢复报告对象：
+
+```python
+from optim import InfeasibilityReport
+
+report = InfeasibilityReport.load("diagnosis.json.gz")
+if report.contributors_complete:
+    frame = report.contributors_frame()
+else:
+    print(report.contributor_summaries)  # 原贡献数量、约束组计数；请对方提供 full 报告
+```
+
+仅支持整数 `format_version=2`，缺少版本、v1 或未知版本明确拒绝。full 文件恢复全部
+贡献；摘要无法恢复省略内容，调用 contributors_frame 或导出 full 会报错。真正没有证据
+时则返回空表。默认解压大小上限 256 MiB，可通过 `max_uncompressed_bytes` 调整。
+加载不求解、不恢复原模型，重新优化仍需复现包。metadata 保持 JSON 值，不恢复任意 Python 类型。
+
+使用 `report.contributors_frame()` 可直接把内存中的原生贡献转换为 DataFrame，无需解析
+dump。例如 `report.contributors_frame(groups=("asset_bound", "turnover"))` 仅查看指定
+约束组；`include_metadata=True` 可附带后端专用详情。默认保留证书编号、后端、证据范围和
+原始乘子，不按乘子排名；无证据时返回相同列结构的空表。此操作不重新诊断或求解。
+
 松弛条目提供 `relaxed_bound`、`unit` 和 `description`：下界从原值减去 `amount`，
 上界加上 `amount`。例如下界 2% 松弛 0.005，表示降低到 1.5%，不是提高到 2.5%。
 权重按百分比展示，风格及自定义敞口保留原单位。JSON 导出包含这些计算字段，原始数值
@@ -876,7 +898,11 @@ comparison = mosek.solve(problem)
 显式指定时不执行 LP 预筛、不自动回退；缺 license 或数值失败按标准结果反馈，不会悄悄
 换后端。不支持的模型在 prepare 阶段报错，独立结果验收仍执行。默认 `auto` 保留上述路线。
 `lp`、`qp` 等旧预留选择字段仅允许原默认值，非默认值会报错，应使用 `backend` 选择。
-显式 `diagnose()` 的辅助 LP/QP 仍自动路由，因为它们可能与原问题类型不同；报告记录实际尝试。
+`diagnose()` 的辅助 LP/QP 默认自动路由，因为它们可能与原问题类型不同。
+需要交叉验证时使用 `optimizer.diagnose(result, backend="mosek")` 或 `backend="clarabel"`，
+只影响辅助问题，原始证书不变。显式选择不回退，不支持的辅助模型会报错；piqp 不支持
+必需的 Phase-I LP，highs 遇到最小风险 QP 会报错。报告记录实际尝试。当前 MOSEK/Clarabel
+适配器未提供诊断数值对偶下界，因此换手下界可能为 None，不以候选目标值替代。
 
 Factor-QCQP 的 LP 预筛默认关闭：
 
