@@ -12,6 +12,14 @@ PortfolioData / InMemoryDataSource 已绑定基准时，不允许重复传入 be
 
 ## 1. 推荐入口
 
+`PortfolioOptimizer(SolverPolicy(backend="auto"))` 使用默认路由。
+backend 可指定 mosek、clarabel（LP/QP/Factor-QCQP），highs（仅 LP）或 piqp（仅 QP）。
+显式指定不预筛、不回退；缺 license 返回失败结果，模型类型不支持则 prepare 报错。
+所有候选仍独立验收；diagnose 的辅助问题自动路由。非默认旧 lp/qp 预留字段会报错。
+
+`RequiredRelaxation.relaxed_bound`、`unit`、`description` 用于展示原边界到放宽后边界的
+变化，dump 同时导出这些字段。lower 减去 amount，upper 加上 amount，不代表独立最小修复。
+
 ```python
 from optim import PortfolioOptimizer
 

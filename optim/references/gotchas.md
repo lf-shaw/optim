@@ -169,6 +169,10 @@ DataYes 在 2019-12-03 调整过行业分类。跨越该日期批量读取时，
 协方差行中存在的行业。
 # 复现与对照边界
 
+- 手动 backend 不回退；指定 mosek 缺 license 不会改用 Clarabel。piqp 不接受
+  Factor-QCQP，使用 auto 才会运行 PIQP 参数 QP 前沿搜索。
+- 松弛 amount 是幅度而非新边界；lower 用减法。优先读取 relaxed_bound 和 description。
+
 - `with_constraints` 不修改原问题、不复制大数组；嵌套约束整体替换，不是递归合并。
 - 移除一项约束后可行不等于该约束单独错误，也不等于 Phase-I 给出了唯一修复。
 - 复现包包含敏感投资数据，不能当作普通诊断摘要公开分享。只接收可信来源文件。

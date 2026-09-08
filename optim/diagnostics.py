@@ -37,7 +37,8 @@ class RequiredRelaxation:
     side : str
         需要放宽的边界侧，``"lower"`` 或 ``"upper"``。
     amount : float
-        此方案中使用该约束原始单位表示的松弛量。
+        此方案中使用该约束原始单位表示的非负松弛幅度，不是新边界。
+        lower 从 configured_bound 减去 amount；upper 则加上 amount。
     configured_bound : float
         原问题配置的边界值。
     diagnostic_scale : float
@@ -62,6 +63,46 @@ class RequiredRelaxation:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+
+    @property
+    def relaxed_bound(self) -> float:
+        """放宽后的边界；下界减去松弛幅度，上界加上幅度，不独立存储。"""
+        if self.side not in {"lower", "upper"}:
+            raise ValueError("relaxation side must be lower or upper")
+        return self.configured_bound + (
+            -self.amount if self.side == "lower" else self.amount
+        )
+
+    @property
+    def unit(self) -> str:
+        """展示单位：明确的权重约束用 weight，其余保留 original，不猜测自定义属性单位。"""
+        return (
+            "weight"
+            if self.group
+            in {
+                "asset_bound",
+                "turnover",
+                "total_active",
+                "benchmark_member_weight",
+                "budget",
+            }
+            else "original"
+        )
+
+    @property
+    def description(self) -> str:
+        """中文边界变化说明；百分比仅用于已知权重单位，不改变原数值精度。"""
+        label = "下界" if self.side == "lower" else "上界"
+        direction = "降低" if self.side == "lower" else "提高"
+        if self.unit == "weight":
+            return (
+                f"{self.constraint_id}：{label}从 {self.configured_bound:.4%} "
+                f"{direction}至 {self.relaxed_bound:.4%}，{direction} {self.amount * 100:.4f} 个百分点"
+            )
+        return (
+            f"{self.constraint_id}：{label}从 {self.configured_bound:.8g} "
+            f"{direction}至 {self.relaxed_bound:.8g}，幅度 {self.amount:.8g}（原约束单位）"
+        )
 
 
 @dataclass(frozen=True)
@@ -89,7 +130,10 @@ class InfeasibilityReport:
     tracking_error_limit : float | None
         原问题配置的年化小数跟踪误差预算。
     relaxations : tuple[RequiredRelaxation, ...]
-        Phase-I 所需松弛，按尺度化严重程度降序排列。
+        Phase-I 松弛方案，按尺度化严重程度降序排列；不是各边界必须放宽的最小幅度，
+        也不保证满足风险预算。导出含 configured_bound（原边界）、amount（非负幅度）、
+        relaxed_bound（新边界：lower 减、upper 加）、unit（weight 为小数权重，original
+        为原约束单位）、description（仅供阅读的变化说明）。
     native_evidence : Mapping[str, Any] | None
         只读的诊断阶段状态和目标值；保留用于兼容已有展示代码。
     native_certificates : tuple[NativeInfeasibilityEvidence, ...]
@@ -271,9 +315,16 @@ def _json_value(value: Any) -> Any:
     import numpy as np
 
     if is_dataclass(value) and not isinstance(value, type):
-        return {
+        result = {
             item.name: _json_value(getattr(value, item.name)) for item in fields(value)
         }
+        if isinstance(value, RequiredRelaxation):
+            result.update(
+                relaxed_bound=_json_value(value.relaxed_bound),
+                unit=value.unit,
+                description=value.description,
+            )
+        return result
     if isinstance(value, Enum):
         return _json_value(value.value)
     if isinstance(value, Mapping):

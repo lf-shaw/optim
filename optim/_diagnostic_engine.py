@@ -80,6 +80,8 @@ def diagnose_problem(
 
     from .model.compiler import _diagnostic_domain
 
+    # 诊断辅助模型与原问题类型不同，仍使用固定自动路径；保留原数值容差和原结果证据。
+    policy = replace(policy, backend="auto")
     domain = _diagnostic_domain(problem)
     phase_result, relaxations = _solve_phase_one(domain, policy)
     phase_feasible = _linear_feasibility(phase_result, domain, policy)

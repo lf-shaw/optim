@@ -121,6 +121,8 @@ class CoreSolverOptions:
 
     Attributes
     ----------
+    backend : str
+        auto 自动路由；显式值只使用指定后端，不回退。
     licensed_fallback : str
         商业回退后端标识；空字符串表示禁用。
     free_fallback : str
@@ -162,3 +164,4 @@ class CoreSolverOptions:
     piqp_inequality_form: str
     feasibility_tolerance: float
     risk_margin: float
+    backend: str = "auto"

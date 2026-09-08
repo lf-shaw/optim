@@ -1184,16 +1184,20 @@ class SolverTuning:
 class SolverPolicy:
     """无状态优化器的路由、回退和验收策略。
 
-    当前实现将已验证的主路径固定为 HiGHS、PIQP 和 factor frontier；字符串选择字段为后续
-    可配置路由保留公共契约。即使 ``validate_solution=False``，当前实现仍始终执行独立验收。
+    auto 使用 HiGHS、PIQP 和 factor frontier 主路径；显式 backend 只运行指定后端，
+    不预筛、不回退。即使 ``validate_solution=False``，当前实现仍始终执行独立验收。
     ``repeat_failed_cold_solve`` 同样是保留字段，当前刻意不使用。
 
     Attributes
     ----------
+    backend : str
+        默认 auto；mosek、clarabel 支持 LP/QP/Factor-QCQP；highs 仅支持 LP，piqp
+        仅支持 QP。不支持的模型在准备阶段报错；缺 license 或数值失败按标准结果返回。
+        显式 diagnose 的辅助问题仍自动选择后端，不受此比较用开关限制。
     lp : str
-        LP 首选后端标识；默认为且当前支持的生产值为 ``"highs"``。
+        自动路线预留字段，仅允许默认 highs；切换后端使用 backend，非默认值报错。
     qp : str
-        凸 QP 首选后端标识；默认为且当前支持的生产值为 ``"piqp"``。
+        自动路线预留字段，仅允许默认 piqp；切换后端使用 backend，非默认值报错。
     factor_qcqp_strategy : str
         因子风险预算问题的专用算法；默认为 ``"frontier"``。
     factor_qcqp_subproblem_backend : str
@@ -1228,6 +1232,22 @@ class SolverPolicy:
     repeat_failed_cold_solve: bool = False
     objective_tolerance: ObjectiveTolerance = field(default_factory=ObjectiveTolerance)
     tuning: SolverTuning = field(default_factory=SolverTuning)
+    backend: str = "auto"
+
+    def __post_init__(self) -> None:
+        if self.backend not in {"auto", "mosek", "clarabel", "highs", "piqp"}:
+            raise ValueError("backend must be auto, mosek, clarabel, highs or piqp")
+        # 旧预留字段只接受既定值，避免调用者误以为它们可以切换主后端。
+        for name, expected in (
+            ("lp", "highs"),
+            ("qp", "piqp"),
+            ("factor_qcqp_strategy", "frontier"),
+            ("factor_qcqp_subproblem_backend", "piqp"),
+        ):
+            if getattr(self, name) != expected:
+                raise ValueError(
+                    f"{name} only supports {expected!r}; use backend to select a solver"
+                )
 
 
 @dataclass(frozen=True)

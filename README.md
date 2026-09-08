@@ -712,6 +712,11 @@ alpha 的预处理或 scale 改变后，必须重新确认该容差的经济含�
 
 ## 16. 不可行诊断
 
+松弛条目提供 `relaxed_bound`、`unit` 和 `description`：下界从原值减去 `amount`，
+上界加上 `amount`。例如下界 2% 松弛 0.005，表示降低到 1.5%，不是提高到 2.5%。
+权重按百分比展示，风格及自定义敞口保留原单位。JSON 导出包含这些计算字段，原始数值
+保持完整精度。它们是一个同时松弛方案，不是各约束必须放宽的最小值，也不保证满足风险预算。
+
 > 开发者调试支持直接从 `result.problem.with_constraints(turnover=None)` 派生对照问题。
 > `export_repro("case.zip", result=result)` 与 `load_repro("case.zip")` 用于跨进程传递完整
 > 单期输入；加载后 `case.solve()` 复跑、`case.problem` 继续派生。不会自动启动诊断。
@@ -857,6 +862,21 @@ sequence_policy = SequencePolicy(
 | QP/QCQP 回退 | MOSEK license 可用时优先，否则 Clarabel |
 
 调用方通常不应根据问题类型手工选择后端；通过 `result.backend` 和 `result.route` 审计实际路线。
+
+需要独立对比时，可以显式选择后端：
+
+```python
+auto = PortfolioOptimizer(SolverPolicy(backend="auto"))
+mosek = PortfolioOptimizer(SolverPolicy(backend="mosek"))
+baseline = auto.solve(problem)
+comparison = mosek.solve(problem)
+```
+
+`mosek`、`clarabel` 支持 LP、QP 和 Factor-QCQP；`highs` 仅支持 LP，`piqp` 仅支持 QP。
+显式指定时不执行 LP 预筛、不自动回退；缺 license 或数值失败按标准结果反馈，不会悄悄
+换后端。不支持的模型在 prepare 阶段报错，独立结果验收仍执行。默认 `auto` 保留上述路线。
+`lp`、`qp` 等旧预留选择字段仅允许原默认值，非默认值会报错，应使用 `backend` 选择。
+显式 `diagnose()` 的辅助 LP/QP 仍自动路由，因为它们可能与原问题类型不同；报告记录实际尝试。
 
 Factor-QCQP 的 LP 预筛默认关闭：
 

@@ -278,6 +278,25 @@ if not result.status.has_solution:
 
 ### 同进程对照与跨进程复现
 
+后端对照不修改业务问题：
+
+```python
+from optim import SolverPolicy
+
+automatic = PortfolioOptimizer(SolverPolicy(backend="auto")).solve(problem)
+direct = PortfolioOptimizer(SolverPolicy(backend="mosek")).solve(problem)
+# 或 backend="clarabel"；无 license / 数值失败不会转入别的后端。
+```
+
+自动路线使用原设计；显式后端跳过预筛与回退，仍独立验收。
+highs 只接受 LP，piqp 只接受 QP（不是通用锥求解器）；不支持的类型在准备阶段拒绝。
+比较时核对 fingerprint、目标和约束残差，不能要求权重逐项相同。
+复现包会保存 backend 策略；诊断辅助模型仍自动路由，不受原问题选用的后端限制。
+
+松弛条目可直接读取 `item.description`，例如“下界从 2.0000% 降低至 1.5000%”。
+`item.relaxed_bound` 给出计算后的新边界，JSON 导出也包含该值和单位。
+`amount` 始终是幅度而不是新边界；多个条目构成一个同时放松方案，不能逐项理解为必要最小改动。
+
 不需要导出也可以调试。`with_constraints()` 支持多个字段，但定位原因时推荐单项变更：
 
 ```python

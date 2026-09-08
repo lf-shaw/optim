@@ -153,7 +153,7 @@ group = "constraints"
 [[symbols]]
 name = "optim.SolverPolicy"
 signature = "SolverPolicy(...)"
-summary = "目标证书、回退、LP 预筛和数值容差策略；通常使用默认值，仅按业务需要显式覆盖"
+summary = "backend 默认 auto；mosek/clarabel 支持 LP/QP/Factor-QCQP，highs 仅 LP、piqp 仅 QP；显式选择不预筛不回退，辅助诊断仍自动路由"
 group = "policy"
 
 [[symbols]]

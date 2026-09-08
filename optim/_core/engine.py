@@ -9,13 +9,20 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 import numpy as np
+import scipy.sparse as sp
 
 from .backends.base import BackendOptions, BackendResult
 from .backends.clarabel import ClarabelBackend
 from .backends.highs import HighsBackend
 from .backends.mosek import MosekBackend
 from .backends.piqp import PIQPBackend
-from .canonical import CanonicalModel, FactorQCQP, LinearProgram, QuadraticProgram
+from .canonical import (
+    CanonicalKind,
+    CanonicalModel,
+    FactorQCQP,
+    LinearProgram,
+    QuadraticProgram,
+)
 from .contracts import CoreFailureReason, CoreSolveStatus, CoreSolverOptions
 from .factor_qcqp import solve_factor_qcqp
 
@@ -69,6 +76,12 @@ class CoreSolver:
 
         if not isinstance(model, (LinearProgram, QuadraticProgram, FactorQCQP)):
             raise TypeError(f"unsupported canonical model: {type(model).__name__}")
+        if self.options.backend == "highs" and not isinstance(model, LinearProgram):
+            raise ValueError("backend='highs' only supports LP")
+        if self.options.backend == "piqp" and not isinstance(model, QuadraticProgram):
+            raise ValueError(
+                "backend='piqp' only supports QP; use auto for Factor-QCQP"
+            )
         return CoreProblemHandle(model)
 
     def solve(
@@ -87,6 +100,30 @@ class CoreSolver:
         backend_options = self._backend_options()
         if collect_dual_bound:
             backend_options = replace(backend_options, collect_dual_bound=True)
+        if self.options.backend != "auto":
+            selected = {
+                "highs": HighsBackend,
+                "piqp": PIQPBackend,
+                "mosek": MosekBackend,
+                "clarabel": ClarabelBackend,
+            }[self.options.backend]()
+            numerical_model = model
+            if isinstance(model, LinearProgram) and self.options.backend in {
+                "mosek",
+                "clarabel",
+            }:
+                # 零 Hessian 的 QP 与 LP 完全等价；共享域和目标，不分配稠密零矩阵。
+                n = model.domain.n_variables
+                numerical_model = QuadraticProgram(
+                    CanonicalKind.QP,
+                    model.domain,
+                    sp.csc_matrix((n, n)),
+                    model.c,
+                    objective_offset=model.objective_offset,
+                )
+            primary = selected.solve(numerical_model, backend_options)
+            primary, accepted, max_violation = self._audit(model, primary)
+            return CoreSolveResult(primary, (primary,), accepted, max_violation)
         if isinstance(model, LinearProgram):
             primary = HighsBackend().solve(model, backend_options)
         elif isinstance(model, QuadraticProgram):

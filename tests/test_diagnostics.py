@@ -19,6 +19,30 @@ from optim import (
 )
 
 
+def test_relaxation_displays_direction_and_original_units(tmp_path):
+    import json
+    from optim import InfeasibilityReport, RequiredRelaxation
+
+    lower = RequiredRelaxation("asset_bound:a", "asset_bound", "lower", 0.005, 0.02, 1.0)
+    upper = RequiredRelaxation("turnover:l1", "turnover", "upper", 0.15, 0.05, 1.0)
+    style = RequiredRelaxation("style:SIZE", "style", "lower", 0.1, -0.6, 1.0)
+    assert lower.relaxed_bound == pytest.approx(0.015)
+    assert "降低至 1.5000%" in lower.description
+    assert upper.relaxed_bound == pytest.approx(0.2)
+    assert "提高至 20.0000%" in upper.description
+    assert style.relaxed_bound == pytest.approx(-0.7)
+    assert style.unit == "original"
+    assert "%" not in style.description
+    report = InfeasibilityReport(stage="deep", linear_feasible=False, summary_text="同时松弛方案",
+                                 relaxations=(lower, upper, style))
+    report.dump(tmp_path / "report.json")
+    payload = json.loads((tmp_path / "report.json").read_text())
+    item = payload["report"]["relaxations"][0]
+    assert item["relaxed_bound"] == pytest.approx(0.015)
+    assert item["amount"] == 0.005
+    assert item["description"] == lower.description
+
+
 def test_deep_diagnostic_reports_minimum_required_turnover():
     data = PortfolioData(
         date=pd.Timestamp("2026-01-02"),

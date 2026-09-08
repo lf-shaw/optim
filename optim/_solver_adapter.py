@@ -660,6 +660,7 @@ def core_options_from_policy(policy: SolverPolicy) -> CoreSolverOptions:
 
     tuning = policy.tuning
     return CoreSolverOptions(
+        backend=policy.backend,
         licensed_fallback=policy.licensed_fallback,
         free_fallback=policy.free_fallback,
         lp_prescreen=policy.lp_prescreen,
