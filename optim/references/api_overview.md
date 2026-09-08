@@ -225,8 +225,23 @@ deep 诊断给出一个加权 Phase-I 松弛方案、最小换手率的数值对
 成功解的指标读取 `result.metrics`。失败结果包括不可行、迭代上限和数值失败。单独传入
 `PortfolioProblem` 仍允许诊断，因为接口不查询求解历史；不提供 `force` 绕过参数。
 
-`report.dump("diagnosis.json")` 导出包含全部原生证据的 JSON，默认缩进 2 个空格。
+`report.dump("diagnosis.json")` 导出诊断及原生证据的组计数摘要，默认缩进 2 个空格。
 `report.dump("diagnosis.json.gz", indent=None)` 导出紧凑压缩文件；覆盖已有文件须显式
-`overwrite=True`。文件前部的 `field_descriptions` 集中说明字段，后面的 `report` 保存数据。
+`overwrite=True`。完整乘子使用 `evidence="full"`，按列存储全部字段。文件格式版本为 2，
+前部的 `field_descriptions` 集中说明字段，后面的 `report` 保存数据；`evidence_mode` 标明模式。
 综合证据冲突时 `linear_feasible=None`，冲突下界不参与恢复；换手率松弛 0.15 表示增加
 15 个百分点，不是相对增加 15%，也不等于保持其他约束时的最小换手率。
+
+诊断模型禁用稀疏换手率及依赖原约束的冗余省略，Phase-I 保护非负和操作边界；正常求解
+保留加速。`native_evidence.phase_one_turnover_l1` 为原始候选实际 L1 换手率，证据为空的
+原因见 `certificate_availability`。完整证书不是 IIS，组计数不是重要性排名。
+# 问题派生与复现
+
+`PortfolioProblem.with_constraints(**changes)` 支持一次替换多个约束字段，排查时推荐单项
+修改。`with_data(**changes)`、`with_objective(objective)` 返回新问题，未变更数组共享。
+单期结果的 `problem` 可直接派生，无需重新取数；求解策略保存在 `solver_policy`。
+
+`export_repro(path, result=..., report=None, problem=None, policy=None, overwrite=False)`
+导出单期输入、实际策略、theta 初值、结果快照和可选完整诊断。序列传入 stopped_problem。
+`load_repro(path, max_uncompressed_bytes=1073741824)` 返回 `ReproCase`，不运行求解或诊断。
+`case.solve()` 独立复跑；`case.problem` 可继续派生。完整例子见 recipes 中的同进程对照。

@@ -412,8 +412,13 @@ def test_dump_complete_report_with_descriptions(tmp_path, suffix, indent):
         else path.read_text(encoding="utf-8")
     )
     payload = json.loads(text)
-    assert list(payload) == ["format_version", "field_descriptions", "report"]
-    assert payload["format_version"] == 1
+    assert list(payload) == [
+        "format_version",
+        "field_descriptions",
+        "evidence_mode",
+        "report",
+    ]
+    assert payload["format_version"] == 2
     assert set(payload["field_descriptions"]) == {item.name for item in fields(report)}
     assert all(payload["field_descriptions"].values())
     assert (
@@ -506,6 +511,13 @@ def test_contradictory_bound_is_quarantined_using_full_candidate(
         ),
     )
     compiled = compile_problem(problem)
+    from optim.model.compiler import _diagnostic_domain
+
+    compiled = replace(
+        compiled,
+        model=replace(compiled.model, domain=_diagnostic_domain(problem)),
+        compiler_optimizations=(),
+    )
     # 候选实际换手率 20%，其他约束保持可行。它直接反驳最小换手率下界 162%。
     weight = problem.data.initial_weight.copy()
     weight[0] += 0.1
@@ -546,3 +558,97 @@ def test_joint_relaxation_does_not_falsely_conflict_with_turnover_bound(
     )
     assert conclusion is False
     assert conflict is None
+
+
+def test_diagnostic_domain_restores_constraints_and_protects_holdings(
+    sample_lp_problem,
+):
+    from optim.model import compile_problem
+    from optim.model.compiler import _diagnostic_domain
+    from optim._diagnostic_engine import _solve_phase_one
+
+    original = compile_problem(sample_lp_problem)
+    assert "exact_sparse_turnover" in original.compiler_optimizations
+    domain = _diagnostic_domain(sample_lp_problem)
+    groups = {item.group for item in domain.constraints}
+    assert {
+        "turnover_epigraph_negative",
+        "total_active",
+        "benchmark_member_weight",
+    } <= groups
+    data = replace(
+        sample_lp_problem.data,
+        initial_weight=np.array([1.0, 0.0, 0.0, 0.0]),
+        tradable=np.array([True, True, True, False]),
+    )
+    problem = replace(
+        sample_lp_problem,
+        data=data,
+        constraints=replace(
+            sample_lp_problem.constraints, turnover=TurnoverLimit(0.05)
+        ),
+    )
+    domain = _diagnostic_domain(problem)
+    result, slacks = _solve_phase_one(domain, PortfolioOptimizer().policy)
+    assert result.status.has_solution
+    weights = result.primal[domain.weight_indices]
+    assert weights.min() >= -1e-8
+    assert weights[3] == pytest.approx(0.0, abs=1e-8)
+    assert not any(item.key == "d" and item.group == "asset_bound" for item in slacks)
+    actual = np.abs(weights - data.initial_weight).sum()
+    relaxed = sum(item.amount for item in slacks if item.group == "turnover")
+    assert actual <= 0.05 + relaxed + 1e-5
+
+
+def test_native_summary_size_is_independent_of_contributor_count(tmp_path):
+    import json
+    from optim import (
+        InfeasibilityReport,
+        InfeasibilityContributor,
+        NativeInfeasibilityEvidence,
+        ProofStatus,
+    )
+
+    entries = tuple(
+        InfeasibilityContributor(
+            "tracking_error",
+            "tracking_error",
+            "cone",
+            "cone",
+            -float(i + 1),
+            metadata={"canonical_index": i},
+        )
+        for i in range(32457)
+    )
+    certificate = NativeInfeasibilityEvidence(
+        "clarabel_qdldl",
+        "primal_infeasibility_certificate",
+        ProofStatus.NUMERICAL_ESTIMATE,
+        "PrimalInfeasible",
+        entries,
+    )
+    report = InfeasibilityReport(
+        "deep", False, "数值证据", native_certificates=(certificate,)
+    )
+    path = report.dump(tmp_path / "summary.json")
+    assert path.stat().st_size < 10000
+    summary = json.loads(path.read_text())["report"]["native_certificates"][0]
+    assert summary["group_counts"] == {"tracking_error": 32457}
+    assert "contributors" not in summary
+    full = report.dump(tmp_path / "full.json", evidence="full", indent=None)
+    columns = json.loads(full.read_text())["report"]["native_certificates"][0][
+        "contributors"
+    ]["columns"]
+    assert columns["multiplier"] == [item.multiplier for item in entries]
+    assert columns["metadata"][-1] == {"canonical_index": 32456}
+
+
+def test_report_explains_absent_native_evidence(sample_lp_problem):
+    from optim._diagnostic_engine import _certificate_availability
+
+    assert _certificate_availability(None)[0]["availability"] == "no_prior_result"
+    result = PortfolioOptimizer().solve(sample_lp_problem)
+    assert (
+        _certificate_availability(result)[0]["availability"]
+        == "not_reported_infeasible"
+    )

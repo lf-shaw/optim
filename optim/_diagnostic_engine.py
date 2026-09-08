@@ -78,8 +78,11 @@ def diagnose_problem(
             "prior result fingerprint does not match the diagnosed problem"
         )
 
-    phase_result, relaxations = _solve_phase_one(compiled.model.domain, policy)
-    phase_feasible = _linear_feasibility(phase_result, compiled.model.domain, policy)
+    from .model.compiler import _diagnostic_domain
+
+    domain = _diagnostic_domain(problem)
+    phase_result, relaxations = _solve_phase_one(domain, policy)
+    phase_feasible = _linear_feasibility(phase_result, domain, policy)
     attempts = [_attempt(phase_result, "diagnostic_phase_one")]
     turnover_lower = None
     if problem.constraints.turnover is not None:
@@ -87,6 +90,7 @@ def diagnose_problem(
             problem,
             compiled,
             policy,
+            domain,
         )
         attempts.append(_attempt(turnover_result, "diagnostic_minimum_turnover"))
 
@@ -94,7 +98,7 @@ def diagnose_problem(
     linear_feasible, evidence_conflict = _combine_linear_evidence(
         phase_feasible,
         phase_result,
-        compiled.model.domain,
+        domain,
         problem,
         turnover_lower,
         policy.tuning.feasibility_tolerance,
@@ -166,12 +170,69 @@ def diagnose_problem(
             "phase_one_linear_feasible": phase_feasible,
             "reported_turnover_lower_bound": reported_turnover_lower,
             "evidence_conflict": evidence_conflict,
+            "diagnostic_model": "full_linear_domain",
+            "phase_one_turnover_l1": (
+                float(
+                    np.abs(
+                        phase_result.primal[domain.weight_indices]
+                        - problem.data.initial_weight
+                    ).sum()
+                )
+                if phase_result.status.has_solution
+                and phase_result.primal is not None
+                and problem.data.initial_weight is not None
+                else None
+            ),
+            "protected_bounds": "nonnegative_and_operational",
+            "certificate_availability": _certificate_availability(prior_result),
         },
         native_certificates=(
             () if prior_result is None else prior_result.native_infeasibility
         ),
         attempts=tuple(attempts),
     )
+
+
+def _certificate_availability(
+    result: OptimizationResult | None,
+) -> tuple[dict[str, str], ...]:
+    """解释证据缺失，不为补取证书追加求解；缺少细节时明确保留未知原因。"""
+
+    if result is None:
+        return (
+            {
+                "availability": "no_prior_result",
+                "message": "未提供原求解结果，未采集原生证据。",
+            },
+        )
+    available = {item.backend for item in result.native_infeasibility}
+    records = []
+    for attempt in result.route:
+        error = attempt.metadata.get("infeasibility_evidence_error")
+        state = (
+            "available"
+            if attempt.backend in available
+            else "read_error"
+            if error
+            else "not_retained"
+            if attempt.status is SolveStatus.INFEASIBLE
+            else "not_reported_infeasible"
+        )
+        records.append(
+            {
+                "backend": attempt.backend,
+                "availability": state,
+                "native_status": attempt.native_status or "",
+                "message": str(error)
+                if error
+                else {
+                    "available": "已保留原生数值证据。",
+                    "not_retained": "该尝试未附带可读取的原生证据；未为补取证据额外求解。",
+                    "not_reported_infeasible": "该尝试未报告不可行，不将末次对偶向量视作不可行证书。",
+                }.get(state, ""),
+            }
+        )
+    return tuple(records)
 
 
 def _combine_linear_evidence(
@@ -287,11 +348,15 @@ def _solve_phase_one(
         if record is None or not record.relaxable:
             continue
         unit_row = sp.csc_matrix(([1.0], ([0], [index])), shape=(1, domain.n_variables))
-        if np.isfinite(domain.variable_lower[index]):
+        hard_lower = float(record.metadata.get("diagnostic_hard_lower", -np.inf))
+        if (
+            np.isfinite(domain.variable_lower[index])
+            and domain.variable_lower[index] > hard_lower
+        ):
             row_specs.append(
                 (unit_row, domain.variable_lower[index], np.inf, record, "lower", 1.0)
             )
-            variable_lower[index] = -np.inf
+            variable_lower[index] = hard_lower
         if np.isfinite(domain.variable_upper[index]):
             row_specs.append(
                 (unit_row, -np.inf, domain.variable_upper[index], record, "upper", -1.0)
@@ -389,10 +454,15 @@ def _minimum_linear_turnover(
     problem: PortfolioProblem,
     compiled: CompiledProblem,
     policy: SolverPolicy,
+    diagnostic_domain: LinearDomain | None = None,
 ) -> tuple[CoreBackendResult, float | None]:
     """仅移除已配置换手率上限后，最小化 L1 换手率。"""
 
-    domain = compiled.model.domain
+    from .model.compiler import _diagnostic_domain
+
+    domain = (
+        _diagnostic_domain(problem) if diagnostic_domain is None else diagnostic_domain
+    )
     turnover_rows = {
         item.index
         for item in domain.constraints
@@ -415,15 +485,8 @@ def _minimum_linear_turnover(
     )
     c: np.ndarray = np.zeros(domain.n_variables, dtype=float)
     turnover_aux = [item for item in domain.variables if item.group == "turnover_aux"]
-    if "exact_sparse_turnover" in compiled.compiler_optimizations:
-        for item in turnover_aux:
-            c[item.index] = 2.0
-        assert problem.data.initial_weight is not None
-        new_assets = np.asarray(problem.data.initial_weight) <= 0.0
-        c[domain.weight_indices[new_assets]] = 2.0
-    else:
-        for item in turnover_aux:
-            c[item.index] = 1.0
+    for item in turnover_aux:
+        c[item.index] = 1.0
     result = _solve_core_lp(LinearProgram(CanonicalKind.LP, reduced, c), policy)
     # 可行候选目标是最小化问题的上界；不能作为后续恢复的不可行排除下界。
     value = (

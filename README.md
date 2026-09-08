@@ -704,6 +704,13 @@ alpha 的预处理或 scale 改变后，必须重新确认该容差的经济含�
 
 ## 16. 不可行诊断
 
+> 开发者调试支持直接从 `result.problem.with_constraints(turnover=None)` 派生对照问题。
+> `export_repro("case.zip", result=result)` 与 `load_repro("case.zip")` 用于跨进程传递完整
+> 单期输入；加载后 `case.solve()` 复跑、`case.problem` 继续派生。不会自动启动诊断。
+> 诊断摘要、完整证据、模型复现包的区别和示例见
+> [调试与复现范例](optim/references/recipes.md#同进程对照与跨进程复现)。
+
+
 深度诊断可能包含额外 LP/QP，因此不会在普通求解路径自动运行。下面是失败后显式诊断的例子：
 
 ```python
@@ -769,18 +776,27 @@ if sequence_result.stopped_problem is not None:
 不改变求解状态，不解析日志，也不会为补充证据额外求解。
 
 完整报告可导出为 UTF-8 JSON。文件前部集中放置从 Attributes 文档生成的
-`field_descriptions` 字典，之后的 `report` 包含所有数据，包括 `str` / `repr` 中省略的
-`native_certificates`。导出不会重新诊断或求解：
+`field_descriptions` 字典，之后的 `report` 保留全部 Phase-I 松弛、检查结论和尝试记录。
+默认原生证据仅汇总来源、质量、贡献数量及约束组计数，不把数万条乘子解释成数万个冲突原因。
+需要完整坐标时显式使用 `evidence="full"`。导出不会重新诊断或求解：
 
 ```python
 report.dump("diagnosis.json")                         # 默认 indent=2，便于阅读
 report.dump("diagnosis.json.gz", indent=None)         # 紧凑格式 + gzip，便于传输
+report.dump("native-full.json.gz", evidence="full", indent=None)  # 完整原生坐标
 report.dump("diagnosis.json", indent=4, overwrite=True)
 ```
 
-默认不覆盖已有文件，父目录需存在。导出文件包含 `format_version=1`；枚举使用其值、日期使用
+默认不覆盖已有文件，父目录需存在。导出文件包含 `format_version=2` 和 `evidence_mode`；枚举使用其值、日期使用
 ISO 格式、数组使用列表，非有限数值表示为字符串 `NaN` / `Infinity` / `-Infinity`。
-它包含完整诊断证据，不包含重放求解所需的原始风险模型等完整输入。
+完整模式的 `contributors` 使用 `encoding="columns"`，`columns` 各列的第 i 项共同表示
+一个贡献对象，保留符号与全部字段。摘要模式不会构造逐项 JSON，仅统计计数。
+两种模式都不包含重放求解所需的原始风险模型等完整输入。
+
+诊断专用线性域保留完整 L1 换手率和全部显式总主动/基准覆盖约束，不沿用依赖原上限的
+省略规则。Phase-I 默认保护非负底线及操作指令资产边界，避免建议卖空或解除冻结；报告记录
+`phase_one_turnover_l1` 实际换手率和 `certificate_availability` 证据可用性。正常优化仍使用
+原有加速简化。Phase-I 是线性松弛方案，不承诺满足风险预算，也不保证非线性风险冲突的最小修复。
 
 前沿搜索的参数 QP 状态保留在求解路线中，不作为原 Factor-QCQP 的原生证书；最终 MOSEK /
 Clarabel 回退求解完整问题时，才可产生完整问题的锥证据。各后端的能力无需完全一致。

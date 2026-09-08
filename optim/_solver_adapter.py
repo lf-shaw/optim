@@ -140,6 +140,7 @@ class SolverAdapter:
             evaluation,
             total_started,
             prepare_s,
+            theta_seed=theta_seed,
         )
 
     def diagnose(
@@ -320,6 +321,8 @@ class SolverAdapter:
         evaluation: _Evaluation,
         total_started: float,
         prepare_s: float,
+        *,
+        theta_seed: float | None = None,
     ) -> OptimizationResult:
         """把私有后端证据规范化为稳定的公共结果契约。"""
 
@@ -427,6 +430,8 @@ class SolverAdapter:
                 if (evidence := _native_infeasibility(item, compiled)) is not None
             ),
             problem=problem,
+            solver_policy=self.policy,
+            theta_seed=theta_seed,
         )
 
 

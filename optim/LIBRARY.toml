@@ -25,6 +25,24 @@ gotchas_priority = "high"
 recipes_priority = "high"
 
 [[symbols]]
+name = "optim.PortfolioProblem.with_constraints"
+signature = "with_constraints(**changes) -> PortfolioProblem"
+summary = "派生一个或多个约束字段变更的新问题，共享输入；嵌套整体替换，可选约束 None 移除，调试推荐单项对照"
+group = "diagnostics"
+
+[[symbols]]
+name = "optim.export_repro"
+signature = "export_repro(path, *, result, report=None, problem=None, policy=None, overwrite=False) -> Path"
+summary = "导出单期模型、实际策略和已有证据，不自动诊断；含敏感数据，不包含license或历史workspace"
+group = "diagnostics"
+
+[[symbols]]
+name = "optim.load_repro"
+signature = "load_repro(path, *, max_uncompressed_bytes=1073741824) -> ReproCase"
+summary = "白名单无pickle加载，校验完整性；case.solve独立复跑，case.problem派生对照；不会自动取数求解"
+group = "diagnostics"
+
+[[symbols]]
 name = "optim.PortfolioOptimizer"
 signature = "PortfolioOptimizer(policy: SolverPolicy | None = None)"
 summary = "统一单期和多期优化入口；实例只保存求解策略，不保存持仓、样本空间或交易名单"
@@ -56,8 +74,8 @@ group = "diagnostics"
 
 [[symbols]]
 name = "optim.InfeasibilityReport.dump"
-signature = "dump(path: str | Path, *, indent: int | None = 2, overwrite: bool = False) -> Path"
-summary = "导出集中字段说明和完整报告（含原生证据）的 JSON；.gz 后缀启用压缩，indent=None 为紧凑输出；不重新诊断"
+signature = "dump(path: str | Path, *, indent: int | None = 2, overwrite: bool = False, evidence: str = 'summary') -> Path"
+summary = "导出字段说明、松弛方案和原生证据摘要；evidence='full' 导出全部带符号坐标的列式数组；格式版本2，.gz 压缩，indent=None 紧凑；不重新诊断"
 group = "diagnostics"
 
 [[symbols]]

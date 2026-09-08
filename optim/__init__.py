@@ -65,6 +65,7 @@ from .validation import (
     ValidationSeverity,
 )
 from .diagnostics import InfeasibilityReport, RequiredRelaxation
+from .repro import ReproCase, export_repro, load_repro
 from .sequence import PortfolioSequenceResult, SequenceDataError, SequenceStep
 from .data import (
     BenchmarkCoverageError,
@@ -117,6 +118,9 @@ __all__ = [
     "ProofStatus",
     "RiskAdjustedAlpha",
     "RequiredRelaxation",
+    "ReproCase",
+    "export_repro",
+    "load_repro",
     "RunFingerprint",
     "SolveStatus",
     "SolveTimings",

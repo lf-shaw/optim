@@ -79,7 +79,9 @@ BenchmarkCoveragePolicy(
 请检查 `status.has_solution`，成功时读取 `result.metrics`。单独传入问题时不查询求解历史。
 失败不等于已确认不可行；`linear_feasible=None` 可能表示证据不足或冲突。Phase-I 的松弛
 方案可能同时改变多个约束，不能把单条松弛解释为必须单独放宽的幅度。导出完整证据可用
-`report.dump("diagnosis.json.gz", indent=None)`，无需在日志里打印全部原生乘子。
+`report.dump("diagnosis.json.gz", evidence="full", indent=None)`；默认 dump 只汇总原生证据，
+无需在日志里打印全部原生乘子。诊断不得复用依赖非负等前提的简化去放宽这些前提；当前
+Phase-I 使用完整 L1 换手率并保护非负/操作边界，完整显式总主动和基准覆盖约束也会恢复。
 
 ---
 
@@ -165,3 +167,10 @@ DataYes 在 2019-12-03 调整过行业分类。跨越该日期批量读取时，
 行列集合等于批量 columns，也不得把无效历史行业带入当日风险矩阵；应按当日行顺序选择
 同名列构造方阵。行业 exposure 的 category 可以覆盖跨期行业并集，逐日物化时仅选择当日
 协方差行中存在的行业。
+# 复现与对照边界
+
+- `with_constraints` 不修改原问题、不复制大数组；嵌套约束整体替换，不是递归合并。
+- 移除一项约束后可行不等于该约束单独错误，也不等于 Phase-I 给出了唯一修复。
+- 复现包包含敏感投资数据，不能当作普通诊断摘要公开分享。只接收可信来源文件。
+- 加载不运行求解器；独立复跑不恢复历史 workspace。修复后的编译器允许产生不同
+  canonical hash，比较时同时记录软件版本和 fingerprint。

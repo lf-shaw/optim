@@ -262,7 +262,54 @@ if not result.status.has_solution:
 
 成功结果（`status.has_solution=True`）会在校验、编译前拒绝诊断，包括通过 `prior_result`
 传入的成功结果。成功时读取 `result.metrics`，不要为检查已有指标运行额外 LP/QP。
-上述导出包含完整原生证据和集中字段说明，默认不覆盖已有文件。
+上述导出包含全部 Phase-I 松弛、原生证据的组计数摘要和集中字段说明，默认不覆盖已有文件。
+只有需要原始乘子时使用 `report.dump("full.json.gz", evidence="full", indent=None)`。
+
+### 同进程对照与跨进程复现
+
+不需要导出也可以调试。`with_constraints()` 支持多个字段，但定位原因时推荐单项变更：
+
+```python
+original = result.problem
+assert original is not None
+candidate = original.with_constraints(turnover=None)
+trial = optimizer.solve(candidate)
+```
+
+原问题不变，风险数组不复制。可选约束用 `None` 移除；嵌套对象整体替换，不隐式合并。
+`with_data(initial_weight=...)` 和 `with_objective(...)` 同样派生新问题。正常求解仍进行
+校验并生成新 fingerprint。移除换手后可行，说明换手参与冲突，不代表它是唯一原因。
+这与同时松弛多条边界的加权 Phase-I 不是同一个实验。
+
+三类导出按用途选择，不自动增加诊断计算：
+
+- 阅读诊断：`report.dump("diagnosis.json.gz")`，原生贡献按组汇总。
+- 核查完整证据：`report.dump("evidence.json.gz", evidence="full")`，保留全部原生坐标。
+- 复跑原模型：`export_repro(...)`，携带输入数组、策略和已有结果，诊断报告可选。
+
+```python
+from optim import PortfolioOptimizer, export_repro, load_repro
+
+# 发送方；report 可省略，不会自动诊断。
+export_repro("case.zip", result=result, report=report)
+# 序列失败时显式传 problem=sequence_result.stopped_problem，result 为失败那一期结果。
+
+# 接收方；加载不取数，不求解。
+case = load_repro("case.zip")
+print(case.version_differences)
+baseline = case.solve()
+local = PortfolioOptimizer(case.policy)
+trial = local.solve(case.problem.with_constraints(turnover=None))
+if not baseline.status.has_solution:
+    new_report = local.diagnose(baseline)  # 始终显式启动
+```
+
+先比较原始 `case.original_result` 与 baseline 的状态、指标及路由，再做单项实验。
+原结果、原报告是 JSON 审计快照，不是运行时对象。包保存实际 theta 初值和该期真实
+期初持仓，但不保存跨期 workspace 内存，不承诺重现依赖进程历史的故障。
+不同 license、版本和硬件可能改变实际路由和数值解。复现包含 alpha、持仓、风险数据，
+只向可信接收方传输；不含 license、环境变量和源码。默认加载上限为解压后 1 GiB，
+SHA256 仅校验完整性，不认证来源。加载后数组只读，修改数值请通过 with_data 传入新数组。
 
 ---
 

@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from types import MappingProxyType
 from typing import Any, Mapping, TypeAlias
@@ -614,6 +614,76 @@ class PortfolioProblem:
     objective: PortfolioObjective
     constraints: PortfolioConstraints
 
+    def with_constraints(self, **changes: Any) -> PortfolioProblem:
+        """派生修改一个或多个约束的新问题，复用数据与目标。
+
+        Parameters
+        ----------
+        **changes : Any
+            PortfolioConstraints 字段名和值；未提供的字段保持原样。嵌套对象整体替换，
+            不隐式合并。None 仅适用于可选约束，表示移除。调试建议先单项变更。
+
+        Returns
+        -------
+        PortfolioProblem
+            原对象不变，输入数组不复制；后续 solve 正常校验并重新生成 fingerprint。
+
+        Raises
+        ------
+        TypeError
+            字段名不存在，或必填约束被设为 None。
+        """
+
+        required = {
+            "long_only",
+            "budget",
+            "asset_weight",
+            "freeze_nontradable",
+            "extra_active",
+            "extra_absolute",
+        }
+        if any(name in required and value is None for name, value in changes.items()):
+            raise TypeError("required constraint fields cannot be None")
+        return replace(self, constraints=replace(self.constraints, **changes))
+
+    def with_objective(self, objective: PortfolioObjective) -> PortfolioProblem:
+        """替换目标，返回共享数据与约束的新问题。
+
+        Parameters
+        ----------
+        objective : PortfolioObjective
+            新目标；求解时执行正常模型校验。
+
+        Returns
+        -------
+        PortfolioProblem
+            新问题，不修改原对象。
+        """
+
+        return replace(self, objective=objective)
+
+    def with_data(self, **changes: Any) -> PortfolioProblem:
+        """替换指定输入字段，返回新问题；不取数、不重排或复制未变更数组。
+
+        Parameters
+        ----------
+        **changes : Any
+            PortfolioData 字段名和值，例如 initial_weight。调整 assets 时调用方必须同步
+            对齐相关数组，求解时正常校验。
+
+        Returns
+        -------
+        PortfolioProblem
+            持有新 PortfolioData 的问题，未变更字段仍共享。
+
+        Raises
+        ------
+        TypeError
+            字段名不存在。
+        """
+
+        return replace(self, data=replace(self.data, **changes))
+
 
 @dataclass(frozen=True)
 class ProblemFingerprint:
@@ -1010,6 +1080,10 @@ class OptimizationResult:
         产生本结果的准确单期问题。单期公共求解始终保留，便于随后直接调用 ``diagnose``；
         多期结果为控制内存仅在顶层保留导致 ``stop`` 的问题。
         此字段保留引用而非深复制；输入数组不应原地修改，诊断前会重新校验 fingerprint。
+    solver_policy : SolverPolicy | None
+        本次实际求解策略引用，用于导出可重放问题；手工构造的结果可为空。
+    theta_seed : float | None
+        本次实际传入的前沿搜索初值；None 表示采用策略默认值。
     """
 
     status: SolveStatus
@@ -1027,6 +1101,8 @@ class OptimizationResult:
     message: str = ""
     native_infeasibility: tuple[NativeInfeasibilityEvidence, ...] = ()
     problem: PortfolioProblem | None = field(default=None, repr=False, compare=False)
+    solver_policy: SolverPolicy | None = field(default=None, repr=False, compare=False)
+    theta_seed: float | None = None
 
     def require_weights(self) -> pd.Series:
         """返回可用目标权重，否则抛出异常。

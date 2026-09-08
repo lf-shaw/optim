@@ -126,13 +126,18 @@ class InfeasibilityReport:
         )
 
     def dump(
-        self, path: str | Path, *, indent: int | None = 2, overwrite: bool = False
+        self,
+        path: str | Path,
+        *,
+        indent: int | None = 2,
+        overwrite: bool = False,
+        evidence: str = "summary",
     ) -> Path:
         """导出带集中字段说明的完整 UTF-8 JSON 报告，便于传输和离线阅读。
 
         文件依次包含 ``format_version``、``field_descriptions`` 和 ``report``。
-        字段说明直接取自本类 Attributes 文档；报告保留所有字段，包括文本表示中省略的
-        ``native_certificates``。这是一份诊断数据导出，不包含可重放求解的完整原模型。
+        字段说明直接取自本类 Attributes 文档。默认原生证据仅按组汇总，所有 Phase-I 松弛
+        均保留。``evidence='full'`` 以列式数组导出全部原生坐标。文件不包含可重放求解的原模型。
 
         Parameters
         ----------
@@ -143,6 +148,10 @@ class InfeasibilityReport:
             独立。非 None 时必须为非负整数。
         overwrite : bool
             是否覆盖已有文件；默认为 ``False``。
+        evidence : str
+            ``"summary"``（默认）只导出原生证据来源、质量、数量和约束组计数；
+            ``"full"`` 保留每个贡献对象的全部字段，按列存储，减少重复字段名。
+            乘子大小不作为冲突重要性排名；风险锥在摘要中只计为一个约束组。
 
         Returns
         -------
@@ -158,7 +167,7 @@ class InfeasibilityReport:
         TypeError
             自定义 metadata 包含不支持的对象或非字符串映射键。
         ValueError
-            ``indent`` 不是非负整数或 None。
+            ``indent`` 不是非负整数或 None，或 evidence 不受支持。
 
         Notes
         -----
@@ -169,11 +178,22 @@ class InfeasibilityReport:
 
         if indent is not None and (type(indent) is not int or indent < 0):
             raise ValueError("indent must be a non-negative integer or None")
+        if evidence not in {"summary", "full"}:
+            raise ValueError("evidence must be 'summary' or 'full'")
         destination = Path(path)
+        report = {
+            item.name: _json_value(getattr(self, item.name))
+            for item in fields(self)
+            if item.name != "native_certificates"
+        }
+        report["native_certificates"] = [
+            _certificate_export(item, evidence) for item in self.native_certificates
+        ]
         payload = {
-            "format_version": 1,
+            "format_version": 2,
             "field_descriptions": _field_descriptions(type(self)),
-            "report": _json_value(self),
+            "evidence_mode": evidence,
+            "report": report,
         }
         mode = "wt" if overwrite else "xt"
         stream = (
@@ -192,6 +212,37 @@ class InfeasibilityReport:
             )
             stream.write("\n")
         return destination
+
+
+def _certificate_export(
+    certificate: NativeInfeasibilityEvidence, mode: str
+) -> dict[str, Any]:
+    """默认只扫描计数，不构造逐贡献 JSON；完整模式按字段列存储全部带符号证据。"""
+
+    result = {
+        item.name: _json_value(getattr(certificate, item.name))
+        for item in fields(certificate)
+        if item.name != "contributors"
+    }
+    groups: dict[str, int] = {}
+    for item in certificate.contributors:
+        groups[item.group] = groups.get(item.group, 0) + 1
+    result["contributor_count"] = len(certificate.contributors)
+    result["group_counts"] = groups
+    if mode == "full":
+        from .portfolio_types import InfeasibilityContributor
+
+        result["contributors"] = {
+            "encoding": "columns",
+            "columns": {
+                field.name: [
+                    _json_value(getattr(item, field.name))
+                    for item in certificate.contributors
+                ]
+                for field in fields(InfeasibilityContributor)
+            },
+        }
+    return result
 
 
 def _field_descriptions(report_type: type) -> dict[str, str]:

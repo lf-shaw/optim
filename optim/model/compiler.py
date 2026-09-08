@@ -11,7 +11,7 @@ epigraph 和因子主动敞口。每一行/列都带审计记录，供 fingerpri
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import Any, Iterable
 
@@ -80,7 +80,9 @@ def classify_problem(problem: PortfolioProblem) -> ProblemKind:
         return ProblemKind.CONIC if has_risk_limit else ProblemKind.QP
     if isinstance(objective, MinimizeTrackingError):
         return ProblemKind.QP
-    raise CanonicalCompilationError(f"unsupported objective type: {type(objective).__name__}")
+    raise CanonicalCompilationError(
+        f"unsupported objective type: {type(objective).__name__}"
+    )
 
 
 @dataclass
@@ -129,8 +131,10 @@ class _DomainBuilder:
         problem: PortfolioProblem,
         *,
         include_factor_variables: bool,
+        simplify: bool = True,
     ) -> None:
         self.problem = problem
+        self.simplify = simplify
         self.data = problem.data
         self.constraints_config = problem.constraints
         self.n_assets = len(self.data.assets)
@@ -150,7 +154,8 @@ class _DomainBuilder:
         if self.constraints_config.turnover is not None:
             initial = np.asarray(self.data.initial_weight, dtype=float)
             sparse_turnover = bool(
-                self.constraints_config.long_only
+                self.simplify
+                and self.constraints_config.long_only
                 and np.all(initial >= 0.0)
                 and np.isclose(
                     initial.sum(),
@@ -178,10 +183,13 @@ class _DomainBuilder:
             benchmark = self.data.benchmark
             current_weight = self.data.initial_weight
             redundant = bool(
-                turnover is not None
+                self.simplify
+                and turnover is not None
                 and benchmark is not None
                 and current_weight is not None
-                and float(np.abs(np.asarray(current_weight) - np.asarray(benchmark)).sum())
+                and float(
+                    np.abs(np.asarray(current_weight) - np.asarray(benchmark)).sum()
+                )
                 + turnover.l1_limit
                 <= self.constraints_config.total_active + 1e-12
             )
@@ -316,7 +324,12 @@ class _DomainBuilder:
         if matrix.shape[1] > self.layout.n_variables:
             raise AssertionError("constraint matrix is wider than the variable layout")
         return sp.hstack(
-            [matrix, sp.csc_matrix((matrix.shape[0], self.layout.n_variables - matrix.shape[1]))],
+            [
+                matrix,
+                sp.csc_matrix(
+                    (matrix.shape[0], self.layout.n_variables - matrix.shape[1])
+                ),
+            ],
             format="csc",
         )
 
@@ -381,7 +394,11 @@ class _DomainBuilder:
         n = self.n_assets
         x = self.layout.weight
         config = self.constraints_config
-        benchmark = None if self.data.benchmark is None else np.asarray(self.data.benchmark, dtype=float)
+        benchmark = (
+            None
+            if self.data.benchmark is None
+            else np.asarray(self.data.benchmark, dtype=float)
+        )
 
         self.add_block(
             self._weight_block(np.ones(n)),
@@ -449,7 +466,10 @@ class _DomainBuilder:
                 turnover_row = sp.csc_matrix(
                     (
                         np.full(len(turnover_columns), 2.0),
-                        (np.zeros(len(turnover_columns), dtype=np.int32), turnover_columns),
+                        (
+                            np.zeros(len(turnover_columns), dtype=np.int32),
+                            turnover_columns,
+                        ),
                     ),
                     shape=(1, self.layout.n_variables),
                 )
@@ -555,7 +575,8 @@ class _DomainBuilder:
             current_weight = self.data.initial_weight
             member = benchmark > 0.0
             redundant = bool(
-                turnover is not None
+                self.simplify
+                and turnover is not None
                 and current_weight is not None
                 and float(np.asarray(current_weight)[member].sum())
                 - turnover.l1_limit / 2.0
@@ -599,7 +620,10 @@ class _DomainBuilder:
             )
 
         objective = self.problem.objective
-        if isinstance(objective, MinimizeTrackingError) and objective.alpha_floor is not None:
+        if (
+            isinstance(objective, MinimizeTrackingError)
+            and objective.alpha_floor is not None
+        ):
             assert self.data.alpha is not None
             self.add_block(
                 self._weight_block(np.asarray(self.data.alpha, dtype=float)),
@@ -607,7 +631,9 @@ class _DomainBuilder:
                 np.inf,
                 group="alpha_floor",
                 keys=("alpha",),
-                unit=self.data.alpha_spec.units if self.data.alpha_spec is not None else "alpha",
+                unit=self.data.alpha_spec.units
+                if self.data.alpha_spec is not None
+                else "alpha",
             )
 
     def _add_factor_bounds(self, expected_type: str, bounds: Any) -> None:
@@ -694,12 +720,16 @@ class _DomainBuilder:
         )
 
 
-def _risk_operator(problem: PortfolioProblem, domain: LinearDomain) -> FactorRiskOperator:
+def _risk_operator(
+    problem: PortfolioProblem, domain: LinearDomain
+) -> FactorRiskOperator:
     """构造年化“因子加特异”跟踪风险算子。"""
 
     risk_model = problem.data.risk_model
     if isinstance(risk_model, FullCovarianceRiskModel):
-        raise CanonicalCompilationError("full-covariance risk objectives are not implemented in v1")
+        raise CanonicalCompilationError(
+            "full-covariance risk objectives are not implemented in v1"
+        )
     if not isinstance(risk_model, FactorRiskModel):
         raise CanonicalCompilationError("a factor risk model is required")
     if problem.data.benchmark is None:
@@ -714,6 +744,31 @@ def _risk_operator(problem: PortfolioProblem, domain: LinearDomain) -> FactorRis
         factor_names=risk_model.factor_names,
         weight_indices=domain.weight_indices,
     )
+
+
+def _diagnostic_domain(problem: PortfolioProblem) -> LinearDomain:
+    """构造可放宽的完整线性域，禁用依赖原约束的简化；不影响正常优化热路径。
+
+    完整 L1 换手率及显式总主动/基准覆盖约束必须保留，避免放宽前提后改变数学含义。
+    非负底线和具有操作指令的资产有效边界作为 Phase-I 硬约束，常规正下限仍可向零放宽。
+    """
+
+    builder = _DomainBuilder(problem, include_factor_variables=False, simplify=False)
+    builder.add_common_constraints()
+    domain = builder.finish()
+    records = []
+    for record in domain.constraints:
+        if record.location == "variable" and record.group == "asset_bound":
+            metadata = dict(record.metadata)
+            if problem.constraints.long_only:
+                metadata["diagnostic_hard_lower"] = 0.0
+            operational = bool(metadata.get("operational_instruction"))
+            records.append(
+                replace(record, relaxable=not operational, metadata=metadata)
+            )
+        else:
+            records.append(record)
+    return replace(domain, constraints=tuple(records))
 
 
 def _compile_lp(problem: PortfolioProblem) -> tuple[LinearProgram, tuple[str, ...]]:
@@ -753,7 +808,9 @@ def _compile_qp(problem: PortfolioProblem) -> tuple[QuadraticProgram, tuple[str,
         factor_aversion = 1.0
         specific_aversion = 1.0
     else:
-        raise CanonicalCompilationError(f"unsupported QP objective: {type(objective).__name__}")
+        raise CanonicalCompilationError(
+            f"unsupported QP objective: {type(objective).__name__}"
+        )
 
     n_variables = domain.n_variables
     specific_variance = np.square(risk.specific_volatility)
@@ -763,7 +820,9 @@ def _compile_qp(problem: PortfolioProblem) -> tuple[QuadraticProgram, tuple[str,
     factor_rows, factor_columns = np.nonzero(factor_matrix)
     P = sp.csc_matrix(
         (
-            np.concatenate([diagonal_values, factor_matrix[factor_rows, factor_columns]]),
+            np.concatenate(
+                [diagonal_values, factor_matrix[factor_rows, factor_columns]]
+            ),
             (
                 np.concatenate([diagonal_rows, builder.layout.factor[factor_rows]]),
                 np.concatenate([diagonal_rows, builder.layout.factor[factor_columns]]),
@@ -775,7 +834,9 @@ def _compile_qp(problem: PortfolioProblem) -> tuple[QuadraticProgram, tuple[str,
     P.eliminate_zeros()
     P.sort_indices()
     q = np.zeros(n_variables, dtype=float)
-    q[domain.weight_indices] = -2.0 * specific_aversion * specific_variance * risk.benchmark
+    q[domain.weight_indices] = (
+        -2.0 * specific_aversion * specific_variance * risk.benchmark
+    )
     objective_scale_reference = None
     alpha_shift = 0.0
     if isinstance(objective, RiskAdjustedAlpha):
@@ -811,7 +872,9 @@ def _compile_qp(problem: PortfolioProblem) -> tuple[QuadraticProgram, tuple[str,
     )
 
 
-def _compile_factor_qcqp(problem: PortfolioProblem) -> tuple[FactorQCQP, tuple[str, ...]]:
+def _compile_factor_qcqp(
+    problem: PortfolioProblem,
+) -> tuple[FactorQCQP, tuple[str, ...]]:
     """为单一 TE 预算编译线性域和因子风险算子。"""
 
     if not isinstance(problem.data.risk_model, FactorRiskModel):
@@ -831,7 +894,9 @@ def _compile_factor_qcqp(problem: PortfolioProblem) -> tuple[FactorQCQP, tuple[s
     return model, tuple(builder.optimizations)
 
 
-def compile_problem(problem: PortfolioProblem, *, validate: bool = True) -> CompiledProblem:
+def compile_problem(
+    problem: PortfolioProblem, *, validate: bool = True
+) -> CompiledProblem:
     """在不导入求解器后端的情况下校验并编译一个问题。
 
     ``validate=False`` 只供刚刚生成等价校验报告的调用方使用，例如
