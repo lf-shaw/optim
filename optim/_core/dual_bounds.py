@@ -132,7 +132,10 @@ def _sublevel_box(
     for _ in range(8):
         changed = False
         for i in range(matrix.shape[0]):
-            start, stop = matrix.indptr[i : i + 2]
+            # 使用独立标量索引，避免 Cython 对切片解包执行并行赋值优化时崩溃。
+            # 同时省去每行创建长度为 2 的切片视图。
+            start = matrix.indptr[i]
+            stop = matrix.indptr[i + 1]
             indices, a = matrix.indices[start:stop], matrix.data[start:stop]
             if not len(indices):
                 continue
