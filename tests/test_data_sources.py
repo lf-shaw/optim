@@ -252,7 +252,7 @@ class _MissingMiddleBenchmarkTuda2(_FakeTuda2):
 def test_tuda2_adapter_batches_dates_and_expands_industry_once():
     fake = _FakeTuda2()
     dates = pd.to_datetime(["2026-01-02", "2026-01-05"])
-    loaded = Tuda2DataSource(module=fake).load(dates=dates, benchmark_sid="000852.SH")
+    loaded = Tuda2DataSource(module=fake).load(dates=dates, benchmark="000852.SH")
     assert [call[1] for call in fake.calls if call[0] == "risk"] == [
         "exposure",
         "cov",
@@ -395,7 +395,7 @@ class _HistoricDataYesTuda2(_FakeTuda2):
 def test_tuda2_adapter_accepts_but_does_not_virtualize_physical_country():
     date = pd.Timestamp("2026-01-02")
     loaded = Tuda2DataSource(module=_PhysicalCountryTuda2()).load(
-        dates=[date], benchmark_sid="000852.SH"
+        dates=[date], benchmark="000852.SH"
     )
 
     assert list(loaded.risk_data.exposure.columns) == [
@@ -413,10 +413,10 @@ def test_virtual_country_is_numerically_identical_to_physical_country():
     date = pd.Timestamp("2026-01-02")
     assets = pd.Index(["b", "a"], name="sid")
     virtual = Tuda2DataSource(module=_FakeTuda2()).load(
-        dates=[date], benchmark_sid="000852.SH"
+        dates=[date], benchmark="000852.SH"
     ).risk_data.materialize(date, assets)
     physical = Tuda2DataSource(module=_PhysicalCountryTuda2()).load(
-        dates=[date], benchmark_sid="000852.SH"
+        dates=[date], benchmark="000852.SH"
     ).risk_data.materialize(date, assets)
 
     np.testing.assert_allclose(virtual.exposure, physical.exposure)
@@ -439,7 +439,7 @@ def test_virtual_country_is_numerically_identical_to_physical_country():
 def test_tuda2_adapter_rejects_nonconstant_country_exposure():
     with pytest.raises(ValueError, match="constant exposure 'country' must equal 1.0"):
         Tuda2DataSource(module=_InvalidCountryTuda2()).load(
-            dates=[pd.Timestamp("2026-01-02")], benchmark_sid="000852.SH"
+            dates=[pd.Timestamp("2026-01-02")], benchmark="000852.SH"
         )
 
 
@@ -447,7 +447,7 @@ def test_tuda2_adapter_uses_daily_covariance_rows_across_industry_regimes():
     dates = pd.to_datetime(["2019-12-02", "2019-12-03"])
     loaded = Tuda2DataSource(module=_HistoricDataYesTuda2()).load(
         dates=dates,
-        benchmark_sid="000852.SH",
+        benchmark="000852.SH",
     )
 
     old = loaded.risk_data.materialize(dates[0], pd.Index(["a", "b"], name="sid"))
@@ -510,7 +510,7 @@ def test_optimizer_range_facade_routes_tuda2_through_common_lazy_core_path():
     result = PortfolioOptimizer().optimize_range(
         data_source=Tuda2DataSource(module=fake),
         schedule=_schedule(),
-        benchmark_sid="000852.SH",
+        benchmark="000852.SH",
         initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
         objective=MaximizeAlpha(),
         constraints=_constraints(),
@@ -529,7 +529,7 @@ def test_tuda2_default_fetches_each_full_range_once_and_reuses_it():
     result = PortfolioOptimizer().optimize_range(
         data_source=source,
         schedule=_schedule(dates),
-        benchmark_sid="000852.SH",
+        benchmark="000852.SH",
         initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
         objective=MaximizeAlpha(),
         constraints=_constraints(),
@@ -554,7 +554,7 @@ def test_tuda2_tradability_is_fetched_once_for_the_full_range():
     result = PortfolioOptimizer().optimize_range(
         data_source=Tuda2DataSource(module=fake),
         schedule=_schedule(dates),
-        benchmark_sid="000852.SH",
+        benchmark="000852.SH",
         initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
         objective=MaximizeAlpha(),
         constraints=_constraints(),
@@ -582,7 +582,7 @@ def test_tuda2_range_stops_after_full_preflight_before_returns_or_solver():
         PortfolioOptimizer().optimize_range(
             data_source=Tuda2DataSource(module=fake),
             schedule=_schedule(dates),
-            benchmark_sid="000852.SH",
+            benchmark="000852.SH",
             initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
             objective=MaximizeAlpha(),
             constraints=_constraints(),
@@ -602,7 +602,7 @@ def test_optimizer_single_facade_applies_tuda2_one_off_lists_without_return_fetc
         data_source=Tuda2DataSource(module=fake),
         date=date,
         universe=universe,
-        benchmark_sid="000852.SH",
+        benchmark="000852.SH",
         initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
         objective=MaximizeAlpha(),
         constraints=_constraints(),
@@ -612,6 +612,56 @@ def test_optimizer_single_facade_applies_tuda2_one_off_lists_without_return_fetc
     assert result.status.has_solution
     assert result.require_weights()["a"] == pytest.approx(0.0, abs=1e-9)
     assert not [call for call in fake.calls if call[0] == "returns"]
+
+
+def test_single_custom_benchmark_aligns_without_index_io():
+    fake = _FakeTuda2()
+    date = pd.Timestamp("2026-01-02")
+    result = PortfolioOptimizer().optimize(
+        data_source=Tuda2DataSource(module=fake), date=date,
+        universe=_schedule().day(date), benchmark=pd.Series({"b": 0.3, "a": 0.7}),
+        initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
+        objective=MaximizeAlpha(), constraints=_constraints(), alpha_spec=AlphaSpec(),
+    )
+    assert result.status.has_solution
+    np.testing.assert_allclose(result.problem.data.benchmark, [0.7, 0.3])
+    assert not any(call[0] == "benchmark" for call in fake.calls)
+
+
+def test_range_custom_benchmark_without_index_io():
+    fake = _FakeTuda2()
+    result = PortfolioOptimizer().optimize_range(
+        data_source=Tuda2DataSource(module=fake), schedule=_schedule(),
+        benchmark=_benchmark().iloc[::-1], initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
+        objective=MaximizeAlpha(), constraints=_constraints(), alpha_spec=AlphaSpec(),
+    )
+    assert len(result.steps) == 2
+    assert all(step.result.status.has_solution for step in result.steps)
+    assert not any(call[0] == "benchmark" for call in fake.calls)
+    assert len([call for call in fake.calls if call[0] == "risk"]) == 3
+
+
+@pytest.mark.parametrize("benchmark", [
+    pd.Series({"a": 0.5, "b": 0.5}),
+    _benchmark(dates=("2026-01-02",)),
+    pd.concat([_benchmark(), _benchmark()]),
+])
+def test_range_custom_benchmark_rejected_before_io(benchmark):
+    from optim import DataAlignmentError
+
+    fake = _FakeTuda2()
+    with pytest.raises(DataAlignmentError):
+        PortfolioOptimizer().optimize_range(
+            data_source=Tuda2DataSource(module=fake), schedule=_schedule(),
+            benchmark=benchmark, initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
+            objective=MaximizeAlpha(), constraints=_constraints(), alpha_spec=AlphaSpec(),
+        )
+    assert not fake.calls
+
+
+def test_removed_benchmark_sid_keyword():
+    with pytest.raises(TypeError, match="benchmark_sid"):
+        PortfolioOptimizer().optimize(benchmark_sid="000852.SH", objective=MaximizeAlpha())
 
 
 def test_optimizer_single_facade_requires_exactly_one_data_entry():

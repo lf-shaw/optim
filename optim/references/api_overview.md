@@ -1,5 +1,10 @@
 # optim — API Overview
 
+`optimize` / `optimize_range` 的 `benchmark` 接受指数代码或 pandas.Series。
+单期 Series 使用 sid 索引，多期要求严格同日的 (dt, sid) 索引；不广播、不补日期。
+Series 输入不调用指数权重接口。旧参数 benchmark_sid 已移除，无兼容别名。
+PortfolioData / InMemoryDataSource 已绑定基准时，不允许重复传入 benchmark。
+
 > optim 是面向因子风险模型组合构造的统一优化器。普通代码只需要描述数据、目标和约束；
 > 系统自动选择已经验证的数值路径，并通过统一结果对象报告状态、权重、指标、证书和实际路线。
 

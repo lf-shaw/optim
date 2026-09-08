@@ -2,6 +2,17 @@
 
 > 以下示例展示稳定公共接口，不绑定开发期 v5 文件格式。风险输入均使用年化小数单位。
 
+基准参数统一为 `benchmark`，不再接受 `benchmark_sid`：
+
+- `benchmark="000852.SH"`：数据源一次性获取请求日期的指数权重。
+- 单期 `benchmark=pd.Series({"000001.SZ": 0.4, "600000.SH": 0.6})`：按股票标签
+  对齐，视为指定 `date` 的权重，不调用指数权重接口。
+- 多期 `benchmark=weights`：weights 必须是 `(dt, sid)` MultiIndex Series，提供每个
+  调仓日期的权重。缺日期报错，不广播单日权重、不前向填充。
+
+自定义权重仍执行相同的覆盖率和归一化校验。使用已绑定基准的 `PortfolioData` 或
+`InMemoryDataSource` 时不再传 benchmark，避免出现两个基准来源。
+
 ---
 
 ## R1. 使用已经对齐的数组求解单期 Factor-QCQP
@@ -99,7 +110,7 @@ result = PortfolioOptimizer().optimize(
     ),
     date=trade_date,
     universe=today_universe,      # sid 索引，含 alpha 列
-    benchmark_sid="000852.SH",
+    benchmark="000852.SH",
     initial_weight=pretrade_weight,
     objective=MaximizeAlpha(),
     constraints=constraints,
@@ -135,7 +146,7 @@ schedule = PortfolioSchedule(
 sequence = PortfolioOptimizer().optimize_range(
     data_source=Tuda2DataSource(risk_model="datayes"),
     schedule=schedule,
-    benchmark_sid="000852.SH",
+    benchmark="000852.SH",
     objective=MaximizeAlpha(),
     constraints=constraints,
     alpha_spec=AlphaSpec(),
@@ -327,7 +338,7 @@ result = optimizer.optimize(
     data_source=data_source,
     date=date,
     universe=universe,
-    benchmark_sid="000852.SH",
+    benchmark="000852.SH",
     initial_weight=initial_weight,
     objective=objective,
     constraints=constraints,

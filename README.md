@@ -1,7 +1,7 @@
 # optim
 
-`optim` 是面向 A 股因子风险模型和指数增强策略的统一组合优化器。自 `v3.0.0` 起，公共接口
-不再区分 `opt`/`linopt`，而是使用不可变的 `PortfolioProblem` 描述数据、目标和约束，由
+`optim` 是面向 A 股因子风险模型和指数增强策略的统一组合优化器，使用不可变的
+`PortfolioProblem` 描述数据、目标和约束，由
 `PortfolioOptimizer` 统一处理：
 
 - 线性 alpha 最大化（LP）；
@@ -411,6 +411,10 @@ result = optimizer.optimize(
 
 ## 10. 使用 tuda2 单期取数
 
+`benchmark` 接受指数代码或以 `sid` 为索引的自定义权重 Series。自定义权重视为指定
+`date` 当日的基准，按股票标签对齐，不请求指数权重接口，仍执行覆盖率和归一化校验。
+直接传入已包含基准的 `PortfolioData` 时，不再指定 `benchmark`。
+
 ```python
 from optim import AlphaSpec, MaximizeAlpha, PortfolioOptimizer
 from optim.integrations.tuda2 import Tuda2DataSource
@@ -424,7 +428,7 @@ result = PortfolioOptimizer().optimize(
     data_source=source,
     date=trade_date,
     universe=today_universe,       # sid 索引，包含 alpha 列
-    benchmark_sid="000852.SH",
+    benchmark="000852.SH",
     initial_weight=pretrade_weight,
     objective=MaximizeAlpha(),
     constraints=constraints,
@@ -461,6 +465,10 @@ schedule = PortfolioSchedule(
 
 ### 11.2 tuda2 链式求解
 
+`benchmark` 接受指数代码或以 `(dt, sid)` 为索引的逐日权重 Series。自定义权重必须
+覆盖所有调仓日期，不广播单期权重、不前向填充；传入 Series 时跳过指数权重取数。
+使用已绑定基准的 `InMemoryDataSource` 时，不再指定 `benchmark`。
+
 ```python
 from optim import (
     AlphaSpec,
@@ -473,7 +481,7 @@ from optim.integrations.tuda2 import Tuda2DataSource
 sequence = PortfolioOptimizer().optimize_range(
     data_source=Tuda2DataSource(risk_model="datayes"),
     schedule=schedule,
-    benchmark_sid="000852.SH",
+    benchmark="000852.SH",
     objective=MaximizeAlpha(),
     constraints=constraints,
     alpha_spec=AlphaSpec(),
@@ -960,4 +968,3 @@ optim/references/api_overview.md
 optim/references/recipes.md
 optim/references/gotchas.md
 ```
-

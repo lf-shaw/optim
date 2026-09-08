@@ -218,7 +218,7 @@ class PortfolioOptimizer:
         data_source: "Tuda2DataSource | None" = None,
         date: Any | None = None,
         universe: pd.DataFrame | None = None,
-        benchmark_sid: str | None = None,
+        benchmark: str | pd.Series | None = None,
         initial_weight: pd.Series | None = None,
         objective: PortfolioObjective,
         constraints: PortfolioConstraints | None = None,
@@ -247,8 +247,11 @@ class PortfolioOptimizer:
             已对齐的严格同日单期数据；与 ``data_source`` 互斥。
         data_source : Tuda2DataSource | None
             实现单期数据准备协议的 tuda2 数据源。
-        date, universe, benchmark_sid, initial_weight
-            使用数据源时必需的单期日期、样本空间、基准标识和交易前实际持仓。
+        date, universe, initial_weight
+            使用数据源时必需的单期日期、样本空间和交易前实际持仓。
+        benchmark : str | pandas.Series | None
+            数据源模式必需：指数代码，或以 sid 为索引的单期权重 Series。
+            Series 视为指定 date 的基准，跳过指数权重 I/O；传 data 时不得重复提供。
         objective : PortfolioObjective
             业务目标。
         constraints : PortfolioConstraints | None
@@ -293,7 +296,7 @@ class PortfolioOptimizer:
                 for name, value in (
                     ("date", date),
                     ("universe", universe),
-                    ("benchmark_sid", benchmark_sid),
+                    ("benchmark", benchmark),
                     ("initial_weight", initial_weight),
                 )
                 if value is None
@@ -305,12 +308,12 @@ class PortfolioOptimizer:
                 )
             assert date is not None
             assert universe is not None
-            assert benchmark_sid is not None
+            assert benchmark is not None
             assert initial_weight is not None
             source_problem = data_source.build_problem(
                 date=date,
                 universe=universe,
-                benchmark_sid=benchmark_sid,
+                benchmark=benchmark,
                 initial_weight=initial_weight,
                 objective=objective,
                 constraints=config,
@@ -324,7 +327,7 @@ class PortfolioOptimizer:
             source_only_values = {
                 "date": date,
                 "universe": universe,
-                "benchmark_sid": benchmark_sid,
+                "benchmark": benchmark,
                 "initial_weight": initial_weight,
                 "alpha_spec": alpha_spec,
                 "benchmark_policy": benchmark_policy,
@@ -385,7 +388,7 @@ class PortfolioOptimizer:
         constraints: "PortfolioConstraints",
         alpha_spec: "AlphaSpec | None",
         initial_weight: pd.Series,
-        benchmark_sid: str | None = None,
+        benchmark: str | pd.Series | None = None,
         holding_period_returns=None,
         sequence_policy: "SequencePolicy | None" = None,
         independent_initial_weights=None,
@@ -413,8 +416,9 @@ class PortfolioOptimizer:
             alpha 单位和尺度；alpha 目标必须提供。
         initial_weight : pandas.Series
             链式序列首日的实际期初权重，以资产为索引。
-        benchmark_sid : str | None
-            外部数据源使用的基准指数标识；内存源的 benchmark 已经绑定，必须保持 ``None``。
+        benchmark : str | pandas.Series | None
+            外部数据源使用的指数代码或严格 (dt, sid) 索引的逐日权重 Series。
+            缺日期报错，不广播单期权重、不前向填充。内存源已绑定基准，必须保持 None。
         holding_period_returns : Any | None
             相邻调仓日之间的 close-to-close 复合收益；链式模式由序列引擎按标签读取。
         sequence_policy : SequencePolicy | None
@@ -450,14 +454,14 @@ class PortfolioOptimizer:
         from .data import InMemoryDataSource
 
         if not isinstance(data_source, InMemoryDataSource):
-            if benchmark_sid is None:
-                raise ValueError("external data_source requires benchmark_sid")
+            if benchmark is None:
+                raise ValueError("external data_source requires benchmark")
             resolved_policy = (
                 SequencePolicy() if sequence_policy is None else sequence_policy
             )
             prepared = data_source.prepare_sequence(
                 schedule=schedule,
-                benchmark_sid=benchmark_sid,
+                benchmark=benchmark,
                 initial_weight=initial_weight,
                 objective=objective,
                 constraints=constraints,
@@ -475,12 +479,12 @@ class PortfolioOptimizer:
                 sequence_policy=resolved_policy,
             )
         if (
-            benchmark_sid is not None
+            benchmark is not None
             or benchmark_policy is not None
             or tradable_universe is not None
         ):
             raise ValueError(
-                "benchmark_sid, benchmark_policy and tradable_universe are external-source "
+                "benchmark, benchmark_policy and tradable_universe are external-source "
                 "arguments; InMemoryDataSource already binds these data"
             )
         prepared_run = data_source.prepare_run(

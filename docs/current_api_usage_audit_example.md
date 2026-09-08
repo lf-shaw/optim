@@ -123,7 +123,7 @@ sequence = optimizer.optimize_range(
 sequence = optimizer.optimize_range(
     data_source=Tuda2DataSource(risk_model="datayes"),
     schedule=PortfolioSchedule(universe_with_alpha),
-    benchmark_sid="000852.SH",
+    benchmark="000852.SH",
     objective=MaximizeAlpha(),
     constraints=constraints,
     alpha_spec=AlphaSpec(...),

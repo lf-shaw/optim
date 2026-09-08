@@ -360,7 +360,7 @@ result = optimizer.optimize(
     data_source=source,
     date="2025-04-30",
     universe=universe_with_alpha_for_one_date,
-    benchmark_sid="000852.SH",
+    benchmark="000852.SH",
     initial_weight=previous_weight,
     objective=MaximizeAlpha(),
     constraints=constraints,
@@ -376,7 +376,7 @@ result = optimizer.optimize(
 series = optimizer.optimize_range(
     data_source=source,
     schedule=PortfolioSchedule(universe_with_alpha),  # dt 即唯一调仓日历
-    benchmark_sid="000852.SH",
+    benchmark="000852.SH",
     initial_weight=initial,
     objective=MaximizeAlpha(),
     constraints=constraints,
@@ -463,7 +463,7 @@ risk_model_missing_holding_mass
 series = optimizer.optimize_range(
     data_source=Tuda2DataSource(risk_model="datayes"),
     schedule=PortfolioSchedule(universe_with_alpha),
-    benchmark_sid="000852.SH",
+    benchmark="000852.SH",
     initial_weight=initial,
     sequence_policy=SequencePolicy(
         mode="chained",

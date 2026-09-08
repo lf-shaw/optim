@@ -12,6 +12,7 @@ import pandas as pd
 
 from ..data import (
     BenchmarkCoveragePolicy,
+    DataAlignmentError,
     FactorRiskFrames,
     InMemoryDataSource,
     PortfolioSchedule,
@@ -40,12 +41,12 @@ class Tuda2LoadedData:
     ----------
     risk_data : FactorRiskFrames
         已转换为统一因子轴和核心年化小数单位的风险模型 frame。
-    benchmark : pandas.DataFrame
+    benchmark : pandas.Series | pandas.DataFrame
         使用 ``(dt, sid)`` MultiIndex 的逐日基准权重。
     """
 
     risk_data: FactorRiskFrames
-    benchmark: pd.DataFrame
+    benchmark: pd.Series | pd.DataFrame
 
 
 @dataclass(frozen=True)
@@ -120,7 +121,7 @@ class Tuda2DataSource:
         self,
         *,
         dates: pd.DatetimeIndex | list[pd.Timestamp],
-        benchmark_sid: str,
+        benchmark: str | pd.Series,
     ) -> Tuda2LoadedData:
         """按数据类型各调用一次，批量获取全部请求日期。
 
@@ -131,8 +132,8 @@ class Tuda2DataSource:
         ----------
         dates : pandas.DatetimeIndex | list[pandas.Timestamp]
             需要严格获取的全部优化日期；会排序、去重，但不做日期替代。
-        benchmark_sid : str
-            基准指数证券标识。
+        benchmark : str | pandas.Series
+            指数代码或严格 (dt, sid) 索引的逐日权重；Series 不触发指数权重 I/O。
 
         Returns
         -------
@@ -147,10 +148,11 @@ class Tuda2DataSource:
             当前环境未安装 tuda2 且没有注入兼容模块。
         """
 
-        module = self._module()
         requested = pd.DatetimeIndex(pd.to_datetime(dates)).sort_values().unique()
         if len(requested) == 0:
             raise ValueError("dates must not be empty")
+        _validate_benchmark_input(benchmark, requested)
+        module = self._module()
 
         # schema 只读取一次并被 cached_property 缓存；先验证接口契约，再进行较昂贵的
         # 批量风险数据和基准 I/O。
@@ -184,11 +186,12 @@ class Tuda2DataSource:
             factor_order,
             schema_constants,
         )
-        benchmark = module.get_index_weight(
-            benchmark_sid,
-            dts=requested,
-            type=self.benchmark_weight_type,
-        )
+        if isinstance(benchmark, str):
+            benchmark = module.get_index_weight(
+                benchmark,
+                dts=requested,
+                type=self.benchmark_weight_type,
+            )
         provenance = DataProvenance(
             source="tuda2",
             version=_module_version(module),
@@ -300,7 +303,7 @@ class Tuda2DataSource:
         self,
         *,
         schedule: PortfolioSchedule,
-        benchmark_sid: str,
+        benchmark: str | pd.Series,
         initial_weight: pd.Series,
         objective: PortfolioObjective,
         constraints: PortfolioConstraints,
@@ -322,8 +325,8 @@ class Tuda2DataSource:
         ----------
         schedule : PortfolioSchedule
             策略定义的调仓日期、资产、alpha 和属性。
-        benchmark_sid : str
-            基准指数证券标识。
+        benchmark : str | pandas.Series
+            指数代码或严格 (dt, sid) 索引的逐日权重；不广播或替代缺失日期。
         initial_weight : pandas.Series
             链式首日实际持仓，以 sid 为索引。
         objective : PortfolioObjective
@@ -364,7 +367,7 @@ class Tuda2DataSource:
             else self._attach_tradability(schedule, tradable_universe)
         )
         dates = effective_schedule.dates
-        loaded = self.load(dates=dates, benchmark_sid=benchmark_sid)
+        loaded = self.load(dates=dates, benchmark=benchmark)
         memory_source = InMemoryDataSource(
             risk_data=loaded.risk_data,
             benchmark=loaded.benchmark,
@@ -400,7 +403,7 @@ class Tuda2DataSource:
         *,
         date: Any,
         universe: pd.DataFrame,
-        benchmark_sid: str,
+        benchmark: str | pd.Series,
         initial_weight: pd.Series,
         objective: PortfolioObjective,
         constraints: PortfolioConstraints,
@@ -420,8 +423,8 @@ class Tuda2DataSource:
             唯一优化日期，可转换为 :class:`pandas.Timestamp`。
         universe : pandas.DataFrame
             单日资产及 alpha/属性；可使用 sid 索引，或只含请求日期的 ``(dt, sid)`` 索引。
-        benchmark_sid : str
-            基准指数证券标识。
+        benchmark : str | pandas.Series
+            指数代码或以 sid 为索引的单期权重，后者视为 date 当日输入，不请求指数权重。
         initial_weight : pandas.Series
             交易前实际持仓，以 sid 为索引。
         objective, constraints, alpha_spec
@@ -446,10 +449,13 @@ class Tuda2DataSource:
         """
 
         target_date = pd.Timestamp(date)
+        if isinstance(benchmark, pd.Series) and not isinstance(benchmark.index, pd.MultiIndex):
+            benchmark = pd.concat({target_date: benchmark}, names=["dt"])
+            benchmark.index = benchmark.index.set_names(["dt", "sid"])
         schedule = _single_date_schedule(target_date, universe)
         if tradable_universe is not None:
             schedule = self._attach_tradability(schedule, tradable_universe)
-        loaded = self.load(dates=[target_date], benchmark_sid=benchmark_sid)
+        loaded = self.load(dates=[target_date], benchmark=benchmark)
         memory_source = InMemoryDataSource(
             risk_data=loaded.risk_data,
             benchmark=loaded.benchmark,
@@ -633,6 +639,29 @@ def _validate_covariance_schema(
         raise ValueError(
             f"tuda2 covariance columns do not cover row factors: {missing[:10]}"
         )
+
+
+def _validate_benchmark_input(
+    benchmark: str | pd.Series, dates: pd.DatetimeIndex
+) -> None:
+    """在风险数据 I/O 前拒绝无效权重标签和缺失日期，覆盖率仍由统一对齐层检查。"""
+    if isinstance(benchmark, str):
+        if not benchmark.strip():
+            raise ValueError("benchmark code must not be empty")
+        return
+    if not isinstance(benchmark, pd.Series):
+        raise TypeError("benchmark must be str or pandas.Series")
+    index = benchmark.index
+    if not isinstance(index, pd.MultiIndex) or tuple(index.names) != ("dt", "sid"):
+        raise DataAlignmentError("benchmark requires a (dt, sid) MultiIndex; no static broadcasting")
+    if index.has_duplicates:
+        raise DataAlignmentError("benchmark contains duplicate (dt, sid) labels")
+    dt = index.get_level_values("dt")
+    if not isinstance(dt, pd.DatetimeIndex) or dt.hasnans:
+        raise DataAlignmentError("benchmark dt must contain valid timestamps")
+    missing = dates.difference(dt.unique())
+    if len(missing):
+        raise DataAlignmentError(f"benchmark missing exact dates: {missing.tolist()}")
 
 
 def _single_date_schedule(

@@ -56,14 +56,14 @@ group = "optimizer"
 
 [[symbols]]
 name = "optim.PortfolioOptimizer.optimize"
-signature = "optimize(*, data=None, data_source=None, date=None, universe=None, benchmark_sid=None, initial_weight=None, objective, constraints=None, alpha_spec=None, asset_trade=None, blacklist=None, frozen=None, not_buyable=None, not_sellable=None, weight_overrides=None, benchmark_policy=None, tradable_universe=None, extra_attribute_columns=(), theta_seed=None) -> OptimizationResult"
-summary = "单期便利入口；支持手动 PortfolioData 或 Tuda2DataSource，以及仅对本次请求生效的交易名单"
+signature = "optimize(*, data=None, data_source=None, date=None, universe=None, benchmark=None, initial_weight=None, objective, constraints=None, alpha_spec=None, asset_trade=None, blacklist=None, frozen=None, not_buyable=None, not_sellable=None, weight_overrides=None, benchmark_policy=None, tradable_universe=None, extra_attribute_columns=(), theta_seed=None) -> OptimizationResult"
+summary = "单期便利入口；benchmark 支持指数代码或 sid 索引 Series，旧 benchmark_sid 已移除；支持手动 PortfolioData 或 Tuda2DataSource 和单期交易名单"
 group = "optimizer"
 
 [[symbols]]
 name = "optim.PortfolioOptimizer.optimize_range"
-signature = "optimize_range(*, data_source, schedule, objective, constraints, alpha_spec, initial_weight, benchmark_sid=None, holding_period_returns=None, sequence_policy=None, independent_initial_weights=None, benchmark_policy=None, tradable_universe=None, extra_attribute_columns=()) -> PortfolioSequenceResult"
-summary = "多期入口；数据源全区间预检后逐日求解，链式模式按 close-to-close 收益推进真实期初持仓"
+signature = "optimize_range(*, data_source, schedule, objective, constraints, alpha_spec, initial_weight, benchmark=None, holding_period_returns=None, sequence_policy=None, independent_initial_weights=None, benchmark_policy=None, tradable_universe=None, extra_attribute_columns=()) -> PortfolioSequenceResult"
+summary = "多期入口；benchmark 为指数代码或严格 (dt,sid) Series，不广播不补日期；数据源全区间预检，链式模式按 close-to-close 收益推进持仓"
 group = "optimizer"
 
 [[symbols]]

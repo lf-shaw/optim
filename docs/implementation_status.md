@@ -84,7 +84,7 @@ result = optimizer.optimize(
     data_source=Tuda2DataSource(risk_model="datayes"),
     date=date,
     universe=universe,
-    benchmark_sid="000852.SH",
+    benchmark="000852.SH",
     initial_weight=initial_weight,
     objective=MaximizeAlpha(),
     constraints=constraints,
