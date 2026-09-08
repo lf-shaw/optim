@@ -513,11 +513,16 @@ def _solve_core_lp(
     from ._solver_adapter import core_options_from_policy
 
     core = CoreSolver(core_options_from_policy(policy))
-    return core.solve(
+    result = core.solve(
         core.prepare(model),
         objective_tolerance=0.0,
         collect_dual_bound=True,
     ).final
+    evidence = dict(result.diagnostics)
+    evidence.setdefault("dual_lower_bound", None)
+    evidence.setdefault("dual_bound_status", "unavailable")
+    evidence.setdefault("dual_bound_reason", "no_usable_dual_solution")
+    return replace(result, diagnostics=evidence)
 
 
 def _attempt(result: CoreBackendResult, phase: str) -> SolverAttempt:
@@ -528,7 +533,14 @@ def _attempt(result: CoreBackendResult, phase: str) -> SolverAttempt:
         native_status=result.native_status,
         message=result.message,
         solve_s=result.solve_s,
-        metadata={"diagnostic_phase": phase},
+        metadata={
+            "diagnostic_phase": phase,
+            **{
+                key: value
+                for key, value in result.diagnostics.items()
+                if key.startswith("dual_bound_") or key == "dual_lower_bound"
+            },
+        },
     )
 
 

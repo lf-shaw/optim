@@ -21,6 +21,7 @@ from setuptools.command.sdist import sdist as sdist_orig
 CORE_SOURCES = (
     "optim/_core/canonical.py",
     "optim/_core/contracts.py",
+    "optim/_core/dual_bounds.py",
     "optim/_core/engine.py",
     "optim/_core/factor_qcqp.py",
     "optim/_core/backends/base.py",

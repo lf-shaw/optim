@@ -498,7 +498,7 @@ def test_regular_lp_does_not_compute_diagnostic_bound(sample_lp_problem, monkeyp
     def forbidden(*args):
         raise AssertionError("ordinary LP must not compute diagnostic dual bound")
 
-    monkeypatch.setattr(highs, "_dual_lower_bound", forbidden)
+    monkeypatch.setattr(highs, "lp_dual_bound_diagnostics", forbidden)
     assert PortfolioOptimizer().solve(sample_lp_problem).status.has_solution
 
 

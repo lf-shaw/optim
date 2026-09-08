@@ -15,7 +15,13 @@ from ..contracts import (
     CoreInfeasibilityEvidence,
     CoreSolveStatus as SolveStatus,
 )
-from .base import BackendOptions, BackendResult, capture_infeasibility, dual_entries
+from .base import (
+    BackendOptions,
+    BackendResult,
+    capture_infeasibility,
+    dual_entries,
+)
+from ..dual_bounds import lp_dual_bound_diagnostics
 
 
 @dataclass(frozen=True)
@@ -167,6 +173,23 @@ class ClarabelBackend:
         if primal_objective is not None and dual_objective is not None:
             native_gap = abs(primal_objective - dual_objective) / data.objective_scale
         evidence_errors: dict[str, Any] = {}
+        if (
+            options.collect_dual_bound
+            and status.has_solution
+            and isinstance(model, QuadraticProgram)
+        ):
+            try:
+                evidence_errors.update(
+                    lp_dual_bound_diagnostics(
+                        model, _lp_row_dual(data, solution), primal
+                    )
+                )
+            except Exception as exc:
+                evidence_errors.update(
+                    dual_lower_bound=None,
+                    dual_bound_status="unavailable",
+                    dual_bound_reason=f"native_dual_read_error:{type(exc).__name__}",
+                )
         evidence = None
         if status is SolveStatus.INFEASIBLE:
             evidence = capture_infeasibility(
@@ -284,6 +307,30 @@ def _build_conic_data(
         objective_scale=objective_scale,
         domain=domain,
     )
+
+
+def _lp_row_dual(data: _ConicData, solution: Any) -> np.ndarray:
+    """按锥构造的固定块序恢复原行乘子，撤销目标缩放；上界和等式块需反号。"""
+    d = data.domain
+    equal = (
+        np.isfinite(d.lower)
+        & np.isfinite(d.upper)
+        & np.isclose(d.lower, d.upper, rtol=0, atol=1e-14)
+    )
+    z = np.asarray(solution.z, dtype=float)
+    if z.shape != data.b.shape or not np.all(np.isfinite(z)):
+        raise ValueError("invalid Clarabel dual vector")
+    y = np.zeros(d.n_constraints)
+    offset = 0
+    for mask, sign in (
+        (equal, -1),
+        (~equal & np.isfinite(d.upper), -1),
+        (~equal & np.isfinite(d.lower), 1),
+    ):
+        n = int(mask.sum())
+        y[mask] += sign * z[offset : offset + n] / data.objective_scale
+        offset += n
+    return y
 
 
 def _infeasibility(

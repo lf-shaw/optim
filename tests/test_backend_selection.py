@@ -130,7 +130,7 @@ def test_diagnostic_explicit_backend_covers_lp_and_risk_qp(sample_lp_problem, ba
     assert len(report.attempts) >= 3
     assert report.linear_feasible is True
     assert report.minimum_tracking_error > 0.001
-    assert report.turnover_linear_lower_bound is None
+    assert report.turnover_linear_lower_bound == pytest.approx(0.0, abs=1e-6)
 
 
 @pytest.mark.parametrize("backend", ["unknown", "piqp"])

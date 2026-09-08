@@ -311,7 +311,10 @@ highs 只接受 LP，piqp 只接受 QP（不是通用锥求解器）；不支持
 复现包会保存 backend 策略；诊断辅助模型默认自动路由，不继承原问题的后端选择。
 可显式 `optimizer.diagnose(result, backend="mosek")` 或 `backend="clarabel"` 进行对照，
 不会回退，原结果证书来源不变。piqp 不支持必需的 Phase-I LP；highs 不能求最小风险 QP。
-当前 MOSEK/Clarabel 没有输出诊断需要的数值对偶下界，相关下界可能为 None，候选目标不充当下界。
+HiGHS/MOSEK/Clarabel 均提供统一复算的辅助 LP 数值对偶下界；查看 attempts.metadata 中
+dual_bound_status、dual_bound_reason、dual_bound_method。无法处理的无穷残差方向等情况
+返回 None，不把候选目标当下界。有限盒界可由原约束及已验收候选的目标子水平集推导，
+仅在显式诊断时执行；数值解和松弛分配不要求跨后端逐项相同。
 
 松弛条目可直接读取 `item.description`，例如“下界从 2.0000% 降低至 1.5000%”。
 `item.relaxed_bound` 给出计算后的新边界，JSON 导出也包含该值和单位。

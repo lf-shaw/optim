@@ -12,6 +12,10 @@ PortfolioData / InMemoryDataSource 已绑定基准时，不允许重复传入 be
 
 ## 1. 推荐入口
 
+后端适配保持薄层：只读取并规范化原生解/对偶；共享 LP 下界计算位于数值核心的独立
+dual_bounds 模块，诊断层构造辅助问题并解释证据。无法验证时允许返回 None，不为对齐
+后端输出而降低证据标准；公共接口不依赖该内部模块。
+
 `InfeasibilityReport.load(path, max_uncompressed_bytes=268435456)` 读取 v2 JSON/gzip，
 拒绝缺失版本、v1 或未知版本。`contributors_complete` 标记贡献完整性；摘要保留
 `contributor_summaries`，缺少贡献时 contributors_frame 和 full 导出会报错，不伪造空证据。

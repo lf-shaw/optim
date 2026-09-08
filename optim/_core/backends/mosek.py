@@ -15,7 +15,13 @@ from ..contracts import (
     CoreInfeasibilityEvidence,
     CoreSolveStatus as SolveStatus,
 )
-from .base import BackendOptions, BackendResult, capture_infeasibility, dual_entries
+from .base import (
+    BackendOptions,
+    BackendResult,
+    capture_infeasibility,
+    dual_entries,
+)
+from ..dual_bounds import lp_dual_bound_diagnostics
 
 
 class MosekBackend:
@@ -139,6 +145,19 @@ class MosekBackend:
             primal_obj = _task_double(task, mosek.dinfitem.intpnt_primal_obj)
             dual_obj = _task_double(task, mosek.dinfitem.intpnt_dual_obj)
             evidence_errors: dict[str, Any] = {}
+            if options.collect_dual_bound and status.has_solution:
+                try:
+                    evidence_errors.update(
+                        lp_dual_bound_diagnostics(
+                            model, task.gety(mosek.soltype.itr), primal
+                        )
+                    )
+                except Exception as exc:
+                    evidence_errors.update(
+                        dual_lower_bound=None,
+                        dual_bound_status="unavailable",
+                        dual_bound_reason=f"native_dual_read_error:{type(exc).__name__}",
+                    )
             evidence = None
             if status is SolveStatus.INFEASIBLE:
                 evidence = capture_infeasibility(

@@ -13,6 +13,7 @@ from typing import Any, Mapping, Protocol
 
 import numpy as np
 
+
 from ..contracts import (
     CoreFailureReason as FailureReason,
     CoreInfeasibilityEvidence,

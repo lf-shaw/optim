@@ -901,8 +901,15 @@ comparison = mosek.solve(problem)
 `diagnose()` 的辅助 LP/QP 默认自动路由，因为它们可能与原问题类型不同。
 需要交叉验证时使用 `optimizer.diagnose(result, backend="mosek")` 或 `backend="clarabel"`，
 只影响辅助问题，原始证书不变。显式选择不回退，不支持的辅助模型会报错；piqp 不支持
-必需的 Phase-I LP，highs 遇到最小风险 QP 会报错。报告记录实际尝试。当前 MOSEK/Clarabel
-适配器未提供诊断数值对偶下界，因此换手下界可能为 None，不以候选目标值替代。
+必需的 Phase-I LP，highs 遇到最小风险 QP 会报错。报告记录实际尝试。
+HiGHS/MOSEK/Clarabel 的辅助 LP 均按原矩阵统一复算数值对偶下界；内点残差遇到无穷变量
+边界时，尝试在已验收候选的目标子水平集推导有限盒界后计入残差影响，不能忽略残差。
+无法验证时下界仍为 None，attempts.metadata 的 dual_bound_status/reason/method 说明原因和方法。
+这是浮点数值估计，不是区间算术严格证明；候选目标只提供子水平集上界，绝不冒充最优值下界。
+
+后端适配器只负责原生调用及坐标、符号和缩放转换；共享数值证据算法位于独立的
+`_core/dual_bounds` 模块，诊断层负责构造辅助问题并解释证据。新增后端无需复制下界算法。
+统一的是证据标准和失败语义，不保证不同后端产生相同乘子、松弛分配或同样完整的结论。
 
 Factor-QCQP 的 LP 预筛默认关闭：
 

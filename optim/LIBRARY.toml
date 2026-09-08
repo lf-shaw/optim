@@ -69,7 +69,7 @@ group = "optimizer"
 [[symbols]]
 name = "optim.PortfolioOptimizer.diagnose"
 signature = "diagnose(problem: PortfolioProblem | OptimizationResult, *, prior_result: OptimizationResult | None = None, level='deep', backend='auto') -> InfeasibilityReport"
-summary = "显式诊断失败结果或准确问题；成功结果（含 prior_result）在校验编译前拒绝，成功指标读取 result.metrics；普通失败路径不自动调用"
+summary = "显式诊断失败结果或准确问题；backend 默认 auto，可选 mosek/clarabel；辅助 LP 统一复算数值对偶下界，不可用原因见 attempts.metadata；成功结果拒绝，普通失败不自动调用"
 group = "diagnostics"
 
 [[symbols]]

@@ -102,3 +102,16 @@ def test_distribution_version_is_generated_from_release_tags() -> None:
     assert scm["tag_regex"] == r"^v(?P<version>\d+\.\d+\.\d+)$"
     assert scm["fallback_version"] == "3.0.0"
     assert catalog_version == "dynamic"
+def test_shared_dual_math_is_independent_of_backend_adapters():
+    """共享证据算法不得反向依赖任何具体适配器，base 只保留契约辅助职责。"""
+    from pathlib import Path
+    import ast
+
+    root = Path(__file__).resolve().parents[1]
+    shared = ast.parse((root / "optim/_core/dual_bounds.py").read_text())
+    imports = [node.module or "" for node in ast.walk(shared) if isinstance(node, ast.ImportFrom)]
+    assert not any("backends" in name for name in imports)
+    base = ast.parse((root / "optim/_core/backends/base.py").read_text())
+    functions = {node.name for node in base.body if isinstance(node, ast.FunctionDef)}
+    assert "lp_dual_bound_diagnostics" not in functions
+    assert "_sublevel_box" not in functions

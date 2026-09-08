@@ -24,6 +24,7 @@ ALLOWED_CORE_PYTHON = {
 REQUIRED_CORE_MODULES = {
     "canonical",
     "contracts",
+    "dual_bounds",
     "engine",
     "factor_qcqp",
     "backends/base",

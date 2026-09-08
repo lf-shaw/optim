@@ -14,7 +14,12 @@ from ..contracts import (
     CoreInfeasibilityEvidence,
     CoreSolveStatus as SolveStatus,
 )
-from .base import BackendOptions, BackendResult, capture_infeasibility
+from .base import (
+    BackendOptions,
+    BackendResult,
+    capture_infeasibility,
+)
+from ..dual_bounds import lp_dual_bound_diagnostics
 
 
 class HighsBackend:
@@ -121,8 +126,8 @@ class HighsBackend:
             ),
         }
         if options.collect_dual_bound and status.has_solution and solution.dual_valid:
-            diagnostics["dual_lower_bound"] = _dual_lower_bound(
-                model, solution.row_dual
+            diagnostics.update(
+                lp_dual_bound_diagnostics(model, solution.row_dual, primal)
             )
         evidence = None
         if status is SolveStatus.INFEASIBLE:
@@ -142,32 +147,6 @@ class HighsBackend:
             diagnostics=diagnostics,
             infeasibility=evidence,
         )
-
-
-def _dual_lower_bound(model: LinearProgram, dual: Any) -> float | None:
-    """以原矩阵复算 LP 拉格朗日下界；无穷变量侧有不利残差时放弃该界。
-
-    保留浮点数值估计语义，不通过截断残差把不可用的界提升为严格证书。
-    """
-
-    d = model.domain
-    y = np.asarray(dual, dtype=float)
-    reduced = model.c - d.A.T @ y
-    row_bound = np.where(y > 0, d.lower, d.upper)
-    col_bound = np.where(reduced > 0, d.variable_lower, d.variable_upper)
-    row_mask, col_mask = y != 0, reduced != 0
-    if not (np.all(np.isfinite(y)) and np.all(np.isfinite(reduced))):
-        return None
-    if not (
-        np.all(np.isfinite(row_bound[row_mask]))
-        and np.all(np.isfinite(col_bound[col_mask]))
-    ):
-        return None
-    return float(
-        y[row_mask] @ row_bound[row_mask]
-        + reduced[col_mask] @ col_bound[col_mask]
-        + model.objective_offset
-    )
 
 
 def _dual_ray(
