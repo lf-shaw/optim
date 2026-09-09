@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping
 import pandas as pd
 
 from .model import compile_problem
-from ._solver_adapter import SolverAdapter
+from ._impl.solver_adapter import SolverAdapter
 from .portfolio_types import (
     AssetTradeConstraints,
     OptimizationResult,

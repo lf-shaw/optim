@@ -7,7 +7,7 @@ from typing import Any, Mapping, cast
 
 import numpy as np
 
-from .portfolio_types import PortfolioProblem
+from ..portfolio_types import PortfolioProblem
 
 
 class AssetBoundsError(ValueError):

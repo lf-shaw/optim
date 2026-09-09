@@ -38,7 +38,7 @@ done
 echo "=== [1/4] 清理上次构建的临时产物 ==="
 rm -rf build/ optim.egg-info/
 rm -f optim/_version.py
-find optim/_core -type f \( -name '*.c' -o -name '*.cpp' -o -name '*.so' -o -name '*.pyd' \) -delete
+find optim/_core optim/_impl -type f \( -name '*.c' -o -name '*.cpp' -o -name '*.so' -o -name '*.pyd' \) -delete
 find optim -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
 
 echo "=== [2/4] 编译平台 wheel ==="

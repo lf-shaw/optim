@@ -7,6 +7,8 @@ from dataclasses import replace
 from importlib import resources
 from importlib.metadata import version
 from pathlib import Path
+from importlib import import_module
+import tempfile
 import tomllib
 
 import numpy as np
@@ -88,6 +90,18 @@ def main() -> None:
     engine_path = Path(engine.__file__)
     if engine_path.suffix not in {".so", ".pyd"}:
         raise RuntimeError(f"core engine is not a binary extension: {engine_path}")
+    for name in (
+        "compiler",
+        "solver_adapter",
+        "diagnostic_engine",
+        "asset_bounds",
+        "solution",
+    ):
+        module = import_module(f"optim._impl.{name}")
+        if Path(module.__file__).suffix not in {".so", ".pyd"}:
+            raise RuntimeError(
+                f"impl module is not a binary extension: {module.__file__}"
+            )
     package_files = resources.files("optim")
     for relative in (
         "LIBRARY.toml",
@@ -124,6 +138,35 @@ def main() -> None:
         if not np.isclose(weight.sum(), 1.0, atol=1e-6):
             raise RuntimeError(f"{name} weights do not sum to one")
         routes[name] = [attempt.backend for attempt in result.route]
+
+    # 检查编译后的业务实现支持诊断和序列，并保持复现文件只依赖公开数据契约。
+    optimizer = PortfolioOptimizer()
+    failed = optimizer.solve(
+        base.with_constraints(turnover=TurnoverLimit(0.0)).with_data(
+            initial_weight=np.array([1.0, 0.0, 0.0, 0.0])
+        )
+    )
+    assert not failed.status.has_solution
+    report = optimizer.diagnose(failed)
+    assert report.linear_feasible is False
+    with tempfile.TemporaryDirectory(prefix="optim-wheel-repro-") as folder:
+        path = optim.export_repro(
+            Path(folder) / "problem.zip", result=failed, report=report
+        )
+        assert not optim.load_repro(path).solve().status.has_solution
+    next_problem = base.with_data(
+        date=base.data.date + pd.Timedelta(days=1),
+        risk_model=replace(
+            base.data.risk_model, asof=base.data.date + pd.Timedelta(days=1)
+        ),
+    )
+    sequence = optimizer.solve_sequence(
+        [base, next_problem],
+        holding_period_returns={
+            next_problem.data.date: pd.Series(0.0, index=base.data.assets)
+        },
+    )
+    assert sequence.stopped_date is None
 
     print(
         {

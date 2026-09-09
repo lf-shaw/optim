@@ -10,8 +10,8 @@ from __future__ import annotations
 import math
 import numpy as np
 
-from .model.canonical import CompiledProblem, FactorQCQP, QuadraticProgram
-from .portfolio_types import (
+from ..model.canonical import CompiledProblem, FactorQCQP, QuadraticProgram
+from ..portfolio_types import (
     ConstraintViolation,
     FactorRiskModel,
     MaximizeAlpha,
@@ -72,7 +72,9 @@ def lift_weights(
     sparse_turnover = "exact_sparse_turnover" in compiled.compiler_optimizations
     factor_values = None
     if isinstance(problem.data.risk_model, FactorRiskModel) and active is not None:
-        factor_values = np.asarray(problem.data.risk_model.exposure, dtype=float).T @ active
+        factor_values = (
+            np.asarray(problem.data.risk_model.exposure, dtype=float).T @ active
+        )
         factor_lookup = {
             name: factor_values[index]
             for index, name in enumerate(problem.data.risk_model.factor_names)
@@ -84,7 +86,9 @@ def lift_weights(
             assert record.key is not None and initial is not None
             asset_index = asset_positions[record.key]
             difference = weight[asset_index] - initial[asset_index]
-            vector[record.index] = max(difference, 0.0) if sparse_turnover else abs(difference)
+            vector[record.index] = (
+                max(difference, 0.0) if sparse_turnover else abs(difference)
+            )
         elif record.group == "active_aux":
             assert record.key is not None and active is not None
             vector[record.index] = abs(active[asset_positions[record.key]])
@@ -161,7 +165,9 @@ def evaluate_solution(
         violations.append(
             ConstraintViolation(
                 constraint_id=(
-                    record.constraint_id if record is not None else f"canonical_row:{index}"
+                    record.constraint_id
+                    if record is not None
+                    else f"canonical_row:{index}"
                 ),
                 group=record.group if record is not None else "canonical_row",
                 amount=float(row_violation[index]),
@@ -176,7 +182,9 @@ def evaluate_solution(
         violations.append(
             ConstraintViolation(
                 constraint_id=(
-                    record.constraint_id if record is not None else f"variable_bound:{index}"
+                    record.constraint_id
+                    if record is not None
+                    else f"variable_bound:{index}"
                 ),
                 group=record.group if record is not None else "variable_bound",
                 amount=float(variable_violation[index]),
@@ -189,7 +197,9 @@ def evaluate_solution(
 
     weight = vector[domain.weight_indices]
     data = problem.data
-    benchmark = None if data.benchmark is None else np.asarray(data.benchmark, dtype=float)
+    benchmark = (
+        None if data.benchmark is None else np.asarray(data.benchmark, dtype=float)
+    )
     active = None if benchmark is None else weight - benchmark
     factor_variance = specific_variance = tracking_error = None
     if isinstance(data.risk_model, FactorRiskModel) and active is not None:
@@ -277,7 +287,9 @@ def evaluate_solution(
         benchmark_member_weight=benchmark_member_weight,
         max_weight=float(np.max(weight)) if weight.size else None,
         min_weight=float(np.min(weight)) if weight.size else None,
-        max_active_weight=(float(np.max(np.abs(active))) if active is not None else None),
+        max_active_weight=(
+            float(np.max(np.abs(active))) if active is not None else None
+        ),
         max_style_exposure=max_style,
         max_industry_exposure=max_industry,
     )

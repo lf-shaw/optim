@@ -12,9 +12,9 @@ from dataclasses import replace
 import numpy as np
 import scipy.sparse as sp
 
-from ._core import CoreBackendResult, CoreSolver
-from .diagnostics import InfeasibilityReport, RequiredRelaxation
-from .model.canonical import (
+from .._core import CoreBackendResult, CoreSolver
+from ..diagnostics import InfeasibilityReport, RequiredRelaxation
+from ..model.canonical import (
     CanonicalKind,
     CompiledProblem,
     ConstraintRecord,
@@ -22,7 +22,7 @@ from .model.canonical import (
     LinearProgram,
     VariableRecord,
 )
-from .portfolio_types import (
+from ..portfolio_types import (
     FailureReason,
     MinimizeTrackingError,
     OptimizationResult,
@@ -81,7 +81,7 @@ def diagnose_problem(
             "prior result fingerprint does not match the diagnosed problem"
         )
 
-    from .model.compiler import _diagnostic_domain
+    from .compiler import _diagnostic_domain
 
     # 默认不继承原后端；显式覆盖只改变辅助模型求解，保留数值容差和原结果证据。
     policy = replace(policy, backend=backend)
@@ -114,7 +114,7 @@ def diagnose_problem(
 
     minimum_te = None
     if linear_feasible is True and problem.constraints.tracking_error is not None:
-        from .api import PortfolioOptimizer
+        from ..api import PortfolioOptimizer
 
         min_risk_problem = replace(
             problem,
@@ -463,7 +463,7 @@ def _minimum_linear_turnover(
 ) -> tuple[CoreBackendResult, float | None]:
     """仅移除已配置换手率上限后，最小化 L1 换手率。"""
 
-    from .model.compiler import _diagnostic_domain
+    from .compiler import _diagnostic_domain
 
     domain = (
         _diagnostic_domain(problem) if diagnostic_domain is None else diagnostic_domain
@@ -510,7 +510,7 @@ def _solve_core_lp(
 ) -> CoreBackendResult:
     """通过 core 根入口求解诊断 LP，不访问具体后端模块。"""
 
-    from ._solver_adapter import core_options_from_policy
+    from .solver_adapter import core_options_from_policy
 
     core = CoreSolver(core_options_from_policy(policy))
     result = core.solve(

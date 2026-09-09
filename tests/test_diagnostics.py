@@ -229,7 +229,7 @@ def test_single_result_keeps_problem_without_automatic_diagnosis(
 def test_failed_phase_one_does_not_claim_infeasibility(
     sample_lp_problem, monkeypatch, failure
 ):
-    from optim import _diagnostic_engine as engine
+    from optim._impl import diagnostic_engine as engine
     from optim._core import CoreBackendResult, CoreSolveStatus
 
     failed = CoreBackendResult("highs", CoreSolveStatus(failure), None, None, failure)
@@ -240,7 +240,7 @@ def test_failed_phase_one_does_not_claim_infeasibility(
 
 
 def test_full_candidate_checks_are_independent_of_display_slacks(sample_lp_problem):
-    from optim._diagnostic_engine import _linear_feasibility
+    from optim._impl.diagnostic_engine import _linear_feasibility
     from optim._core import CoreBackendResult, CoreSolveStatus
     from optim.model import compile_problem
 
@@ -252,7 +252,7 @@ def test_full_candidate_checks_are_independent_of_display_slacks(sample_lp_probl
 
 
 def test_high_risk_candidate_alone_cannot_prove_infeasible():
-    from optim._diagnostic_engine import _summary
+    from optim._impl.diagnostic_engine import _summary
 
     summary = _summary(True, (), None, None, 0.03, 0.02)
     assert "不能单凭它确认" in summary
@@ -378,7 +378,7 @@ def test_native_factor_qcqp_keeps_risk_cone_components(sample_data, backend):
     from optim._core.backends.clarabel import ClarabelBackend
     from optim._core.backends.mosek import MosekBackend
     from optim.model import compile_problem
-    from optim._solver_adapter import _native_infeasibility
+    from optim._impl.solver_adapter import _native_infeasibility
 
     weight = np.array([1.0, 0.0, 0.0, 0.0])
     problem = PortfolioProblem(
@@ -578,7 +578,7 @@ def test_dump_rejects_unsupported_data_before_creating_file(tmp_path):
 
 
 def test_turnover_lower_bound_can_resolve_unknown_phase(sample_lp_problem, monkeypatch):
-    from optim import _diagnostic_engine as engine
+    from optim._impl import diagnostic_engine as engine
     from optim._core import CoreBackendResult, CoreSolveStatus
 
     unknown = CoreBackendResult(
@@ -604,7 +604,7 @@ def test_turnover_lower_bound_can_resolve_unknown_phase(sample_lp_problem, monke
 
 def test_phase_turnover_summary_explains_units_and_other_slacks():
     from optim import RequiredRelaxation
-    from optim._diagnostic_engine import _summary
+    from optim._impl.diagnostic_engine import _summary
 
     relaxations = (
         RequiredRelaxation("turnover:l1", "turnover", "upper", 0.15, 0.05, 1.0),
@@ -620,10 +620,10 @@ def test_phase_turnover_summary_explains_units_and_other_slacks():
 def test_contradictory_bound_is_quarantined_using_full_candidate(
     sample_lp_problem, monkeypatch
 ):
-    from optim import _diagnostic_engine as engine
+    from optim._impl import diagnostic_engine as engine
     from optim._core import CoreBackendResult, CoreSolveStatus
     from optim.model import compile_problem
-    from optim.solution import lift_weights
+    from optim._impl.solution import lift_weights
 
     problem = replace(
         sample_lp_problem,
@@ -632,7 +632,7 @@ def test_contradictory_bound_is_quarantined_using_full_candidate(
         ),
     )
     compiled = compile_problem(problem)
-    from optim.model.compiler import _diagnostic_domain
+    from optim._impl.compiler import _diagnostic_domain
 
     compiled = replace(
         compiled,
@@ -661,7 +661,7 @@ def test_contradictory_bound_is_quarantined_using_full_candidate(
 def test_joint_relaxation_does_not_falsely_conflict_with_turnover_bound(
     sample_lp_problem,
 ):
-    from optim._diagnostic_engine import _combine_linear_evidence
+    from optim._impl.diagnostic_engine import _combine_linear_evidence
     from optim._core import CoreBackendResult, CoreSolveStatus
     from optim.model import compile_problem
 
@@ -685,8 +685,8 @@ def test_diagnostic_domain_restores_constraints_and_protects_holdings(
     sample_lp_problem,
 ):
     from optim.model import compile_problem
-    from optim.model.compiler import _diagnostic_domain
-    from optim._diagnostic_engine import _solve_phase_one
+    from optim._impl.compiler import _diagnostic_domain
+    from optim._impl.diagnostic_engine import _solve_phase_one
 
     original = compile_problem(sample_lp_problem)
     assert "exact_sparse_turnover" in original.compiler_optimizations
@@ -765,7 +765,7 @@ def test_native_summary_size_is_independent_of_contributor_count(tmp_path):
 
 
 def test_report_explains_absent_native_evidence(sample_lp_problem):
-    from optim._diagnostic_engine import _certificate_availability
+    from optim._impl.diagnostic_engine import _certificate_availability
 
     assert _certificate_availability(None)[0]["availability"] == "no_prior_result"
     result = PortfolioOptimizer().solve(sample_lp_problem)

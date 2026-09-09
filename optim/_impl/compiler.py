@@ -18,7 +18,7 @@ from typing import Any, Iterable
 import numpy as np
 import scipy.sparse as sp
 
-from ..asset_bounds import AssetBoundsError, resolve_asset_bounds
+from .asset_bounds import AssetBoundsError, resolve_asset_bounds
 from ..fingerprint import fingerprint
 from ..portfolio_types import (
     FactorRiskModel,
@@ -30,7 +30,7 @@ from ..portfolio_types import (
     RiskAdjustedAlpha,
 )
 from ..validation import validate_problem
-from .canonical import (
+from ..model.canonical import (
     CanonicalKind,
     CompiledProblem,
     CanonicalModel,

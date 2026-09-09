@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from .portfolio_types import (
+from ..portfolio_types import (
     AlignmentReport,
     ConstraintViolation,
     FailureReason,
@@ -28,7 +28,7 @@ from .portfolio_types import (
     SolverAttempt,
     SolverPolicy,
 )
-from ._core import (
+from .._core import (
     CoreBackendResult as BackendResult,
     CoreFailureReason,
     CoreProblemHandle,
@@ -36,8 +36,8 @@ from ._core import (
     CoreSolver,
     CoreSolverOptions,
 )
-from .diagnostics import InfeasibilityReport
-from .model.canonical import CompiledProblem, FactorQCQP, LinearProgram
+from ..diagnostics import InfeasibilityReport
+from ..model.canonical import CompiledProblem, FactorQCQP, LinearProgram
 from .solution import evaluate_solution, lift_weights
 
 
@@ -144,7 +144,7 @@ class SolverAdapter:
     ) -> InfeasibilityReport:
         """显式运行私有深度不可行诊断。"""
 
-        from ._diagnostic_engine import diagnose_problem
+        from .diagnostic_engine import diagnose_problem
 
         return diagnose_problem(
             problem,

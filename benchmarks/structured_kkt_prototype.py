@@ -24,7 +24,7 @@ from threadpoolctl import threadpool_limits
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from optim import load_repro, TrackingErrorLimit
-from optim.model.compiler import compile_problem
+from optim._impl.compiler import compile_problem
 from optim._core.canonical import FactorQCQP
 
 

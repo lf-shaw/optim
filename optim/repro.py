@@ -17,7 +17,7 @@ import pandas as pd
 
 from . import portfolio_types as pt
 from .diagnostics import InfeasibilityReport, _certificate_export, _json_value
-from .model.compiler import compile_problem
+from ._impl.compiler import compile_problem
 
 _TYPES = {
     name: getattr(pt, name)

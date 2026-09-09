@@ -1,7 +1,7 @@
 """optim 的 wheel 构建配置。
 
 公共 facade、数据契约和数据适配层保留为带内联类型注解的 Python；只有 ``optim._core``
-中的数值实现编译为扩展模块。构建过程不会生成或分发 core 的 ``.pyi``。
+和 ``optim._impl`` 中的实现编译为扩展模块。构建过程不会生成或分发实现层的 ``.pyi``。
 """
 
 from __future__ import annotations
@@ -31,6 +31,14 @@ CORE_SOURCES = (
     "optim/_core/backends/piqp.py",
 )
 
+IMPL_SOURCES = (
+    "optim/_impl/compiler.py",
+    "optim/_impl/solver_adapter.py",
+    "optim/_impl/diagnostic_engine.py",
+    "optim/_impl/asset_bounds.py",
+    "optim/_impl/solution.py",
+)
+
 
 def _extension_name(source: str) -> str:
     """把仓库相对 Python 路径转换成扩展模块全名。"""
@@ -39,11 +47,13 @@ def _extension_name(source: str) -> str:
 
 
 class PublicFacadeBuildPy(build_py_orig):
-    """复制公共 Python 模块、同步 catalog 版本并排除 core 实现源码。"""
+    """复制公共 Python 模块、同步 catalog 版本并排除 core/impl 实现源码。"""
 
     def find_package_modules(self, package, package_dir):
         modules = super().find_package_modules(package, package_dir)
-        if package == "optim._core" or package.startswith("optim._core."):
+        if package in {"optim._core", "optim._impl"} or package.startswith(
+            ("optim._core.", "optim._impl.")
+        ):
             return [item for item in modules if item[1] == "__init__"]
         return modules
 
@@ -67,18 +77,18 @@ class PublicFacadeBuildPy(build_py_orig):
 
 
 class BlockedSourceDistribution(sdist_orig):
-    """阻止误生成会包含 core Python 源码的 sdist。"""
+    """阻止误生成会包含 core/impl Python 源码的 sdist。"""
 
     def run(self):
         raise RuntimeError(
             "optim is distributed as a platform wheel only; source distributions "
-            "are disabled because they would expose optim._core sources"
+            "are disabled because they would expose optim._core/optim._impl sources"
         )
 
 
 extensions = [
     Extension(_extension_name(source), [source])
-    for source in CORE_SOURCES
+    for source in CORE_SOURCES + IMPL_SOURCES
 ]
 
 _CYTHON_BUILD_DIR = Path(tempfile.mkdtemp(prefix="optim-cython-"))

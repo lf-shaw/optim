@@ -17,7 +17,7 @@ from optim import (
     export_repro,
     load_repro,
 )
-from optim.model.compiler import compile_problem
+from optim._impl.compiler import compile_problem
 
 
 def test_problem_derivation(sample_lp_problem):

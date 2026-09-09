@@ -14,7 +14,7 @@ from typing import Any, Iterable, Mapping, cast
 import numpy as np
 import pandas as pd
 
-from .asset_bounds import AssetBoundsError, resolve_asset_bounds
+from ._impl.asset_bounds import AssetBoundsError, resolve_asset_bounds
 from .portfolio_types import (
     AssetTradeConstraints,
     FactorRiskModel,

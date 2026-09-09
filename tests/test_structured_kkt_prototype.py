@@ -103,7 +103,7 @@ def test_compressed_hessian_matches_original():
 def test_risk_cone_matches_canonical(sample_lp_problem):
     """检查真实 compiler 的风险锥方向和基准平移，不凭候选目标相近判断等价。"""
     from optim import TrackingErrorLimit
-    from optim.model.compiler import compile_problem
+    from optim._impl.compiler import compile_problem
 
     model = compile_problem(
         sample_lp_problem.with_constraints(tracking_error=TrackingErrorLimit(0.06))

@@ -21,6 +21,8 @@ dual_bounds 模块，诊断层构造辅助问题并解释证据。无法验证�
 `contributor_summaries`，缺少贡献时 contributors_frame 和 full 导出会报错，不伪造空证据。
 
 `PortfolioOptimizer(SolverPolicy(backend="auto"))` 默认 LP→HiGHS、QP→direct PIQP、Factor-QCQP→Clarabel。
+用户调用公共 API；模型编译、适配、诊断计算和验收集中在 `_impl`，数学后端位于 `_core`。
+两者发布为二进制实现，不应直接导入其内部函数；数据契约、报告和复现 API 仍为 Python。
 旧 `optim.opt` / `optim.linopt` / `optim.solver` 已删除，不提供兼容别名；单期与多期使用
 `PortfolioOptimizer.optimize` / `optimize_range`，不能原样套用旧参数。
 QP 失败可转 Clarabel；自动路径不调用 MOSEK。当前不支持 theta 搜索和跨期参数传播。
