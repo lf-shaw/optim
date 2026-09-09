@@ -105,9 +105,9 @@ else:
 框架或低延迟重复调用      prepare(...) / solve_prepared(...)
 ```
 
-旧的 `optim.opt`、`optim.linopt` 已移除，不提供兼容别名。原 `optimize` / `multioptimize`
+旧的 `optim.opt`、`optim.linopt`、`optim.solver` 已移除，不提供兼容别名。原 `optimize` / `multioptimize`
 调用请迁移到 `PortfolioOptimizer.optimize(...)` / `optimize_range(...)`，并按新数据及约束契约
-重新组装参数。旧 `optim.solver` 暂时保留，不属于新版公共优化接口。
+重新组装参数；旧 `Solver` 的可变状态接口不再提供。
 
 ---
 

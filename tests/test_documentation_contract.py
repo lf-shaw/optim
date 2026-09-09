@@ -10,19 +10,15 @@ import pytest
 
 
 _PACKAGE_ROOT = Path(__file__).parents[1] / "optim"
-_LEGACY_MODULES = {
-    _PACKAGE_ROOT / "solver.py",
-}
 _CHINESE = re.compile(r"[\u4e00-\u9fff]")
 
 
 def _module_trees() -> tuple[tuple[Path, ast.Module], ...]:
-    """读取待维护的新架构模块，并排除计划废弃的旧求解器。"""
+    """读取当前架构的全部模块，不再豁免旧求解器。"""
 
     return tuple(
         (path, ast.parse(path.read_text(encoding="utf-8")))
         for path in sorted(_PACKAGE_ROOT.rglob("*.py"))
-        if path not in _LEGACY_MODULES
     )
 
 

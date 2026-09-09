@@ -1,14 +1,12 @@
 """统一组合优化公共 API。
 
 导入 :mod:`optim` 不会触发求解器 license 或可选数据源的副作用。
-旧版 ``opt``、``linopt`` 已移除；仅 ``solver`` 暂时保留延迟加载。
+旧版 ``opt``、``linopt``、``solver`` 均已移除，统一使用 PortfolioOptimizer。
 """
 
 from __future__ import annotations
 
-from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any
 
 try:
     from ._version import version as __version__
@@ -139,13 +137,3 @@ __all__ = [
     "ValidationSeverity",
     "WeightBounds",
 ]
-
-
-def __getattr__(name: str) -> Any:
-    """仅在调用方显式访问时延迟加载旧版模块。"""
-
-    if name == "solver":
-        module = import_module(f".{name}", __name__)
-        globals()[name] = module
-        return module
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

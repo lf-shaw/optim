@@ -42,7 +42,7 @@ def validate(path: Path) -> None:
         raise SystemExit(f"wheel 不存在或扩展名无效: {path}")
     with ZipFile(path) as archive:
         names = set(archive.namelist())
-        obsolete = sorted(names & {"optim/opt.py", "optim/linopt.py"})
+        obsolete = sorted(names & {"optim/opt.py", "optim/linopt.py", "optim/solver.py"})
         if obsolete:
             raise SystemExit(f"wheel 包含已删除的旧模块，请清理构建目录: {obsolete}")
         missing = sorted(REQUIRED_RESOURCES - names)

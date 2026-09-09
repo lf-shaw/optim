@@ -26,7 +26,7 @@ if loaded:
     assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
-@pytest.mark.parametrize("name", ["opt", "linopt"])
+@pytest.mark.parametrize("name", ["opt", "linopt", "solver"])
 def test_removed_legacy_modules_cannot_be_imported(name):
     """旧模块既不保留源码，也不通过包属性提供兼容入口。"""
     import optim
