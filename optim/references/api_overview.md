@@ -12,17 +12,14 @@ PortfolioData / InMemoryDataSource 已绑定基准时，不允许重复传入 be
 
 ## 1. 推荐入口
 
-后端适配保持薄层：只读取并规范化原生解/对偶；共享 LP 下界计算位于数值核心的独立
-dual_bounds 模块，诊断层构造辅助问题并解释证据。无法验证时允许返回 None，不为对齐
-后端输出而降低证据标准；公共接口不依赖该内部模块。
+诊断结果中无法验证的下界允许返回 None，不应解释为零；具体原因可查看诊断尝试记录。
 
 `InfeasibilityReport.load(path, max_uncompressed_bytes=268435456)` 读取 v2 JSON/gzip，
 拒绝缺失版本、v1 或未知版本。`contributors_complete` 标记贡献完整性；摘要保留
 `contributor_summaries`，缺少贡献时 contributors_frame 和 full 导出会报错，不伪造空证据。
 
 `PortfolioOptimizer(SolverPolicy(backend="auto"))` 默认 LP→HiGHS、QP→direct PIQP、Factor-QCQP→Clarabel。
-用户调用公共 API；模型编译、适配、诊断计算和验收集中在 `_impl`，数学后端位于 `_core`。
-两者发布为二进制实现，不应直接导入其内部函数；数据契约、报告和复现 API 仍为 Python。
+用户应调用公共 API，不直接依赖内部实现模块；数据契约、报告和复现 API 提供稳定入口。
 旧 `optim.opt` / `optim.linopt` / `optim.solver` 已删除，不提供兼容别名；单期与多期使用
 `PortfolioOptimizer.optimize` / `optimize_range`，不能原样套用旧参数。
 QP 失败可转 Clarabel；自动路径不调用 MOSEK。当前不支持 theta 搜索和跨期参数传播。
@@ -123,7 +120,7 @@ specific_volatility      (n_assets,)
 
 - `asset_weight=WeightBounds(lower, upper)`：绝对目标权重；
 - `active_weight=SymmetricBound(c)`：逐股主动权重满足 $|x_i-b_i|\le c$；
-- `total_active=L`：总主动权重满足 $\lVert x-b\rVert_1\le L$；
+- `total_active=L`：总主动权重满足 $\lVert x-b\rVert_1\le L$，要求有限且 $L>0$，`None` 禁用；
 - `turnover=TurnoverLimit(T)`：换手率满足 $\lVert x-x_0\rVert_1\le T$，不除以 2；
 - `benchmark_member_weight=LowerBound(v)`：基准成员目标权重合计下限；
 - `style`、`industry`：相对基准的因子主动敞口；
@@ -260,8 +257,7 @@ deep 诊断给出一个加权 Phase-I 松弛方案、最小换手率的数值对
 综合证据冲突时 `linear_feasible=None`，冲突下界不参与恢复；换手率松弛 0.15 表示增加
 15 个百分点，不是相对增加 15%，也不等于保持其他约束时的最小换手率。
 
-诊断模型禁用稀疏换手率及依赖原约束的冗余省略，Phase-I 保护非负和操作边界；正常求解
-保留加速。`native_evidence.phase_one_turnover_l1` 为原始候选实际 L1 换手率，证据为空的
+诊断中的放宽方案不自动应用到原问题。`native_evidence.phase_one_turnover_l1` 为原始候选实际 L1 换手率，证据为空的
 原因见 `certificate_availability`。完整证书不是 IIS，组计数不是重要性排名。
 # 问题派生与复现
 

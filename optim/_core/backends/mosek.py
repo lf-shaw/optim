@@ -89,6 +89,13 @@ class MosekBackend:
                     float(options.time_limit_s),
                 )
             domain = model.domain
+            primal_feasibility = _primal_feasibility_tolerance(domain, options)
+            task.putdouparam(
+                mosek.dparam.intpnt_qo_tol_pfeas
+                if model.P.nnz
+                else mosek.dparam.intpnt_tol_pfeas,
+                primal_feasibility,
+            )
             task.appendvars(domain.n_variables)
             task.appendcons(domain.n_constraints)
             task.putclist(
@@ -177,6 +184,7 @@ class MosekBackend:
                 infeasibility=evidence,
                 diagnostics={
                     **evidence_errors,
+                    "primal_feasibility_tolerance": primal_feasibility,
                     "primal_objective": primal_obj,
                     "dual_objective": dual_obj,
                     "native_gap_unscaled": (
@@ -222,6 +230,8 @@ class MosekBackend:
             if license_path is not None:
                 fusion.Model.putlicensepath(str(license_path))
             fusion_model = fusion.Model("portfolio_factor_qcqp")
+            primal_feasibility = _primal_feasibility_tolerance(domain, options)
+            fusion_model.setSolverParam("intpntCoTolPfeas", primal_feasibility)
             if options.time_limit_s is not None:
                 fusion_model.setSolverParam(
                     "optimizerMaxTime",
@@ -296,6 +306,7 @@ class MosekBackend:
                 infeasibility=evidence,
                 diagnostics={
                     **evidence_errors,
+                    "primal_feasibility_tolerance": primal_feasibility,
                     "primal_objective": primal_obj,
                     "dual_objective": dual_obj,
                     "native_gap_unscaled": (
@@ -319,6 +330,17 @@ class MosekBackend:
         finally:
             if fusion_model is not None:
                 fusion_model.dispose()
+
+
+def _primal_feasibility_tolerance(domain: Any, options: BackendOptions) -> float:
+    """给两个原生接口提供一致的可行性精度请求。"""
+    # L1 辅助行的小残差会累加到原始业务总量。大样本回归中默认 1e-8 仍有总量
+    # 超限，1e-10 可通过既定 1e-5 验收。这里只收紧原生 primal 阈值，不放宽
+    # 业务验收，也不将此阈值当作所有问题总量误差的数学保证。
+    has_l1_bound = any(
+        record.group in {"turnover", "total_active"} for record in domain.constraints
+    )
+    return min(options.eps_abs, 1e-10) if has_l1_bound else options.eps_abs
 
 
 def _task_evidence(

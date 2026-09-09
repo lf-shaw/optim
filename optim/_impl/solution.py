@@ -70,6 +70,7 @@ def lift_weights(
         else np.asarray(problem.data.initial_weight, dtype=float)
     )
     sparse_turnover = "exact_sparse_turnover" in compiled.compiler_optimizations
+    sparse_active = "exact_sparse_total_active" in compiled.compiler_optimizations
     factor_values = None
     if isinstance(problem.data.risk_model, FactorRiskModel) and active is not None:
         factor_values = (
@@ -91,7 +92,10 @@ def lift_weights(
             )
         elif record.group == "active_aux":
             assert record.key is not None and active is not None
-            vector[record.index] = abs(active[asset_positions[record.key]])
+            difference = active[asset_positions[record.key]]
+            vector[record.index] = (
+                max(-difference, 0.0) if sparse_active else abs(difference)
+            )
         elif record.group == "factor_active":
             assert record.key is not None
             vector[record.index] = factor_lookup[record.key]
@@ -162,6 +166,11 @@ def evaluate_solution(
     violations: list[ConstraintViolation] = []
     for index in np.flatnonzero(row_violation > 0.0):
         record = row_records.get(int(index))
+        offset = (
+            float(record.metadata.get("expression_offset", 0.0))
+            if record is not None
+            else 0.0
+        )
         violations.append(
             ConstraintViolation(
                 constraint_id=(
@@ -171,9 +180,9 @@ def evaluate_solution(
                 ),
                 group=record.group if record is not None else "canonical_row",
                 amount=float(row_violation[index]),
-                observed=float(row_value[index]),
-                lower=float(domain.lower[index]),
-                upper=float(domain.upper[index]),
+                observed=float(row_value[index]) + offset,
+                lower=float(domain.lower[index]) + offset,
+                upper=float(domain.upper[index]) + offset,
                 label=record.key if record is not None else None,
             )
         )
@@ -257,6 +266,63 @@ def evaluate_solution(
     benchmark_member_weight = None
     if benchmark is not None:
         benchmark_member_weight = float(weight[benchmark > 0.0].sum())
+
+    # 使用已经复算的业务总量验收：逐行 epigraph 小残差可能累计超过总量容差。
+    # 即使编译器删除了冗余行，也必须覆盖其原始约束；不增加新的矩阵运算。
+    aggregate_checks = (
+        (
+            "turnover:l1",
+            "turnover",
+            turnover,
+            None,
+            problem.constraints.turnover.l1_limit
+            if problem.constraints.turnover is not None
+            else None,
+        ),
+        (
+            "total_active:l1",
+            "total_active",
+            total_active,
+            None,
+            problem.constraints.total_active,
+        ),
+        (
+            "benchmark_member_weight:members",
+            "benchmark_member_weight",
+            benchmark_member_weight,
+            problem.constraints.benchmark_member_weight.value
+            if problem.constraints.benchmark_member_weight is not None
+            else None,
+            None,
+        ),
+    )
+    for constraint_id, group, observed, lower, upper in aggregate_checks:
+        if observed is None or (lower is None and upper is None):
+            continue
+        amount = max(
+            0.0,
+            lower - observed if lower is not None else 0.0,
+            observed - upper if upper is not None else 0.0,
+        )
+        # 总量行若已有残差，保留较大值；相同时使用原始业务坐标，避免常数移位误读。
+        existing = next(
+            (i for i, v in enumerate(violations) if v.constraint_id == constraint_id),
+            None,
+        )
+        if amount > 0.0 and (existing is None or amount >= violations[existing].amount):
+            violation = ConstraintViolation(
+                constraint_id=constraint_id,
+                group=group,
+                amount=amount,
+                observed=observed,
+                lower=lower,
+                upper=upper,
+                label="original_weight_total",
+            )
+            if existing is None:
+                violations.append(violation)
+            else:
+                violations[existing] = violation
 
     max_style = max_industry = None
     if isinstance(data.risk_model, FactorRiskModel) and active is not None:

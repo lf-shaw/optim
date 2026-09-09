@@ -12,6 +12,7 @@ epigraph 和因子主动敞口。每一行/列都带审计记录，供 fingerpri
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import math
 from types import MappingProxyType
 from typing import Any, Iterable, Sequence
 
@@ -104,7 +105,13 @@ class _Layout:
     sparse_turnover : bool
         是否使用只做多满仓条件下的精确稀疏换手率表示。
     active_aux : numpy.ndarray | None
-        总主动权重绝对值辅助变量列；约束被证明冗余或未配置时为 ``None``。
+        总主动权重辅助列；未配置/冗余时为 ``None``，稀疏表达允许空数组。
+    active_support : numpy.ndarray | None
+        稀疏总主动表达中有效区间跨越基准的资产位置。
+    active_negative : numpy.ndarray | None
+        稀疏总主动表达中确定低配的资产位置，其贡献直接进入总量行。
+    sparse_active : bool
+        是否使用精确的低配单边表达；允许卖空的问题暂保留完整表达。
     factor : numpy.ndarray | None
         QP 中的因子主动暴露变量列；无需显式因子变量时为 ``None``。
     """
@@ -116,6 +123,9 @@ class _Layout:
     turnover_new: np.ndarray | None
     sparse_turnover: bool
     active_aux: np.ndarray | None
+    active_support: np.ndarray | None
+    active_negative: np.ndarray | None
+    sparse_active: bool
     factor: np.ndarray | None
 
 
@@ -140,6 +150,11 @@ class _DomainBuilder:
         self.n_assets = len(self.data.assets)
         self.risk_model = self.data.risk_model
         self.optimizations: list[str] = []
+        # 先解析一次最终有效边界，布局分类与实际变量边界必须使用同一个结果。
+        try:
+            self.resolved_bounds = resolve_asset_bounds(problem)
+        except AssetBoundsError as exc:
+            raise CanonicalCompilationError(str(exc)) from exc
         n_factors = (
             len(self.risk_model.factor_names)
             if include_factor_variables and isinstance(self.risk_model, FactorRiskModel)
@@ -153,18 +168,15 @@ class _DomainBuilder:
         sparse_turnover = False
         if self.constraints_config.turnover is not None:
             initial = np.asarray(self.data.initial_weight, dtype=float)
-            sparse_turnover = bool(
-                self.simplify
-                and self.constraints_config.long_only
-                and np.all(initial >= 0.0)
-                and np.isclose(
-                    initial.sum(),
-                    self.constraints_config.budget,
-                    rtol=0.0,
-                    atol=1e-12,
-                )
+            redundant_turnover = self._l1_redundant(
+                initial, self.constraints_config.turnover.l1_limit
             )
-            if sparse_turnover:
+            sparse_turnover = (
+                not redundant_turnover and self._turnover_uses_sparse_form(initial)
+            )
+            if redundant_turnover:
+                self.optimizations.append("omit_redundant_turnover")
+            elif sparse_turnover:
                 turnover_support = np.flatnonzero(initial > 0.0).astype(np.int32)
                 turnover_new = np.flatnonzero(initial <= 0.0).astype(np.int32)
                 turnover_aux = np.arange(
@@ -178,11 +190,15 @@ class _DomainBuilder:
                 turnover_aux = np.arange(cursor, cursor + self.n_assets, dtype=np.int32)
                 cursor += self.n_assets
         active_aux = None
+        active_support = active_negative = None
+        sparse_active = False
         if self.constraints_config.total_active is not None:
             turnover = self.constraints_config.turnover
             benchmark = self.data.benchmark
             current_weight = self.data.initial_weight
-            redundant = bool(
+            redundant = self._l1_redundant(
+                np.asarray(benchmark), self.constraints_config.total_active
+            ) or bool(
                 self.simplify
                 and turnover is not None
                 and benchmark is not None
@@ -191,13 +207,34 @@ class _DomainBuilder:
                     np.abs(np.asarray(current_weight) - np.asarray(benchmark)).sum()
                 )
                 + turnover.l1_limit
-                <= self.constraints_config.total_active + 1e-12
+                <= self.constraints_config.total_active
             )
             if redundant:
                 self.optimizations.append("omit_redundant_total_active")
             else:
-                active_aux = np.arange(cursor, cursor + self.n_assets, dtype=np.int32)
-                cursor += self.n_assets
+                sparse_active = bool(
+                    self.simplify
+                    and self.constraints_config.long_only
+                    and np.all(self.resolved_bounds.lower >= 0.0)
+                )
+                if sparse_active:
+                    benchmark = np.asarray(benchmark, dtype=float)
+                    lower, upper = (
+                        self.resolved_bounds.lower,
+                        self.resolved_bounds.upper,
+                    )
+                    active_support = np.flatnonzero(
+                        (lower < benchmark) & (upper > benchmark)
+                    ).astype(np.int32)
+                    active_negative = np.flatnonzero(
+                        (lower < benchmark) & (upper <= benchmark)
+                    ).astype(np.int32)
+                    active_size = len(active_support)
+                    self.optimizations.append("exact_sparse_total_active")
+                else:
+                    active_size = self.n_assets
+                active_aux = np.arange(cursor, cursor + active_size, dtype=np.int32)
+                cursor += active_size
         factor = None
         if n_factors:
             factor = np.arange(cursor, cursor + n_factors, dtype=np.int32)
@@ -210,6 +247,9 @@ class _DomainBuilder:
             turnover_new=turnover_new,
             sparse_turnover=sparse_turnover,
             active_aux=active_aux,
+            active_support=active_support,
+            active_negative=active_negative,
+            sparse_active=sparse_active,
             factor=factor,
         )
         self.blocks: list[sp.csc_matrix] = []
@@ -223,6 +263,37 @@ class _DomainBuilder:
         self.variable_records: list[ConstraintRecord] = []
         self._configure_variables()
 
+    def _l1_redundant(self, center: np.ndarray, limit: float) -> bool:
+        r"""仅凭未放宽的资产边界/预算证明 $\|w-c\|_1\le L$ 恒成立。
+
+        非负目标权重满足上界 $B+\|c\|_1$；任意符号的有限盒约束给出
+        $\sum_i\max(|l_i-c_i|,|u_i-c_i|)$。不使用某个候选的松弛量或业务容差
+        判定冗余。诊断域关闭此优化，以免放宽前提后丢失原约束。
+        """
+        if not self.simplify:
+            return False
+        lower, upper = self.resolved_bounds.lower, self.resolved_bounds.upper
+        if np.any(lower > upper):
+            return False
+        if np.all(lower >= 0.0) and self.constraints_config.budget >= 0.0:
+            bound = math.fsum([self.constraints_config.budget, *np.abs(center)])
+            if bound <= limit:
+                return True
+        distances = np.maximum(np.abs(lower - center), np.abs(upper - center))
+        return bool(np.all(np.isfinite(distances)) and math.fsum(distances) <= limit)
+
+    def _turnover_uses_sparse_form(self, initial: np.ndarray) -> bool:
+        """仅在原持仓非负、目标权重非负且预算相同时采用稀疏买入表达。"""
+        return bool(
+            self.simplify
+            and self.constraints_config.long_only
+            and np.all(self.resolved_bounds.lower >= 0.0)
+            and np.all(initial >= 0.0)
+            and np.isclose(
+                initial.sum(), self.constraints_config.budget, rtol=0.0, atol=1e-12
+            )
+        )
+
     def _configure_variables(self) -> None:
         """解析逐资产最终边界，并登记每一个 canonical 变量列。
 
@@ -231,10 +302,7 @@ class _DomainBuilder:
         """
 
         assets = self.data.assets
-        try:
-            resolved = resolve_asset_bounds(self.problem)
-        except AssetBoundsError as exc:
-            raise CanonicalCompilationError(str(exc)) from exc
+        resolved = self.resolved_bounds
         lower = resolved.lower
         upper = resolved.upper
         self.variable_lower[self.layout.weight] = lower
@@ -288,11 +356,13 @@ class _DomainBuilder:
                 continue
             self.variable_lower[indices] = 0.0
             for local_index, variable_index in enumerate(indices):
-                asset_position = (
-                    int(self.layout.turnover_support[local_index])  # type: ignore[index]
-                    if group == "turnover_aux" and self.layout.sparse_turnover
-                    else local_index
-                )
+                asset_position = local_index
+                if group == "turnover_aux" and self.layout.sparse_turnover:
+                    assert self.layout.turnover_support is not None
+                    asset_position = int(self.layout.turnover_support[local_index])
+                elif group == "active_aux" and self.layout.sparse_active:
+                    assert self.layout.active_support is not None
+                    asset_position = int(self.layout.active_support[local_index])
                 self.variables.append(
                     VariableRecord(
                         int(variable_index),
@@ -514,12 +584,19 @@ class _DomainBuilder:
             self.add_block(
                 turnover_row,
                 -np.inf,
-                config.turnover.l1_limit,
+                config.turnover.l1_limit + (config.budget - float(initial.sum()))
+                if self.layout.sparse_turnover
+                else config.turnover.l1_limit,
                 group="turnover",
                 keys=("l1",),
+                metadata={"expression_offset": float(initial.sum()) - config.budget}
+                if self.layout.sparse_turnover
+                else None,
             )
 
-        if self.layout.active_aux is not None:
+        if self.layout.active_aux is not None and self.layout.sparse_active:
+            self._add_sparse_total_active()
+        elif self.layout.active_aux is not None:
             assert config.total_active is not None
             assert benchmark is not None
             aux = self.layout.active_aux
@@ -579,8 +656,12 @@ class _DomainBuilder:
                 and turnover is not None
                 and current_weight is not None
                 and float(np.asarray(current_weight)[member].sum())
-                - turnover.l1_limit / 2.0
-                >= config.benchmark_member_weight.value - 1e-12
+                - (
+                    turnover.l1_limit
+                    - (config.budget - float(np.asarray(current_weight).sum()))
+                )
+                / 2.0
+                >= config.benchmark_member_weight.value
             )
             if redundant:
                 self.optimizations.append("omit_redundant_benchmark_member_weight")
@@ -636,12 +717,71 @@ class _DomainBuilder:
                 else "alpha",
             )
 
+    def _add_sparse_total_active(self) -> None:
+        r"""直接生成低配单边表达，不建立完整 epigraph 再裁剪。
+
+        $\|w-b\|_1=B-\sum b+2\sum_i(b_i-w_i)_+$。区间确定高配的项为零，
+        确定低配的项直接使用 $b_i-w_i$，仅跨基准项引入 $s_i\ge b_i-w_i$、
+        $s_i\ge0$。即使没有辅助变量，也保留总量行及其常数，不误删不可行约束。
+        """
+        layout = self.layout
+        assert layout.active_aux is not None
+        assert layout.active_support is not None and layout.active_negative is not None
+        assert self.data.benchmark is not None
+        assert self.constraints_config.total_active is not None
+        benchmark = np.asarray(self.data.benchmark, dtype=float)
+        support, negative, aux = (
+            layout.active_support,
+            layout.active_negative,
+            layout.active_aux,
+        )
+        size = len(support)
+        if size:
+            rows = np.arange(size, dtype=np.int32)
+            self.add_block(
+                sp.csc_matrix(
+                    (
+                        -np.ones(2 * size),
+                        (np.r_[rows, rows], np.r_[layout.weight[support], aux]),
+                    ),
+                    shape=(size, layout.n_variables),
+                ),
+                -np.inf,
+                -benchmark[support],
+                group="total_active_epigraph_negative",
+                keys=(str(self.data.assets[i]) for i in support),
+                source="compiler",
+                relaxable=False,
+            )
+        offset = float(
+            self.constraints_config.budget
+            - benchmark.sum()
+            + 2.0 * benchmark[negative].sum()
+        )
+        self.add_block(
+            sp.csc_matrix(
+                (
+                    np.r_[np.full(size, 2.0), np.full(len(negative), -2.0)],
+                    (
+                        np.zeros(size + len(negative), dtype=np.int32),
+                        np.r_[aux, layout.weight[negative]],
+                    ),
+                ),
+                shape=(1, layout.n_variables),
+            ),
+            -np.inf,
+            self.constraints_config.total_active - offset,
+            group="total_active",
+            keys=("l1",),
+            metadata={"expression_offset": offset, "expression": "sparse_deficit_l1"},
+        )
+
     def _add_factor_bounds(self, expected_type: str, bounds: Any) -> None:
         r"""编译风格或行业主动暴露边界。
 
         QP 已包含 $f=E^{\mathsf T}(x-b)$ 变量，因此因子边界只是 $f_j$ 上的一个稀疏
         系数。LP/factor-QCQP 基础域尚不包含 $f$，所以使用 $E_j^{\mathsf T}x$ 与按基准
-        平移的边界。factor-QCQP 策略随后为参数化 QP 引入因子变量时，会替换这些稠密行。
+        平移的边界。factor-QCQP 的共享锥建模随后引入因子变量时，会替换这些稠密行。
         """
 
         if bounds is None:

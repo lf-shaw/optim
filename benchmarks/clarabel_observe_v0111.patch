@@ -1,0 +1,176 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index 2b3d359..d1821c8 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -24,6 +24,10 @@ lazy_static    = "1.4"
+ num-traits     = "0.2"
+ thiserror      = "1.0"
+ 
++[[example]]
++name = "observe"
++path = "examples/rust/observe.rs"
++
+ 
+ # -------------------------------
+ # features
+@@ -291,4 +295,3 @@ tempfile = "3"
+ 
+ 
+ 
+-
+diff --git a/src/lib.rs b/src/lib.rs
+index 7d6cb53..7b8d1bf 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -115,6 +115,11 @@ pub fn buildinfo() {
+ 
+ pub(crate) const _INFINITY_DEFAULT: f64 = 1e20;
+ 
++pub(crate) fn observe_enabled() -> bool {
++    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ENABLED.get_or_init(|| std::env::var_os("CLARABEL_OBSERVE").is_some())
++}
++
+ #[test]
+ fn test_buildinfo() {
+     buildinfo();
+diff --git a/src/solver/core/cones/compositecone.rs b/src/solver/core/cones/compositecone.rs
+index 164c5bc..b154bcd 100644
+--- a/src/solver/core/cones/compositecone.rs
++++ b/src/solver/core/cones/compositecone.rs
+@@ -318,6 +318,21 @@ where
+                 let (dzi, dsi) = (&dz[rng.clone()], &ds[rng.clone()]);
+                 let (zi, si) = (&z[rng.clone()], &s[rng.clone()]);
+                 let (nextαz, nextαs) = cone.step_length(dzi, dsi, zi, si, settings, α);
++                if crate::observe_enabled() && cone.is_symmetric() {
++                    // 仅对本实验的对称锥重新计算未被前面锥截断的上限；这些函数不修改锥状态。
++                    let (rawz, raws) = cone.step_length(dzi, dsi, zi, si, settings, T::one());
++                    let mut iz = None;
++                    let mut is = None;
++                    if matches!(cone, SupportedCone::NonnegativeCone(_)) {
++                        let mut cz = T::one();
++                        let mut cs = T::one();
++                        for i in 0..zi.len() {
++                            if dzi[i] < T::zero() && -zi[i]/dzi[i] < cz { cz = -zi[i]/dzi[i]; iz = Some(rng.start+i); }
++                            if dsi[i] < T::zero() && -si[i]/dsi[i] < cs { cs = -si[i]/dsi[i]; is = Some(rng.start+i); }
++                        }
++                    }
++                    eprintln!("OBS CONE {}", serde_json::json!({"kind":cone.as_tag().as_str(),"start":rng.start,"end":rng.end,"dual_cap":rawz.to_f64(),"primal_cap":raws.to_f64(),"dual_row":iz,"primal_row":is}));
++                }
+                 α = T::min(α, T::min(nextαz, nextαs));
+             }
+             α
+diff --git a/src/solver/core/kktsolvers/direct/quasidef/directldlkktsolver.rs b/src/solver/core/kktsolvers/direct/quasidef/directldlkktsolver.rs
+index bf44bc1..77e4636 100644
+--- a/src/solver/core/kktsolvers/direct/quasidef/directldlkktsolver.rs
++++ b/src/solver/core/kktsolvers/direct/quasidef/directldlkktsolver.rs
+@@ -280,6 +280,8 @@ where
+ 
+         //compute the initial error
+         let mut norme = _get_refine_error(e, b, &KKTsym, x);
++        let observed_initial_error = norme;
++        let mut observed_refinements = 0;
+ 
+         if !norme.is_finite() {
+             return false;
+@@ -294,6 +296,7 @@ where
+             let lastnorme = norme;
+ 
+             //make a refinement
++            observed_refinements += 1;
+             self.ldlsolver.solve(KKT, dx, e);
+ 
+             //prospective solution is x + dx.  Use dx space to
+@@ -317,6 +320,10 @@ where
+             std::mem::swap(x, dx);
+         }
+         //NB: "success" means only that we had a finite valued result
++        if crate::observe_enabled() {
++            let accepted_error = _get_refine_error(e, b, &KKTsym, x);
++            eprintln!("OBS REFINE {}", serde_json::json!({"before":observed_initial_error.to_f64(),"after":accepted_error.to_f64(),"rhs_norm":normb.to_f64(),"target":(abstol+reltol*normb).to_f64(),"steps":observed_refinements}));
++        }
+         true
+     }
+ }
+diff --git a/src/solver/core/kktsolvers/direct/quasidef/ldlsolvers/qdldl.rs b/src/solver/core/kktsolvers/direct/quasidef/ldlsolvers/qdldl.rs
+index ee91a17..b0cd85d 100644
+--- a/src/solver/core/kktsolvers/direct/quasidef/ldlsolvers/qdldl.rs
++++ b/src/solver/core/kktsolvers/direct/quasidef/ldlsolvers/qdldl.rs
+@@ -102,6 +102,9 @@ where
+         //KKT matrix through custom update/scale/offset methods,
+         //so we ignore the KKT matrix provided by the caller
+         self.factors.refactor().unwrap();
++        if crate::observe_enabled() {
++            eprintln!("OBS PIVOTS {}", self.factors.regularize_count());
++        }
+         self.factors.Dinv.is_finite()
+     }
+ }
+diff --git a/src/solver/core/solver.rs b/src/solver/core/solver.rs
+index 6af492c..adb2709 100644
+--- a/src/solver/core/solver.rs
++++ b/src/solver/core/solver.rs
+@@ -340,6 +340,9 @@ where
+             //increment counter here because we only count
+             //iterations that produce a KKT update
+             iter += 1;
++            if crate::observe_enabled() {
++                eprintln!("OBS ITER {}", serde_json::json!({"iter":iter,"mu":μ.to_f64(),"sigma_previous":σ.to_f64()}));
++            }
+ 
+             // Update the KKT system and the constant parts of its solution.
+             // Keep track of the success of each step that calls KKT
+@@ -550,6 +553,9 @@ mod internal {
+             scaling: ScalingStrategy,
+         ) -> T {
+             //step length to stay within the cones
++            if crate::observe_enabled() {
++                eprintln!("OBS STAGE {:?}", step_direction);
++            }
+             let mut α = self.variables.calc_step_length(
+                 &self.step_lhs,
+                 &mut self.cones,
+diff --git a/src/solver/implementations/default/variables.rs b/src/solver/implementations/default/variables.rs
+index 49dda74..b43ab0c 100644
+--- a/src/solver/implementations/default/variables.rs
++++ b/src/solver/implementations/default/variables.rs
+@@ -138,6 +138,9 @@ where
+         };
+ 
+         let α = [ατ, ακ, T::one()].minimum();
++        if crate::observe_enabled() {
++            eprintln!("OBS HOM {}", serde_json::json!({"tau_cap":ατ.to_f64(),"kappa_cap":ακ.to_f64(),"tau":self.τ.to_f64(),"kappa":self.κ.to_f64()}));
++        }
+         let (αz, αs) = cones.step_length(&step.z, &step.s, &self.z, &self.s, settings.core(), α);
+ 
+         // itself only allows for a single maximum value.
+@@ -150,6 +153,10 @@ where
+             α *= settings.core().max_step_fraction;
+         }
+ 
++        if crate::observe_enabled() {
++            eprintln!("OBS STEP {}", serde_json::json!({"alpha":α.to_f64()}));
++        }
++
+         α
+     }
+ 
+diff --git a/examples/rust/observe.rs b/examples/rust/observe.rs
+new file mode 100644
+index 0000000..bfaba85
+--- /dev/null
++++ b/examples/rust/observe.rs
+@@ -0,0 +1,13 @@
++use clarabel::solver::*;
++use std::fs::File;
++
++fn main() {
++    for path in std::env::args().skip(1) {
++        eprintln!("OBS CASE {}", path);
++        let mut file = File::open(&path).unwrap();
++        let mut solver = DefaultSolver::<f64>::load_from_file(&mut file, None).unwrap();
++        solver.solve();
++        let s = &solver.solution;
++        println!("{}",serde_json::json!({"case":path,"status":format!("{:?}",s.status),"iterations":s.iterations,"objective":s.obj_val,"x":s.x,"primal_residual":s.r_prim,"dual_residual":s.r_dual}));
++    }
++}

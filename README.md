@@ -302,7 +302,7 @@ constraints = PortfolioConstraints(
 | `budget=1.0` | $\mathbf 1^{\mathsf T}x=1$ |
 | `asset_weight` | 每只证券绝对目标权重上下限 |
 | `active_weight` | $|x_i-b_i|\le c$ |
-| `total_active` | $\lVert x-b\rVert_1\le L$ |
+| `total_active` | $\lVert x-b\rVert_1\le L$，有限正数；`None` 禁用 |
 | `turnover` | $\lVert x-x_0\rVert_1\le T$ |
 | `benchmark_member_weight` | 基准成员目标权重合计下限 |
 | `style`/`industry` | 相对基准的因子主动敞口 |
@@ -938,10 +938,17 @@ optimizer = PortfolioOptimizer(
 - tuda2 按完整区间、每种数据类型一次取足；
 - 每个日期在昂贵求解前完成严格预检；
 - 多期全区间预检完成后，逐日不重复完整静态校验；
-- 日循环和风险边界搜索内部不执行 pandas merge/groupby 或外部 I/O；
+- 日循环的求解路径不执行 pandas merge/groupby 或外部 I/O；
 - NumPy/CSC 数值结构进入求解路径后不转换回表格；
 - 多期默认保存稀疏权重，避免输出完整的 `date × universe` dense 历史；
 - 深度诊断只对选定问题手工执行。
+
+编译器会根据最终有效资产边界与固定预算消除已证明冗余的 L1 约束，而不是根据某次解上
+约束不活跃就删除它。只做多的总主动权重采用直接生成的紧凑布局：利用
+$\lVert w-b\rVert_1=B-\sum_i b_i+2\sum_i(b_i-w_i)_+$，只对有效区间跨过基准的资产
+分配辅助列；卖空暂保留完整表达。此过程不消除固定资产本身，诊断仍保留完整约束。
+换手率、总主动权重和基准覆盖率均从最终持仓重新验收，包括已经省略冗余行的约束。
+有关实现对照与测试口径见 [紧凑 L1 实施报告](docs/compact_l1_implementation_20260909.md)。
 
 开发机参考结果，不能替代目标生产机基准：
 
@@ -976,6 +983,10 @@ optimizer = PortfolioOptimizer(
 ---
 
 ## 21. 构建与发布
+
+发布 wheel 不包含 `_core` / `_impl` 的算法 docstring；源码仍保留审阅说明，公共 Python
+API 的参数、单位与使用文档不受影响。AI 知识库保留后端选择和诊断使用方法，不包含内部
+表达变换细节。README 会进入 wheel 元数据，因此 README 本身不是保密载体。
 
 项目采用公共 Python facade 和选择性 Cython 数值核心，只发布平台 wheel，不发布 sdist。
 

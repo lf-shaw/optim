@@ -548,7 +548,8 @@ class PortfolioConstraints:
     active_weight : SymmetricBound | None
         每只资产 $x_i-b_i$ 的边界；配置后必须提供基准。默认为 ``None``，即不施加该约束。
     total_active : float | None
-        $\lVert x-b\rVert_1$ 的上限；默认为 ``None``。
+        $\lVert x-b\rVert_1$ 的上限，配置时必须为有限正数；默认为 ``None``，表示不施加
+        该约束。使用小数权重单位，不随预算自动缩放。
     turnover : TurnoverLimit | None
         目标组合相对期初组合的换手率上限；默认为 ``None``。上限使用绝对权重单位，不随
         :attr:`budget` 自动缩放。
@@ -1137,7 +1138,8 @@ class SolverTuning:
         将 alpha 系数缩放到的目标最大绝对量级；只改善数值条件，不改变最优解。默认为
         ``0.2``。
     final_eps : float
-        最终候选 PIQP 子问题的绝对/相对数值容差；默认为 ``1e-8``。
+        原生求解的数值精度请求；默认为 ``1e-8``。后端可采用更严格的设置，最终接受与否
+        仍由 :attr:`feasibility_tolerance` 控制。
     piqp_max_iter : int
         每个 PIQP 子问题的最大原生迭代数；默认为 ``1000``。
     piqp_inequality_form : str
@@ -1145,7 +1147,7 @@ class SolverTuning:
     polish : bool
         预留的最终解精修开关，默认为 ``True``；当前 direct PIQP 路径尚未消费。
     feasibility_tolerance : float
-        独立验收 canonical 约束时允许的最大绝对违约；默认为 ``1e-5``。
+        最终候选约束验收允许的最大绝对违约；默认为 ``1e-5``。
     weight_zero_tolerance : float
         输出及多期状态中将权重视为数值零的绝对阈值；默认为 ``1e-5``。
     """

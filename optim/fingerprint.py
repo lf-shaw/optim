@@ -23,7 +23,7 @@ from .model.canonical import (
 from .portfolio_types import DataProvenance, PortfolioProblem, ProblemFingerprint
 
 
-COMPILER_VERSION = "portfolio-canonical-v3-alpha-centered"
+COMPILER_VERSION = "portfolio-canonical-v4-compact-l1"
 
 
 def _chunk(digest: Any, label: str, payload: bytes) -> None:

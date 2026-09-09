@@ -587,8 +587,8 @@ def validate_problem(problem: PortfolioProblem) -> ValidationReport:
     if constraints.total_active is not None:
         if benchmark is None:
             collector.error("constraints.total_active", "benchmark_required", "total active bound requires a benchmark")
-        if not np.isfinite(constraints.total_active) or constraints.total_active < 0.0:
-            collector.error("constraints.total_active", "invalid", "total active bound must be finite and non-negative")
+        if not np.isfinite(constraints.total_active) or constraints.total_active <= 0.0:
+            collector.error("constraints.total_active", "invalid", "total active bound must be finite and strictly positive; use None to disable")
     if constraints.turnover is not None and initial is None:
         collector.error("constraints.turnover", "initial_weight_required", "turnover requires initial weights")
     asset_trade_valid = _check_asset_trade_constraints(

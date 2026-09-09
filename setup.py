@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 
 from Cython.Build import cythonize
+from Cython.Compiler import Options as CythonOptions
 from setuptools import Extension, setup
 from setuptools.command.build_py import build_py as build_py_orig
 from setuptools.command.sdist import sdist as sdist_orig
@@ -93,6 +94,10 @@ extensions = [
 
 _CYTHON_BUILD_DIR = Path(tempfile.mkdtemp(prefix="optim-cython-"))
 atexit.register(shutil.rmtree, _CYTHON_BUILD_DIR, ignore_errors=True)
+
+# 只编译 core/impl；保留源码中的审阅说明，但不把内部算法 docstring 放入发布二进制。
+# 公共 facade 是普通 Python 文件，其参数/单位/使用方式文档不受影响。
+CythonOptions.docstrings = False
 
 
 setup(

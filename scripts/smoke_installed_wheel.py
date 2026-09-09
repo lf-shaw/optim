@@ -102,6 +102,16 @@ def main() -> None:
             raise RuntimeError(
                 f"impl module is not a binary extension: {module.__file__}"
             )
+    compiler_module = import_module("optim._impl.compiler")
+    if (
+        compiler_module.__doc__
+        or compiler_module._DomainBuilder._add_sparse_total_active.__doc__
+    ):
+        raise RuntimeError(
+            "compiled implementation exposes internal algorithm docstrings"
+        )
+    if not PortfolioConstraints.__doc__ or not PortfolioOptimizer.optimize.__doc__:
+        raise RuntimeError("public API documentation must remain available")
     package_files = resources.files("optim")
     for relative in (
         "LIBRARY.toml",

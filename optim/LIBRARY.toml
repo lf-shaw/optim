@@ -135,7 +135,7 @@ group = "objective"
 [[symbols]]
 name = "optim.PortfolioConstraints"
 signature = "PortfolioConstraints(long_only=True, budget=1.0, asset_weight=WeightBounds(), active_weight=None, total_active=None, turnover=None, benchmark_member_weight=None, style=None, industry=None, tracking_error=None, freeze_nontradable=True, asset_trade=None, extra_active={}, extra_absolute={})"
-summary = "LP、QP 和 Factor-QCQP 共享的不可变可行域配置"
+summary = "LP、QP 和 Factor-QCQP 共享的不可变可行域配置；total_active 配置时须为有限正数，None 禁用"
 group = "constraints"
 
 [[symbols]]
