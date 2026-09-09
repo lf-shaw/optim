@@ -123,45 +123,24 @@ class CoreSolverOptions:
     ----------
     backend : str
         auto 自动路由；显式值只使用指定后端，不回退。
-    licensed_fallback : str
-        商业回退后端标识；空字符串表示禁用。
-    free_fallback : str
-        免费回退后端标识；空字符串表示禁用。
     lp_prescreen : bool
         是否对 factor-QCQP 启用严格 LP 预筛选。
-    rebuild_after_update_failure : bool
-        PIQP 更新生命周期失败后是否允许冷重建一次。
     alpha_target : float
         目标系数数值缩放的目标最大绝对量级。
-    theta_initial, theta_growth, theta_max : float
-        factor-QCQP 一维前沿搜索的初值、扩张倍数和硬上限。
-    max_outer_iters : int
-        factor-QCQP 前沿搜索最大外层迭代数。
-    intermediate_eps, final_eps : float
-        中间和最终参数 QP 的数值容差。
+    final_eps : float
+        原生求解器的绝对和相对数值容差。
     piqp_max_iter : int
         每个 PIQP 子问题的最大迭代数。
     piqp_inequality_form : str
         PIQP 线性不等式展开方式。
     feasibility_tolerance : float
         核心独立复算 canonical 可行性使用的绝对容差。
-    risk_margin : float
-        factor-QCQP 风险预算保留的年化小数安全边际。
     """
 
-    licensed_fallback: str
-    free_fallback: str
     lp_prescreen: bool
-    rebuild_after_update_failure: bool
     alpha_target: float
-    theta_initial: float
-    theta_growth: float
-    theta_max: float
-    max_outer_iters: int
-    intermediate_eps: float
     final_eps: float
     piqp_max_iter: int
     piqp_inequality_form: str
     feasibility_tolerance: float
-    risk_margin: float
     backend: str = "auto"

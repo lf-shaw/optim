@@ -20,9 +20,12 @@ dual_bounds 模块，诊断层构造辅助问题并解释证据。无法验证�
 拒绝缺失版本、v1 或未知版本。`contributors_complete` 标记贡献完整性；摘要保留
 `contributor_summaries`，缺少贡献时 contributors_frame 和 full 导出会报错，不伪造空证据。
 
-`PortfolioOptimizer(SolverPolicy(backend="auto"))` 使用默认路由。
+`PortfolioOptimizer(SolverPolicy(backend="auto"))` 默认 LP→HiGHS、QP→direct PIQP、Factor-QCQP→Clarabel。
+QP 失败可转 Clarabel；自动路径不调用 MOSEK。当前不支持 theta 搜索和跨期参数传播。
+复现包格式升级为 v2；v1 包需在原版本提取业务输入，再用新版重建问题与策略并导出 v2。
+原版本直接重新导出仍是 v1，不能完成迁移；不静默套用已删除的策略参数。
 backend 可指定 mosek、clarabel（LP/QP/Factor-QCQP），highs（仅 LP）或 piqp（仅 QP）。
-显式指定不预筛、不回退；缺 license 返回失败结果，模型类型不支持则 prepare 报错。
+显式指定不预筛、不回退；MOSEK 缺安装或有效授权抛 RuntimeError，模型类型不支持则 prepare 报错。
 所有候选仍独立验收；diagnose(..., backend="auto") 默认自动路由辅助问题，也可显式
 指定 mosek/clarabel，不继承主后端、不回退。未提供的数值对偶下界返回 None；piqp 不支持
 Phase-I LP，highs 不支持最小风险 QP。非默认旧 lp/qp 预留字段会报错。
@@ -158,8 +161,6 @@ $$
 
 - `mode="chained"`；
 - `on_failure="stop"`；
-- `theta_seed="auto"`，链式传播上一成功日 theta，独立模式使用固定初值；
-- 不自动放宽换手率；
 - `output_weights="sparse"`，仅保留绝对值不小于默认 `1e-5` 的权重。
 
 ---
@@ -265,6 +266,6 @@ deep 诊断给出一个加权 Phase-I 松弛方案、最小换手率的数值对
 单期结果的 `problem` 可直接派生，无需重新取数；求解策略保存在 `solver_policy`。
 
 `export_repro(path, result=..., report=None, problem=None, policy=None, overwrite=False)`
-导出单期输入、实际策略、theta 初值、结果快照和可选完整诊断。序列传入 stopped_problem。
+导出单期输入、实际策略、结果快照和可选完整诊断。序列传入 stopped_problem。
 `load_repro(path, max_uncompressed_bytes=1073741824)` 返回 `ReproCase`，不运行求解或诊断。
 `case.solve()` 独立复跑；`case.problem` 可继续派生。完整例子见 recipes 中的同进程对照。

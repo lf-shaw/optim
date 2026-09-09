@@ -33,13 +33,13 @@ group = "diagnostics"
 [[symbols]]
 name = "optim.export_repro"
 signature = "export_repro(path, *, result, report=None, problem=None, policy=None, overwrite=False) -> Path"
-summary = "导出单期模型、实际策略和已有证据，不自动诊断；含敏感数据，不包含license或历史workspace"
+summary = "导出 v2 单期复现包：模型、实际策略和已有证据，不自动诊断；含敏感数据，不包含license或历史workspace"
 group = "diagnostics"
 
 [[symbols]]
 name = "optim.load_repro"
 signature = "load_repro(path, *, max_uncompressed_bytes=1073741824) -> ReproCase"
-summary = "白名单无pickle加载，校验完整性；case.solve独立复跑，case.problem派生对照；不会自动取数求解"
+summary = "仅加载 v2 复现包，拒绝 v1/未知版本；白名单无pickle加载并校验完整性；case.solve独立复跑，case.problem派生对照；不会自动取数求解"
 group = "diagnostics"
 
 [[symbols]]
@@ -50,13 +50,13 @@ group = "optimizer"
 
 [[symbols]]
 name = "optim.PortfolioOptimizer.solve"
-signature = "solve(problem: PortfolioProblem, *, theta_seed: float | None = None) -> OptimizationResult"
+signature = "solve(problem: PortfolioProblem) -> OptimizationResult"
 summary = "校验并求解一个完整单期问题；不可行和数值失败返回结构化结果，不自动运行深度诊断"
 group = "optimizer"
 
 [[symbols]]
 name = "optim.PortfolioOptimizer.optimize"
-signature = "optimize(*, data=None, data_source=None, date=None, universe=None, benchmark=None, initial_weight=None, objective, constraints=None, alpha_spec=None, asset_trade=None, blacklist=None, frozen=None, not_buyable=None, not_sellable=None, weight_overrides=None, benchmark_policy=None, tradable_universe=None, extra_attribute_columns=(), theta_seed=None) -> OptimizationResult"
+signature = "optimize(*, data=None, data_source=None, date=None, universe=None, benchmark=None, initial_weight=None, objective, constraints=None, alpha_spec=None, asset_trade=None, blacklist=None, frozen=None, not_buyable=None, not_sellable=None, weight_overrides=None, benchmark_policy=None, tradable_universe=None, extra_attribute_columns=()) -> OptimizationResult"
 summary = "单期便利入口；benchmark 支持指数代码或 sid 索引 Series，旧 benchmark_sid 已移除；支持手动 PortfolioData 或 Tuda2DataSource 和单期交易名单"
 group = "optimizer"
 
@@ -165,13 +165,13 @@ group = "constraints"
 [[symbols]]
 name = "optim.SolverPolicy"
 signature = "SolverPolicy(...)"
-summary = "backend 默认 auto；mosek/clarabel 支持 LP/QP/Factor-QCQP，highs 仅 LP、piqp 仅 QP；显式选择不预筛不回退，辅助诊断仍自动路由"
+summary = "auto 默认 HiGHS LP / direct PIQP QP / Clarabel Factor-QCQP；mosek 仅显式调用，缺有效授权抛 RuntimeError；mosek/clarabel 支持 LP/QP/Factor-QCQP，highs 仅 LP、piqp 仅 QP；显式选择不预筛不回退，辅助诊断仍自动路由"
 group = "policy"
 
 [[symbols]]
 name = "optim.SequencePolicy"
-signature = "SequencePolicy(mode='chained', on_failure='stop', theta_seed='auto', turnover_recovery=None, output_weights='sparse', ...)"
-summary = "多期持仓漂移、失败处理、theta 传播、换手恢复和权重输出策略"
+signature = "SequencePolicy(mode='chained', on_failure='stop', turnover_recovery=None, output_weights='sparse', ...)"
+summary = "多期持仓漂移、失败处理、换手恢复和权重输出策略"
 group = "policy"
 
 [[symbols]]

@@ -153,7 +153,6 @@ sequence = PortfolioOptimizer().optimize_range(
     initial_weight=first_day_weight,
     sequence_policy=SequencePolicy(
         mode="chained",
-        theta_seed="auto",
         on_failure="stop",
         output_weights="sparse",
     ),
@@ -186,7 +185,6 @@ sequence = optimizer.optimize_range(
     },
     sequence_policy=SequencePolicy(
         mode="independent",
-        theta_seed="fixed",
         output_weights="none",
     ),
 )
@@ -358,7 +356,7 @@ if not baseline.status.has_solution:
 ```
 
 先比较原始 `case.original_result` 与 baseline 的状态、指标及路由，再做单项实验。
-原结果、原报告是 JSON 审计快照，不是运行时对象。包保存实际 theta 初值和该期真实
+原结果、原报告是 JSON 审计快照，不是运行时对象。包保存该期真实
 期初持仓，但不保存跨期 workspace 内存，不承诺重现依赖进程历史的故障。
 不同 license、版本和硬件可能改变实际路由和数值解。复现包含 alpha、持仓、风险数据，
 只向可信接收方传输；不含 license、环境变量和源码。默认加载上限为解压后 1 GiB，

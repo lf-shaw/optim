@@ -1,6 +1,6 @@
 """确定性的 close-to-close 多期组合状态机。
 
-序列层刻意位于求解器后端之外：它推进真实组合状态、选择 theta 初值、执行显式授权的失败
+序列层刻意位于求解器后端之外：它推进真实组合状态、执行显式授权的失败
 策略，并在每个日期调用同一个无状态单期优化器。收益率只用于将上期目标组合估值到下一个
 收盘；当前契约不存在 next-open 执行模式。
 """
@@ -39,8 +39,6 @@ class SequenceStep:
         当前日期最终的标准化结果，可能来自原问题或授权恢复问题。
     pretrade_weight : pandas.Series | None
         用于当前换手率计算的实际交易前权重；按输出策略可能为空。
-    theta_seed : float | None
-        当前 factor-QCQP 使用的 theta 初始值。
     recovered_turnover : bool
         是否通过显式放宽当前日期换手率得到可用解。
     recovery_report : InfeasibilityReport | None
@@ -58,7 +56,6 @@ class SequenceStep:
     date: pd.Timestamp
     result: OptimizationResult
     pretrade_weight: pd.Series | None
-    theta_seed: float | None
     recovered_turnover: bool = False
     recovery_report: InfeasibilityReport | None = None
     configured_turnover_limit: float | None = None
@@ -152,7 +149,7 @@ def solve_sequence(
         以当前调仓日为键的上一调仓日至当日 close-to-close 复合收益。Series 按上一期持仓
         资产标签对齐；ndarray 必须按上一期持仓顺序。
     sequence_policy : SequencePolicy | None
-        持仓推进、失败、恢复、theta 和输出策略。
+        持仓推进、失败、恢复和输出策略。
 
     Returns
     -------
@@ -219,7 +216,6 @@ def solve_sequence(
 
     steps: list[SequenceStep] = []
     actual_weight: pd.Series | None = None
-    previous_theta: float | None = None
     stopped_date: pd.Timestamp | None = None
     stopped_problem: PortfolioProblem | None = None
 
@@ -260,12 +256,9 @@ def solve_sequence(
                 )
             )
 
-        theta_seed = _theta_seed(
-            policy, previous_theta, optimizer.policy.tuning.theta_initial
-        )
         # 全部模板已经在进入循环前完成静态校验。链式模式此处只替换由受控漂移产生的
         # initial_weight，因此直接编译并求解，避免每个日期重复扫描风险矩阵和约束数组。
-        result = optimizer._solve_prevalidated(problem, theta_seed=theta_seed)
+        result = optimizer._solve_prevalidated(problem)
         recovered = False
         recovery_report = None
         configured_turnover = None
@@ -289,17 +282,14 @@ def solve_sequence(
                 optimizer,
                 problem,
                 result,
-                theta_seed,
                 policy,
             )
 
         if result.status.has_solution:
             solved_weight = result.require_weights()
             actual_weight = solved_weight.copy()
-            previous_theta = _result_theta(result)
         elif policy.mode == "chained" and policy.on_failure == "hold":
             actual_weight = pretrade.copy() if pretrade is not None else actual_weight
-            previous_theta = None
         else:
             stopped_date = date
             if policy.on_failure == "stop":
@@ -313,7 +303,6 @@ def solve_sequence(
                 date=date,
                 result=stored_result,
                 pretrade_weight=_store_weight(pretrade, policy),
-                theta_seed=theta_seed,
                 recovered_turnover=recovered,
                 recovery_report=recovery_report,
                 configured_turnover_limit=configured_turnover,
@@ -339,7 +328,6 @@ def _recover_turnover(
     optimizer: Any,
     problem: PortfolioProblem,
     original_result: OptimizationResult,
-    theta_seed: float | None,
     sequence_policy: SequencePolicy,
 ) -> tuple[
     OptimizationResult,
@@ -380,7 +368,7 @@ def _recover_turnover(
                 turnover=TurnoverLimit(limit, convention=convention),
             ),
         )
-        candidate_result = optimizer.solve(candidate, theta_seed=theta_seed)
+        candidate_result = optimizer.solve(candidate)
         attempts.extend(candidate_result.route)
         return candidate_result
 
@@ -517,29 +505,6 @@ def _mark_to_market(
             )
         aligned /= retained
     return aligned.rename("weight")
-
-
-def _theta_seed(
-    policy: SequencePolicy,
-    previous: float | None,
-    fixed: float,
-) -> float | None:
-    """在不跨日携带 workspace 的前提下解析固定/上一期 theta 策略。"""
-
-    mode = policy.theta_seed
-    if mode == "auto":
-        mode = "previous" if policy.mode == "chained" else "fixed"
-    if mode == "fixed":
-        return fixed
-    return fixed if previous is None or not np.isfinite(previous) else previous
-
-
-def _result_theta(result: OptimizationResult) -> float | None:
-    for attempt in reversed(result.route):
-        value = attempt.metadata.get("theta")
-        if value is not None and np.isfinite(value):
-            return float(value)
-    return None
 
 
 def _apply_output_policy(

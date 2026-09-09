@@ -515,7 +515,6 @@ def _solve_core_lp(
     core = CoreSolver(core_options_from_policy(policy))
     result = core.solve(
         core.prepare(model),
-        objective_tolerance=0.0,
         collect_dual_bound=True,
     ).final
     evidence = dict(result.diagnostics)

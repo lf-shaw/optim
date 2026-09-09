@@ -166,33 +166,23 @@ class PortfolioOptimizer:
     def _solve_prevalidated(
         self,
         problem: PortfolioProblem,
-        *,
-        theta_seed: float | None = None,
     ) -> OptimizationResult:
         """求解已由序列状态机预检的问题，避免逐日重复静态校验。"""
 
         return self.solve_prepared(
             self._prepare_prevalidated(problem),
-            theta_seed=theta_seed,
         )
 
     def solve(
         self,
         problem: PortfolioProblem,
-        *,
-        theta_seed: float | None = None,
     ) -> OptimizationResult:
         """准备并求解一个不可变单期问题。
-
-        ``theta_seed`` 只影响专用 factor-QCQP 策略的初始搜索点，不改变数学约束，也不会成为
-        优化器的持久状态。
 
         Parameters
         ----------
         problem : PortfolioProblem
             完整单期问题。
-        theta_seed : float | None
-            可选的正数 theta 初始值；仅 factor-QCQP 使用。
 
         Returns
         -------
@@ -203,9 +193,11 @@ class PortfolioOptimizer:
         ------
         PortfolioValidationError
             输入、单位、shape 或静态模型校验失败。
+        RuntimeError
+            显式选择 MOSEK，但未安装或缺少有效授权；不回退到其他后端。
         """
 
-        return self.solve_prepared(self.prepare(problem), theta_seed=theta_seed)
+        return self.solve_prepared(self.prepare(problem))
 
     def optimize(
         self,
@@ -228,7 +220,6 @@ class PortfolioOptimizer:
         benchmark_policy: "BenchmarkCoveragePolicy | None" = None,
         tradable_universe: str | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
-        theta_seed: float | None = None,
     ) -> OptimizationResult:
         """从已对齐数据或数据源求解一次实盘单期请求。
 
@@ -267,8 +258,6 @@ class PortfolioOptimizer:
             数据源可选的可交易域名称。
         extra_attribute_columns : tuple[str, ...]
             从数据源样本空间物化的额外逐资产数值列。
-        theta_seed : float | None
-            factor-QCQP 的可选 theta 初始值。
 
         Returns
         -------
@@ -372,7 +361,6 @@ class PortfolioOptimizer:
             config = replace(config, asset_trade=asset_trade)
         return self.solve(
             PortfolioProblem(data=data, objective=objective, constraints=config),
-            theta_seed=theta_seed,
         )
 
     def optimize_range(
@@ -418,7 +406,7 @@ class PortfolioOptimizer:
         holding_period_returns : Any | None
             相邻调仓日之间的 close-to-close 复合收益；链式模式由序列引擎按标签读取。
         sequence_policy : SequencePolicy | None
-            持仓漂移、失败、theta 传播和输出策略；``None`` 使用默认策略。
+            持仓漂移、失败和输出策略；``None`` 使用默认策略。
         independent_initial_weights : Any | None
             独立模式下按日期提供的期初权重。
         benchmark_policy : BenchmarkCoveragePolicy | None
@@ -507,7 +495,7 @@ class PortfolioOptimizer:
     ):
         """求解按日期排序的 close-to-close 组合序列。
 
-        序列引擎采用延迟导入，使单期导入路径保持轻量。持仓漂移、失败后是否继续和 theta 传播
+        序列引擎采用延迟导入，使单期导入路径保持轻量。持仓漂移、失败后是否继续和失败恢复
         都属于序列策略，而不是后端行为。
 
         Parameters
@@ -626,8 +614,6 @@ class PortfolioOptimizer:
     def solve_prepared(
         self,
         prepared: PreparedPortfolioProblem,
-        *,
-        theta_seed: float | None = None,
     ) -> OptimizationResult:
         """求解一个已经完成前置校验和数值准备的问题。
 
@@ -638,8 +624,6 @@ class PortfolioOptimizer:
         ----------
         prepared : PreparedPortfolioProblem
             ``prepare`` 返回的校验、审计元信息和内部准备状态。
-        theta_seed : float | None
-            factor-QCQP 的可选 theta 初始值。
 
         Returns
         -------
@@ -663,5 +647,4 @@ class PortfolioOptimizer:
             prepared.problem,
             prepared._solver_handle,
             prepare_s=prepared.prepare_s,
-            theta_seed=theta_seed,
         )

@@ -738,7 +738,7 @@ class OptimalityCertificate:
     Attributes
     ----------
     kind : str
-        证书构造方式，例如 LP 原生界或 factor-frontier 界。
+        证书构造方式，例如 LP 原生界或锥原生对偶界。
     proof_status : ProofStatus
         该界属于已验证、数值估计还是不可用。
     primal_value : float
@@ -754,7 +754,7 @@ class OptimalityCertificate:
     objective_scale : float | None
         一个归一化单位对应的原始目标数量。
     components : Mapping[str, float]
-        只读的路由专用分解，例如 frontier gap 和数值 gap；默认为空映射。
+        只读的路由专用分解，例如原生数值 gap；默认为空映射。
     """
 
     kind: str
@@ -1082,8 +1082,6 @@ class OptimizationResult:
         此字段保留引用而非深复制；输入数组不应原地修改，诊断前会重新校验 fingerprint。
     solver_policy : SolverPolicy | None
         本次实际求解策略引用，用于导出可重放问题；手工构造的结果可为空。
-    theta_seed : float | None
-        本次实际传入的前沿搜索初值；None 表示采用策略默认值。
     """
 
     status: SolveStatus
@@ -1102,7 +1100,6 @@ class OptimizationResult:
     native_infeasibility: tuple[NativeInfeasibilityEvidence, ...] = ()
     problem: PortfolioProblem | None = field(default=None, repr=False, compare=False)
     solver_policy: SolverPolicy | None = field(default=None, repr=False, compare=False)
-    theta_seed: float | None = None
 
     def require_weights(self) -> pd.Series:
         """返回可用目标权重，否则抛出异常。
@@ -1139,16 +1136,6 @@ class SolverTuning:
     alpha_target : float
         将 alpha 系数缩放到的目标最大绝对量级；只改善数值条件，不改变最优解。默认为
         ``0.2``。
-    theta_initial : float
-        factor-QCQP frontier 搜索的初始参数 QP 权重；默认为 ``16384.0``。
-    theta_growth : float
-        未建立风险边界 bracket 时 theta 的乘法扩张因子；默认为 ``4.0``。
-    theta_max : float
-        theta 搜索允许达到的硬上限；默认为 ``1e12``。
-    max_outer_iters : int
-        frontier 扩张、插值和精修合计允许的最大外层迭代数；默认为 ``30``。
-    intermediate_eps : float
-        中间 PIQP 子问题的绝对/相对数值容差；默认为 ``1e-5``。
     final_eps : float
         最终候选 PIQP 子问题的绝对/相对数值容差；默认为 ``1e-8``。
     piqp_max_iter : int
@@ -1159,24 +1146,16 @@ class SolverTuning:
         预留的最终解精修开关，默认为 ``True``；当前 direct PIQP 路径尚未消费。
     feasibility_tolerance : float
         独立验收 canonical 约束时允许的最大绝对违约；默认为 ``1e-5``。
-    risk_margin : float
-        factor-QCQP 候选相对风险预算预留的年化小数安全边际；默认为 ``1e-7``。
     weight_zero_tolerance : float
         输出及多期状态中将权重视为数值零的绝对阈值；默认为 ``1e-5``。
     """
 
     alpha_target: float = 0.2
-    theta_initial: float = 16384.0
-    theta_growth: float = 4.0
-    theta_max: float = 1e12
-    max_outer_iters: int = 30
-    intermediate_eps: float = 1e-5
     final_eps: float = 1e-8
     piqp_max_iter: int = 1000
     piqp_inequality_form: str = "auto"
     polish: bool = True
     feasibility_tolerance: float = 1e-5
-    risk_margin: float = 1e-7
     weight_zero_tolerance: float = 1e-5
 
 
@@ -1184,7 +1163,7 @@ class SolverTuning:
 class SolverPolicy:
     """无状态优化器的路由、回退和验收策略。
 
-    auto 使用 HiGHS、PIQP 和 factor frontier 主路径；显式 backend 只运行指定后端，
+    auto 使用 HiGHS、direct PIQP 和 Clarabel 主路径；显式 backend 只运行指定后端，
     不预筛、不回退。即使 ``validate_solution=False``，当前实现仍始终执行独立验收。
     ``repeat_failed_cold_solve`` 同样是保留字段，当前刻意不使用。
 
@@ -1192,43 +1171,28 @@ class SolverPolicy:
     ----------
     backend : str
         默认 auto；mosek、clarabel 支持 LP/QP/Factor-QCQP；highs 仅支持 LP，piqp
-        仅支持 QP。不支持的模型在准备阶段报错；缺 license 或数值失败按标准结果返回。
+        仅支持 QP。不支持的模型在准备阶段报错；MOSEK 缺安装或有效授权时抛 RuntimeError，普通数值失败按结果返回。
         diagnose 默认独立自动路由，可通过其 backend 参数覆盖，不继承此开关。
     lp : str
         自动路线预留字段，仅允许默认 highs；切换后端使用 backend，非默认值报错。
     qp : str
         自动路线预留字段，仅允许默认 piqp；切换后端使用 backend，非默认值报错。
-    factor_qcqp_strategy : str
-        因子风险预算问题的专用算法；默认为 ``"frontier"``。
-    factor_qcqp_subproblem_backend : str
-        frontier 参数 QP 的后端；默认为 ``"piqp"``。
-    licensed_fallback : str
-        可用 license 时优先使用的锥回退后端；默认为 ``"mosek"``。
-    free_fallback : str
-        无商业 license 时使用的锥回退后端；默认为 ``"clarabel_qdldl"``。
     lp_prescreen : bool
         是否显式开启 factor-QCQP 的严格 LP 最优解预筛；默认关闭。
     validate_solution : bool
         预留的独立验收开关；默认为 ``True``，且当前独立验收仍强制执行。
-    rebuild_after_update_failure : bool
-        PIQP workspace 更新失败后是否销毁并重建一次；默认为 ``True``。
     repeat_failed_cold_solve : bool
         预留的冷启动重复求解开关；默认为 ``False``，当前未使用。
     objective_tolerance : ObjectiveTolerance
-        factor frontier 证书允许的业务目标损失；默认构造 :class:`ObjectiveTolerance`。
+        权重清理允许的业务目标损失；默认构造 :class:`ObjectiveTolerance`。
     tuning : SolverTuning
-        数值容差、theta 搜索和权重清理参数；默认构造 :class:`SolverTuning`。
+        数值容差和权重清理参数；默认构造 :class:`SolverTuning`。
     """
 
     lp: str = "highs"
     qp: str = "piqp"
-    factor_qcqp_strategy: str = "frontier"
-    factor_qcqp_subproblem_backend: str = "piqp"
-    licensed_fallback: str = "mosek"
-    free_fallback: str = "clarabel_qdldl"
     lp_prescreen: bool = False
     validate_solution: bool = True
-    rebuild_after_update_failure: bool = True
     repeat_failed_cold_solve: bool = False
     objective_tolerance: ObjectiveTolerance = field(default_factory=ObjectiveTolerance)
     tuning: SolverTuning = field(default_factory=SolverTuning)
@@ -1241,8 +1205,6 @@ class SolverPolicy:
         for name, expected in (
             ("lp", "highs"),
             ("qp", "piqp"),
-            ("factor_qcqp_strategy", "frontier"),
-            ("factor_qcqp_subproblem_backend", "piqp"),
         ):
             if getattr(self, name) != expected:
                 raise ValueError(
@@ -1297,9 +1259,6 @@ class SequencePolicy:
     on_failure : str
         ``"stop"`` 在首个失败日停止；``"hold"`` 保持实际持仓并继续后续日期。默认为
         ``"stop"``。
-    theta_seed : str
-        ``"fixed"`` 总用固定初值，``"previous"`` 使用上一成功日 theta，``"auto"`` 在
-        链式模式使用上一日、独立模式使用固定值；默认为 ``"auto"``。
     turnover_recovery : TurnoverRecoveryPolicy | None
         显式换手率恢复授权；默认为 ``None``，表示绝不自动放宽。
     holding_missing_mass_tolerance : float
@@ -1314,7 +1273,6 @@ class SequencePolicy:
     mode: str = "chained"
     holding_update: str = "mark_to_market"
     on_failure: str = "stop"
-    theta_seed: str = "auto"
     turnover_recovery: TurnoverRecoveryPolicy | None = None
     holding_missing_mass_tolerance: float = 0.0
     renormalize_missing_holdings: bool = False
@@ -1329,8 +1287,6 @@ class SequencePolicy:
             )
         if self.on_failure not in {"stop", "hold"}:
             raise ValueError("on_failure must be 'stop' or 'hold'")
-        if self.theta_seed not in {"auto", "fixed", "previous"}:
-            raise ValueError("theta_seed must be 'auto', 'fixed', or 'previous'")
         if (
             not np.isfinite(self.holding_missing_mass_tolerance)
             or self.holding_missing_mass_tolerance < 0.0

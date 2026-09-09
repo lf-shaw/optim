@@ -24,10 +24,9 @@ from .canonical import (
     QuadraticProgram,
 )
 from .contracts import CoreFailureReason, CoreSolveStatus, CoreSolverOptions
-from .factor_qcqp import solve_factor_qcqp
 
 
-CORE_ABI_VERSION = 1
+CORE_ABI_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -88,8 +87,6 @@ class CoreSolver:
         self,
         handle: CoreProblemHandle,
         *,
-        theta_seed: float | None = None,
-        objective_tolerance: float,
         collect_dual_bound: bool = False,
     ) -> CoreSolveResult:
         """完成求解及验收；仅显式诊断通过 ``collect_dual_bound`` 请求 LP 数值下界。"""
@@ -122,6 +119,13 @@ class CoreSolver:
                     objective_offset=model.objective_offset,
                 )
             primary = selected.solve(numerical_model, backend_options)
+            if (
+                self.options.backend == "mosek"
+                and primary.reason == CoreFailureReason.BACKEND_UNAVAILABLE
+            ):
+                raise RuntimeError(
+                    f"MOSEK 不可用，请检查安装和有效授权：{primary.message}"
+                )
             primary, accepted, max_violation = self._audit(model, primary)
             return CoreSolveResult(primary, (primary,), accepted, max_violation)
         if isinstance(model, LinearProgram):
@@ -129,40 +133,67 @@ class CoreSolver:
         elif isinstance(model, QuadraticProgram):
             primary = PIQPBackend().solve(model, backend_options)
         elif isinstance(model, FactorQCQP):
-            primary = solve_factor_qcqp(
-                model,
-                self.options,
-                theta_seed=theta_seed,
-                objective_tolerance=objective_tolerance,
-            )
+            primary = self._solve_conic(model, backend_options)
         else:
             raise TypeError(f"unsupported canonical model: {type(model).__name__}")
 
         primary, accepted, max_violation = self._audit(model, primary)
         attempts = [primary]
-        if not accepted and isinstance(model, (QuadraticProgram, FactorQCQP)):
-            licensed_terminal = False
-            if self.options.licensed_fallback.lower() == "mosek":
-                fallback = MosekBackend().solve(model, backend_options)
-                fallback, accepted, max_violation = self._audit(model, fallback)
-                attempts.append(fallback)
-                licensed_terminal = fallback.status in {
-                    CoreSolveStatus.INFEASIBLE,
-                    CoreSolveStatus.UNBOUNDED,
-                }
-            if (
-                not accepted
-                and not licensed_terminal
-                and self.options.free_fallback.lower() in {"clarabel", "clarabel_qdldl"}
-            ):
-                fallback = ClarabelBackend().solve(model, backend_options)
-                fallback, accepted, max_violation = self._audit(model, fallback)
-                attempts.append(fallback)
+        # 自动路径只使用免费后端。QP 失败时保留独立 Clarabel 复核；
+        # 风险预算已由 Clarabel 直接求解，不重复调用，也不尝试商业后端。
+        if not accepted and isinstance(model, QuadraticProgram):
+            fallback = ClarabelBackend().solve(model, backend_options)
+            fallback, accepted, max_violation = self._audit(model, fallback)
+            attempts.append(fallback)
         return CoreSolveResult(
             final=attempts[-1],
             attempts=tuple(attempts),
             accepted=accepted,
             max_violation=max_violation,
+        )
+
+    def _solve_conic(self, model: FactorQCQP, options: BackendOptions) -> BackendResult:
+        """默认直接求锥问题；仅显式开启时先检查外层 LP 的最优点。"""
+        if not self.options.lp_prescreen:
+            return ClarabelBackend().solve(model, options)
+        c = np.zeros(model.domain.n_variables)
+        c[model.domain.weight_indices] = -model.alpha
+        screen = HighsBackend().solve(
+            LinearProgram(CanonicalKind.LP, model.domain, c), options
+        )
+        _, accepted, _ = self._audit(model, screen)
+        te = None
+        if screen.primal is not None:
+            variance, _, _ = model.risk_operator.components(screen.primal)
+            te = float(np.sqrt(max(0.0, variance)))
+        certified = bool(
+            accepted
+            and screen.status == CoreSolveStatus.OPTIMAL
+            and te is not None
+            and te <= model.risk_limit
+        )
+        metadata = dict(
+            lp_prescreen_enabled=True,
+            lp_prescreen_certified=certified,
+            lp_prescreen_status=screen.status.value,
+            lp_prescreen_native_status=screen.native_status,
+            lp_prescreen_tracking_error=te,
+        )
+        if certified:
+            return replace(
+                screen,
+                backend="factor_qcqp_lp_prescreen_highs",
+                objective_value=float(
+                    model.alpha @ screen.primal[model.domain.weight_indices]
+                ),
+                diagnostics={**screen.diagnostics, **metadata},
+            )
+        conic = ClarabelBackend().solve(model, options)
+        return replace(
+            conic,
+            setup_s=screen.setup_s + conic.setup_s,
+            solve_s=screen.solve_s + conic.solve_s,
+            diagnostics={**conic.diagnostics, **metadata},
         )
 
     def _backend_options(self) -> BackendOptions:

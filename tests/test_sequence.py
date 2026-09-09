@@ -51,8 +51,10 @@ def test_chained_sequence_marks_previous_target_to_market(sample_lp_problem):
     )
     assert result.stopped_date is None
     assert len(result.steps) == 2
-    first_target = result.steps[0].result.require_weights().reindex(
-        sample_lp_problem.data.assets, fill_value=0.0
+    first_target = (
+        result.steps[0]
+        .result.require_weights()
+        .reindex(sample_lp_problem.data.assets, fill_value=0.0)
     )
     assert np.isclose(result.steps[0].result.require_weights().sum(), 1.0)
     expected = first_target * (1.0 + returns)
@@ -61,10 +63,13 @@ def test_chained_sequence_marks_previous_target_to_market(sample_lp_problem):
         sample_lp_problem.data.assets, fill_value=0.0
     )
     assert np.allclose(observed.to_numpy(), expected.to_numpy())
-    assert np.allclose(
-        observed.to_numpy(),
-        second.data.initial_weight,
-    ) is False
+    assert (
+        np.allclose(
+            observed.to_numpy(),
+            second.data.initial_weight,
+        )
+        is False
+    )
 
 
 def test_sequence_prechecks_all_required_return_dates_before_solving(
@@ -110,7 +115,7 @@ def test_sequence_does_not_repeat_static_validation_inside_daily_loop(
     assert validated_dates == [sample_lp_problem.data.date, second.data.date]
 
 
-def test_factor_sequence_propagates_previous_theta(sample_lp_problem):
+def test_factor_sequence_uses_clarabel_without_search_state(sample_lp_problem):
     first = replace(
         sample_lp_problem,
         constraints=replace(
@@ -123,11 +128,10 @@ def test_factor_sequence_propagates_previous_theta(sample_lp_problem):
     result = PortfolioOptimizer().solve_sequence(
         [first, second],
         holding_period_returns={second.data.date: zero_returns},
-        sequence_policy=SequencePolicy(theta_seed="auto", output_weights="none"),
+        sequence_policy=SequencePolicy(output_weights="none"),
     )
-    first_theta = result.steps[0].result.route[-1].metadata["theta"]
-    assert result.steps[0].theta_seed == PortfolioOptimizer().policy.tuning.theta_initial
-    assert result.steps[1].theta_seed == first_theta
+    assert all(step.result.backend == "clarabel_qdldl" for step in result.steps)
+    assert all(not hasattr(step, "theta_seed") for step in result.steps)
     assert result.steps[1].result.status.has_solution
     assert all(step.result.weights is None for step in result.steps)
     assert all(step.pretrade_weight is None for step in result.steps)
@@ -195,7 +199,7 @@ def test_factor_turnover_recovery_searches_full_convex_feasibility_boundary(
         def validate(self, candidate):
             return real_optimizer.validate(candidate)
 
-        def solve(self, candidate, *, theta_seed=None):
+        def solve(self, candidate):
             limit = candidate.constraints.turnover.l1_limit
             self.limits.append(limit)
             fingerprint = compile_problem(candidate).fingerprint
@@ -209,8 +213,8 @@ def test_factor_turnover_recovery_searches_full_convex_feasibility_boundary(
                 )
             return replace(solved_template, fingerprint=fingerprint)
 
-        def _solve_prevalidated(self, candidate, *, theta_seed=None):
-            return self.solve(candidate, theta_seed=theta_seed)
+        def _solve_prevalidated(self, candidate):
+            return self.solve(candidate)
 
         def diagnose(self, candidate, *, prior_result, level):
             return InfeasibilityReport(

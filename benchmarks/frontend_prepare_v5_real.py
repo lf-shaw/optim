@@ -383,8 +383,6 @@ def main() -> None:
                         (violation.amount for violation in result.violations),
                         default=0.0,
                     ),
-                    "theta": route_metadata.get("theta"),
-                    "theta_seed": route_metadata.get("theta_seed"),
                     "qp_solves": route_metadata.get("qp_solves"),
                     "outer_points": route_metadata.get("outer_points"),
                     "workspace_rebuilds": route_metadata.get("workspace_rebuilds"),

@@ -21,7 +21,7 @@ from optim import (
 from optim import DataProvenance
 from optim._core.backends.piqp import resolve_piqp_inequality_form
 from optim._core.backends.base import BackendResult
-from optim._core.factor_qcqp import _extend_as_parametric_qp
+from optim._core.factor_conic import extend_factor_domain
 from optim.portfolio_types import FailureReason
 from optim._core.canonical import FactorQCQP, LinearProgram, QuadraticProgram
 from optim.model import compile_problem
@@ -158,18 +158,16 @@ def test_factor_variables_remove_duplicate_dense_exposure_bound_rows(
         )
     ).model
     assert isinstance(qcqp_model, FactorQCQP)
-    extended, _, _, _ = _extend_as_parametric_qp(qcqp_model)
+    extended = extend_factor_domain(qcqp_model)
     extended_bounds = tuple(
         record
-        for record in extended.domain.constraints
+        for record in extended.constraints
         if record.group in {"style", "industry"}
     )
-    assert all(
-        extended.domain.A.getrow(record.index).nnz == 1 for record in extended_bounds
-    )
+    assert all(extended.A.getrow(record.index).nnz == 1 for record in extended_bounds)
     factor_definition_keys = {
         record.key
-        for record in extended.domain.constraints
+        for record in extended.constraints
         if record.group == "factor_definition"
     }
     assert factor_definition_keys == set(sample_data.risk_model.factor_names)
@@ -190,7 +188,7 @@ def test_supported_piqp_uses_compact_inequalities_by_default():
     assert resolve_piqp_inequality_form("one_sided") == "one_sided"
 
 
-def test_factor_qcqp_frontier_enforces_annualized_te_budget(
+def test_factor_qcqp_clarabel_enforces_annualized_te_budget(
     sample_data, sample_constraints
 ):
     constraints = replace(
@@ -200,10 +198,10 @@ def test_factor_qcqp_frontier_enforces_annualized_te_budget(
     problem = PortfolioProblem(sample_data, MaximizeAlpha(), constraints)
     result = PortfolioOptimizer().solve(problem)
     assert result.status is SolveStatus.OPTIMAL
-    assert result.route[0].backend == "factor_qcqp_piqp"
+    assert result.route[0].backend == "clarabel_qdldl"
     assert result.metrics.tracking_error <= 0.03 + 1e-8
     assert result.certificate is not None
-    assert result.certificate.kind == "factor_qcqp_lagrangian"
+    assert result.certificate.kind == "conic_primal_dual"
     assert result.certificate.absolute_gap <= 1e-4
     # LP prescreen is deliberately disabled by default.
     assert len(result.route) == 1
@@ -223,16 +221,13 @@ def test_factor_qcqp_lp_prescreen_is_opt_in_and_returns_a_global_certificate(
     assert result.status is SolveStatus.OPTIMAL
     assert result.backend == "factor_qcqp_lp_prescreen_highs"
     assert result.route[0].metadata["lp_prescreen_certified"] is True
-    assert result.route[0].metadata["qp_solves"] == 0
     assert result.certificate is not None
     assert result.certificate.kind == "lp_global_optimum_feasible_for_factor_qcqp"
     assert result.certificate.proof_status is ProofStatus.VERIFIED
     assert result.certificate.absolute_gap == 0.0
 
 
-def test_risky_lp_prescreen_continues_to_factor_frontier(
-    sample_data, sample_constraints
-):
+def test_risky_lp_prescreen_continues_to_clarabel(sample_data, sample_constraints):
     constraints = replace(
         sample_constraints,
         tracking_error=TrackingErrorLimit(annualized=0.03),
@@ -242,118 +237,10 @@ def test_risky_lp_prescreen_continues_to_factor_frontier(
         PortfolioProblem(sample_data, MaximizeAlpha(), constraints)
     )
     assert result.status is SolveStatus.OPTIMAL
-    assert result.backend == "factor_qcqp_piqp"
+    assert result.backend == "clarabel_qdldl"
     assert result.route[0].metadata["lp_prescreen_enabled"] is True
     assert result.route[0].metadata["lp_prescreen_certified"] is False
     assert result.route[0].metadata["lp_prescreen_tracking_error"] > 0.03
-    assert result.route[0].metadata["qp_solves"] > 0
-
-
-@pytest.mark.parametrize(
-    "mosek_reason",
-    [
-        FailureReason.BACKEND_UNAVAILABLE,
-        FailureReason.NUMERICAL_FAILURE,
-    ],
-)
-def test_factor_qcqp_falls_back_to_clarabel_when_mosek_cannot_solve(
-    sample_data,
-    sample_constraints,
-    monkeypatch,
-    mosek_reason,
-):
-    failed_primary = BackendResult(
-        backend="factor_qcqp_piqp",
-        status=SolveStatus.NUMERICAL_ERROR,
-        primal=None,
-        objective_value=None,
-        native_status="forced_primary_failure",
-        reason=FailureReason.NUMERICAL_FAILURE,
-    )
-    failed_mosek = BackendResult(
-        backend="mosek",
-        status=SolveStatus.SOLVER_ERROR,
-        primal=None,
-        objective_value=None,
-        native_status="forced_mosek_failure",
-        reason=mosek_reason,
-    )
-    monkeypatch.setattr(
-        "optim._core.engine.solve_factor_qcqp", lambda *args, **kwargs: failed_primary
-    )
-    monkeypatch.setattr(
-        "optim._core.engine.MosekBackend.solve", lambda *args, **kwargs: failed_mosek
-    )
-    constraints = replace(
-        sample_constraints,
-        tracking_error=TrackingErrorLimit(annualized=0.03),
-    )
-    result = PortfolioOptimizer().solve(
-        PortfolioProblem(sample_data, MaximizeAlpha(), constraints)
-    )
-    assert result.status is SolveStatus.OPTIMAL
-    assert [attempt.backend for attempt in result.route] == [
-        "factor_qcqp_piqp",
-        "mosek",
-        "clarabel_qdldl",
-    ]
-    assert result.backend == "clarabel_qdldl"
-    assert result.metrics.tracking_error <= 0.03 + 1e-8
-    assert result.certificate.kind == "conic_primal_dual"
-
-
-def test_mosek_infeasible_is_terminal_and_skips_clarabel(
-    sample_data, sample_constraints, monkeypatch
-):
-    failed_primary = BackendResult(
-        backend="factor_qcqp_piqp",
-        status=SolveStatus.NUMERICAL_ERROR,
-        primal=None,
-        objective_value=None,
-        native_status="forced_primary_failure",
-        reason=FailureReason.NUMERICAL_FAILURE,
-    )
-    infeasible_mosek = BackendResult(
-        backend="mosek",
-        status=SolveStatus.INFEASIBLE,
-        primal=None,
-        objective_value=None,
-        native_status="ProblemStatus.PrimalInfeasible",
-        reason=FailureReason.INFEASIBLE_REPORTED,
-    )
-
-    def unexpected_clarabel(*args, **kwargs):
-        raise AssertionError(
-            "Clarabel must not run after definitive MOSEK infeasibility"
-        )
-
-    monkeypatch.setattr(
-        "optim._core.engine.solve_factor_qcqp",
-        lambda *args, **kwargs: failed_primary,
-    )
-    monkeypatch.setattr(
-        "optim._core.engine.MosekBackend.solve",
-        lambda *args, **kwargs: infeasible_mosek,
-    )
-    monkeypatch.setattr("optim._core.engine.ClarabelBackend.solve", unexpected_clarabel)
-    constraints = replace(
-        sample_constraints,
-        tracking_error=TrackingErrorLimit(annualized=0.03),
-    )
-
-    result = PortfolioOptimizer().solve(
-        PortfolioProblem(sample_data, MaximizeAlpha(), constraints)
-    )
-
-    assert result.status is SolveStatus.INFEASIBLE
-    assert result.backend is None
-    assert [attempt.backend for attempt in result.route] == [
-        "factor_qcqp_piqp",
-        "mosek",
-    ]
-    assert result.route[-1].reason is FailureReason.INFEASIBLE_REPORTED
-    assert "不可行" in result.message
-    assert "ProblemStatus.PrimalInfeasible" in result.message
 
 
 def test_invalid_primary_solution_is_rejected_before_fallback(

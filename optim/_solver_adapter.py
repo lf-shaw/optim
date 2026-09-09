@@ -110,23 +110,14 @@ class SolverAdapter:
         handle: object,
         *,
         prepare_s: float,
-        theta_seed: float | None = None,
     ) -> OptimizationResult:
         """路由、求解并验收同一个不透明 canonical 问题。"""
 
         total_started = time.perf_counter()
         resolved = self._require_handle(handle)
         compiled = resolved.compiled
-        alpha_spec = problem.data.alpha_spec
-        objective_tolerance = (
-            0.0
-            if alpha_spec is None
-            else self.policy.objective_tolerance.raw_limit(alpha_spec)
-        )
         core_result = self._core.solve(
             resolved.core_handle,
-            theta_seed=theta_seed,
-            objective_tolerance=objective_tolerance,
         )
         attempts = list(core_result.attempts)
         final, evaluation = self._audit_backend_result(
@@ -140,7 +131,6 @@ class SolverAdapter:
             evaluation,
             total_started,
             prepare_s,
-            theta_seed=theta_seed,
         )
 
     def diagnose(
@@ -283,25 +273,19 @@ class SolverAdapter:
                 cleanup_loss = max(0.0, metrics.objective - raw_metrics.objective)
         diagnostics["weight_cleanup_objective_loss"] = cleanup_loss
         certificate_sensitive = bool(
-            "total_gap" in diagnostics
-            or diagnostics.get("lp_prescreen_certified") is True
+            diagnostics.get("lp_prescreen_certified") is True
             or isinstance(compiled.model, LinearProgram)
         )
         if certificate_sensitive:
-            prior_gap = float(diagnostics.get("total_gap", 0.0))
-            certified_gap = prior_gap + cleanup_loss
+            certified_gap = cleanup_loss
             diagnostics["certified_objective_gap"] = certified_gap
-            if "total_gap" in diagnostics:
-                diagnostics["total_gap"] = certified_gap
             diagnostics["cleanup_objective_loss"] = cleanup_loss
             alpha_spec = problem.data.alpha_spec
             if alpha_spec is not None:
                 accepted_gap = self.policy.objective_tolerance.raw_limit(alpha_spec)
                 if certified_gap > accepted_gap:
                     diagnostics["weight_cleanup_applied"] = False
-                    diagnostics["certified_objective_gap"] = prior_gap
-                    if "total_gap" in diagnostics:
-                        diagnostics["total_gap"] = prior_gap
+                    diagnostics["certified_objective_gap"] = 0.0
                     return (
                         replace(backend_result, diagnostics=diagnostics),
                         raw_metrics,
@@ -323,8 +307,6 @@ class SolverAdapter:
         evaluation: _Evaluation,
         total_started: float,
         prepare_s: float,
-        *,
-        theta_seed: float | None = None,
     ) -> OptimizationResult:
         """把私有后端证据规范化为稳定的公共结果契约。"""
 
@@ -433,7 +415,6 @@ class SolverAdapter:
             ),
             problem=problem,
             solver_policy=self.policy,
-            theta_seed=theta_seed,
         )
 
 
@@ -581,25 +562,6 @@ def _certificate(
                 "max_constraint_violation": max_violation,
             },
         )
-    if isinstance(model, FactorQCQP) and "total_gap" in diagnostics:
-        alpha_spec = problem.data.alpha_spec
-        assert alpha_spec is not None
-        gap = float(diagnostics["total_gap"])
-        return OptimalityCertificate(
-            kind="factor_qcqp_lagrangian",
-            proof_status=ProofStatus.NUMERICAL_ESTIMATE,
-            primal_value=objective_value,
-            dual_bound=objective_value + gap,
-            absolute_gap=gap,
-            normalized_gap=gap / alpha_spec.scale,
-            objective_units=alpha_spec.units,
-            objective_scale=alpha_spec.scale,
-            components={
-                "frontier_slack_gap": float(diagnostics["frontier_gap"]),
-                "qp_subproblem_gap": float(diagnostics["subproblem_gap"]),
-                "max_constraint_violation": max_violation,
-            },
-        )
     if isinstance(model, FactorQCQP):
         alpha_spec = problem.data.alpha_spec
         assert alpha_spec is not None
@@ -663,21 +625,12 @@ def core_options_from_policy(policy: SolverPolicy) -> CoreSolverOptions:
     tuning = policy.tuning
     return CoreSolverOptions(
         backend=policy.backend,
-        licensed_fallback=policy.licensed_fallback,
-        free_fallback=policy.free_fallback,
         lp_prescreen=policy.lp_prescreen,
-        rebuild_after_update_failure=policy.rebuild_after_update_failure,
         alpha_target=tuning.alpha_target,
-        theta_initial=tuning.theta_initial,
-        theta_growth=tuning.theta_growth,
-        theta_max=tuning.theta_max,
-        max_outer_iters=tuning.max_outer_iters,
-        intermediate_eps=tuning.intermediate_eps,
         final_eps=tuning.final_eps,
         piqp_max_iter=tuning.piqp_max_iter,
         piqp_inequality_form=tuning.piqp_inequality_form,
         feasibility_tolerance=tuning.feasibility_tolerance,
-        risk_margin=tuning.risk_margin,
     )
 
 

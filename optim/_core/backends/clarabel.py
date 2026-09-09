@@ -241,11 +241,10 @@ def _build_conic_data(
             domain=domain,
         )
 
-    # 复用为前沿 QP 编译的精确因子变量等式。
-    from ..factor_qcqp import _extend_as_parametric_qp
+    # 共享精确因子变量等式，避免重复稠密暴露行。
+    from ..factor_conic import extend_factor_domain
 
-    extended_qp, _, _, _ = _extend_as_parametric_qp(model)
-    domain = extended_qp.domain
+    domain = extend_factor_domain(model)
     n_variables = domain.n_variables
     centered_alpha = np.asarray(model.alpha, dtype=float) - float(np.mean(model.alpha))
     objective_scale = _scale_target(centered_alpha, options.objective_scale_target)

@@ -26,7 +26,7 @@ REQUIRED_CORE_MODULES = {
     "contracts",
     "dual_bounds",
     "engine",
-    "factor_qcqp",
+    "factor_conic",
     "backends/base",
     "backends/clarabel",
     "backends/highs",

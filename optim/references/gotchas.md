@@ -115,9 +115,9 @@ close-to-close 收益复合并归一化，然后再计算 turnover。当前不�
 
 ## 13. 不要从公共调用代码手工选择具体后端
 
-公共 API 只描述目标和约束。后端、必要回退和 Factor-QCQP 搜索属于内部行为；通过
-`result.backend` 和 `result.route` 审计实际路线。MOSEK 可用时优先用于回退；不可用或失败时
-才使用 Clarabel。
+公共 API 只描述目标和约束。默认 LP 使用 HiGHS，QP 使用 direct PIQP，Factor-QCQP 使用 Clarabel；通过
+`result.backend` 和 `result.route` 审计实际路线。只有显式 `backend="mosek"` 才调用 MOSEK，
+缺安装或有效授权抛 RuntimeError。QP 失败可由 Clarabel 复核；不再使用参数搜索。
 
 ---
 
@@ -176,8 +176,8 @@ DataYes 在 2019-12-03 调整过行业分类。跨越该日期批量读取时，
   摘要丢弃的贡献无法恢复，检查 contributors_complete；不能把摘要重新导出为 full。
   报告加载不能重建原问题，求解复现仍需 load_repro。
 
-- 手动 backend 不回退；指定 mosek 缺 license 不会改用 Clarabel。piqp 不接受
-  Factor-QCQP，使用 auto 才会运行 PIQP 参数 QP 前沿搜索。
+- 手动 backend 不回退；指定 mosek 缺 license 会抛 RuntimeError，不会改用 Clarabel。piqp 不接受
+  Factor-QCQP，该类问题使用 auto 或 clarabel 直接求锥问题。
 - 松弛 amount 是幅度而非新边界；lower 用减法。优先读取 relaxed_bound 和 description。
 
 - `with_constraints` 不修改原问题、不复制大数组；嵌套约束整体替换，不是递归合并。

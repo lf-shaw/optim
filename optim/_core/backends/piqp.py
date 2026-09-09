@@ -1,7 +1,6 @@
 """单次 canonical 二次规划的 direct sparse PIQP 适配器。
 
-该适配器每次建立新 workspace 并执行一次求解；独立 factor-QCQP 策略负责同日多 theta 的
-update 生命周期。两条路径共享本模块定义的 compact 双边不等式转换。目标缩放用同一正数
+该适配器每次建立新 workspace 并执行一次求解，使用 compact 双边不等式转换。目标缩放用同一正数
 同时乘 ``P`` 和 ``q``，只改变数值条件，不改变数学最优解。
 """
 

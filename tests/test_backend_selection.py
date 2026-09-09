@@ -86,6 +86,89 @@ def test_selected_mosek_failure_never_falls_back(monkeypatch, sample_lp_problem)
     assert result.route[0].backend == "mosek"
 
 
+@pytest.mark.parametrize("kind", ["lp", "qp", "qcqp"])
+def test_auto_never_calls_mosek(monkeypatch, sample_lp_problem, kind):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("auto 不得调用 MOSEK")
+
+    monkeypatch.setattr(engine.MosekBackend, "solve", forbidden)
+    p = sample_lp_problem
+    if kind == "qp":
+        p = p.with_objective(RiskAdjustedAlpha())
+    elif kind == "qcqp":
+        p = p.with_constraints(tracking_error=TrackingErrorLimit(0.03))
+    r = PortfolioOptimizer().solve(p)
+    assert r.status.has_solution
+    assert r.backend == {"lp": "highs", "qp": "piqp", "qcqp": "clarabel_qdldl"}[kind]
+
+
+@pytest.mark.parametrize("kind", ["lp", "qp", "qcqp"])
+def test_missing_license_raises_native_error(
+    tmp_path, monkeypatch, sample_lp_problem, kind
+):
+    pytest.importorskip("mosek")
+    import subprocess
+    import sys
+    from optim import export_repro
+
+    p = sample_lp_problem
+    if kind == "qp":
+        p = p.with_objective(RiskAdjustedAlpha())
+    elif kind == "qcqp":
+        p = p.with_constraints(tracking_error=TrackingErrorLimit(0.03))
+    path = export_repro(tmp_path / "input.zip", result=PortfolioOptimizer().solve(p))
+    # Fusion 会在进程内缓存已签出的授权；隔离进程才能真实检验首次缺授权。
+    code = """
+import sys
+from pathlib import Path
+from optim import load_repro, PortfolioOptimizer, SolverPolicy
+from optim._core.backends import mosek as adapter
+adapter._default_license_path = lambda: Path(sys.argv[1]).parent / "missing.lic"
+try:
+    PortfolioOptimizer(SolverPolicy(backend="mosek")).solve(load_repro(sys.argv[1]).problem)
+except RuntimeError as exc:
+    assert "MOSEK 不可用" in str(exc), str(exc)
+else:
+    raise AssertionError("缺授权必须抛异常")
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", code, str(path)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert completed.returncode == 0, completed.stderr
+
+
+def test_expired_license_native_code_and_wrapped_error():
+    mosek = pytest.importorskip("mosek")
+    from optim._core.backends.mosek import _exception_reason
+
+    expired = mosek.Error(
+        mosek.rescode.err_license_expired, "arbitrary localized message"
+    )
+    wrapped = RuntimeError("wrapper without license text")
+    wrapped.__cause__ = expired
+    assert _exception_reason(wrapped) is CoreFailureReason.BACKEND_UNAVAILABLE
+    assert (
+        _exception_reason(RuntimeError("license text alone"))
+        is CoreFailureReason.NUMERICAL_FAILURE
+    )
+
+
+def test_removed_search_options_are_rejected(sample_lp_problem):
+    from optim import SolverTuning, SequencePolicy
+
+    with pytest.raises(TypeError):
+        SolverTuning(theta_initial=1.0)
+    with pytest.raises(TypeError):
+        SequencePolicy(theta_seed="auto")
+    with pytest.raises(TypeError):
+        SolverPolicy(factor_qcqp_strategy="frontier")
+    with pytest.raises(TypeError):
+        PortfolioOptimizer().solve(sample_lp_problem, theta_seed=1.0)
+
+
 def test_diagnose_auxiliary_models_ignore_pinned_backend(sample_lp_problem):
     from optim import TurnoverLimit
     import numpy as np

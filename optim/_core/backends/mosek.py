@@ -212,13 +212,12 @@ class MosekBackend:
             from mosek import fusion
         except Exception as exc:
             return _unavailable(exc)
-        from ..factor_qcqp import _extend_as_parametric_qp
+        from ..factor_conic import extend_factor_domain
 
         setup_started = time.perf_counter()
         fusion_model = None
         try:
-            extended, _, _, _ = _extend_as_parametric_qp(model)
-            domain = extended.domain
+            domain = extend_factor_domain(model)
             license_path = _default_license_path()
             if license_path is not None:
                 fusion.Model.putlicensepath(str(license_path))
@@ -529,9 +528,21 @@ def _fusion_int(model: Any, name: str) -> int | None:
 
 
 def _exception_reason(exc: Exception) -> FailureReason:
-    message = str(exc).lower()
-    if "license" in message:
-        return FailureReason.BACKEND_UNAVAILABLE
+    # Fusion 可能包装原生 Error；沿异常链读取错误码，不解析英文日志。
+    import mosek
+
+    license_codes = {
+        getattr(mosek.rescode, name)
+        for name in dir(mosek.rescode)
+        if name.startswith("err_") and ("license" in name or "flexlm" in name)
+    }
+    seen = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if getattr(current, "errno", None) in license_codes:
+            return FailureReason.BACKEND_UNAVAILABLE
+        current = current.__cause__ or current.__context__
     return FailureReason.NUMERICAL_FAILURE
 
 

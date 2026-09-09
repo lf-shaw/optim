@@ -25,7 +25,7 @@
 - Linux x86-64；
 - NumPy、SciPy、pandas；
 - HiGHS、PIQP、Clarabel；
-- MOSEK Python 包。MOSEK license 是可选的，没有 license 时仍可使用免费回退路径。
+- MOSEK Python 包。MOSEK license 是可选的；默认路径只使用免费后端，显式选择 MOSEK 才会检查授权。
 
 安装内部平台发布的 wheel：
 
@@ -488,7 +488,6 @@ sequence = PortfolioOptimizer().optimize_range(
     initial_weight=first_day_weight,
     sequence_policy=SequencePolicy(
         mode="chained",
-        theta_seed="auto",
         on_failure="stop",
         output_weights="sparse",
     ),
@@ -551,13 +550,10 @@ $$
 mode                 chained
 holding_update       mark_to_market
 on_failure           stop
-theta_seed           auto
 turnover_recovery    None
 output_weights       sparse
 ```
 
-链式 `theta_seed="auto"` 会使用上一成功日期的 theta；独立模式则使用固定初值。只传播一个
-标量初值，不传播求解器 workspace。
 
 ---
 
@@ -582,7 +578,6 @@ sequence = optimizer.optimize_range(
     },
     sequence_policy=SequencePolicy(
         mode="independent",
-        theta_seed="fixed",
         output_weights="none",
     ),
 )
@@ -833,7 +828,7 @@ ISO 格式、数组使用列表，非有限数值表示为字符串 `NaN` / `Inf
 `phase_one_turnover_l1` 实际换手率和 `certificate_availability` 证据可用性。正常优化仍使用
 原有加速简化。Phase-I 是线性松弛方案，不承诺满足风险预算，也不保证非线性风险冲突的最小修复。
 
-前沿搜索的参数 QP 状态保留在求解路线中，不作为原 Factor-QCQP 的原生证书；最终 MOSEK /
+Factor-QCQP 直接使用锥求解器，原生证书来自实际运行的 MOSEK /
 Clarabel 回退求解完整问题时，才可产生完整问题的锥证据。各后端的能力无需完全一致。
 
 冻结、黑名单等指令依照既定优先级可能覆盖常规主动权重边界。诊断针对最终有效模型，
@@ -874,14 +869,17 @@ sequence_policy = SequencePolicy(
 
 ## 18. 求解行为与默认策略
 
-当前已经验证的主路径：
+当前主路径（不再包含 theta 搜索）：
+
+旧的 `theta_seed`、theta 数值调参、前沿策略和商业回退配置已移除，不接受旧参数。
+`export_repro` / `load_repro` 使用 v2 复现包格式；旧 v1 包不再直接加载，需在原环境迁移。
 
 | 问题 | 默认数值路径 |
 |---|---|
 | LP | HiGHS |
 | 凸 QP | direct PIQP |
-| Factor-QCQP | PIQP 参数 QP 前沿搜索 |
-| QP/QCQP 回退 | MOSEK license 可用时优先，否则 Clarabel |
+| Factor-QCQP / SOCP 风险预算 | Clarabel（QDLDL） |
+| QP 失败复核 | Clarabel；不自动调用 MOSEK |
 
 调用方通常不应根据问题类型手工选择后端；通过 `result.backend` 和 `result.route` 审计实际路线。
 
@@ -895,8 +893,8 @@ comparison = mosek.solve(problem)
 ```
 
 `mosek`、`clarabel` 支持 LP、QP 和 Factor-QCQP；`highs` 仅支持 LP，`piqp` 仅支持 QP。
-显式指定时不执行 LP 预筛、不自动回退；缺 license 或数值失败按标准结果反馈，不会悄悄
-换后端。不支持的模型在 prepare 阶段报错，独立结果验收仍执行。默认 `auto` 保留上述路线。
+显式指定时不执行 LP 预筛、不自动回退；MOSEK 缺安装、无授权或授权过期时抛出 `RuntimeError`。
+普通不可行或数值失败仍返回状态，不会悄悄换后端。不支持的模型在 prepare 阶段报错，独立结果验收仍执行。默认 `auto` 保留上述路线。
 `lp`、`qp` 等旧预留选择字段仅允许原默认值，非默认值会报错，应使用 `backend` 选择。
 `diagnose()` 的辅助 LP/QP 默认自动路由，因为它们可能与原问题类型不同。
 需要交叉验证时使用 `optimizer.diagnose(result, backend="mosek")` 或 `backend="clarabel"`，
@@ -944,7 +942,7 @@ optimizer = PortfolioOptimizer(
 |---|---:|
 | LP / HiGHS | 约 0.098 s/日 |
 | 风险惩罚 QP / PIQP | 约 0.095 s/日 |
-| 2% Factor-QCQP / PIQP frontier | 约 0.258 s/日 |
+| 历史 2% Factor-QCQP / 已移除的 PIQP 搜索 | 约 0.258 s/日（非当前路线） |
 
 5200 资产 × 47 因子的合成 Factor-QCQP，当前前置 `prepare()` 开发机中位数约 0.041 秒。
 生产判断应使用相同数据、依赖版本和硬件上的 p50/p95/P99，并分别统计数据 I/O、准备、后端

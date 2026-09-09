@@ -168,8 +168,6 @@ class ReproCase:
         原始业务问题快照，包含该期真实初始持仓。
     policy : SolverPolicy
         原求解策略；可用于构建新的 PortfolioOptimizer。
-    theta_seed : float | None
-        原请求的前沿搜索初值。
     original_result : Mapping[str, Any]
         原结果的 JSON 审计快照，不是 OptimizationResult 实例。
     original_report : Mapping[str, Any] | None
@@ -182,23 +180,20 @@ class ReproCase:
 
     problem: pt.PortfolioProblem
     policy: pt.SolverPolicy
-    theta_seed: float | None
     original_result: Mapping[str, Any]
     original_report: Mapping[str, Any] | None
     environment: Mapping[str, str]
     version_differences: Mapping[str, tuple[str, str]]
 
     def solve(self) -> pt.OptimizationResult:
-        """用保存的策略与 theta 初值单次求解，返回正常 OptimizationResult。
+        """用保存的策略单次求解，返回正常 OptimizationResult。
 
         不自动运行诊断或修改约束；正常校验和回退仍然生效。
         版本、license 和硬件差异可能导致实际后端、耗时及数值解不同。
         """
         from .api import PortfolioOptimizer
 
-        return PortfolioOptimizer(self.policy).solve(
-            self.problem, theta_seed=self.theta_seed
-        )
+        return PortfolioOptimizer(self.policy).solve(self.problem)
 
 
 def export_repro(
@@ -217,7 +212,7 @@ def export_repro(
     path : str | Path
         ZIP 文件路径，父目录必须存在。
     result : OptimizationResult
-        原始结果，默认从中读取 problem、solver_policy 和 theta_seed。
+        原始结果，默认从中读取 problem 和 solver_policy。
     report : InfeasibilityReport | None
         已有诊断报告，可选；包含完整列式原生证据，不隐式启动诊断。
     problem : PortfolioProblem | None
@@ -297,10 +292,9 @@ def export_repro(
             _certificate_export(v, "full") for v in report.native_certificates
         ]
     payload = {
-        "format_version": 1,
+        "format_version": 2,
         "problem": _encode(resolved, members),
         "policy": _encode(actual_policy, members),
-        "theta_seed": result.theta_seed,
         "original_result": snapshot,
         "original_report": report_snapshot,
         "environment": _environment(),
@@ -366,7 +360,7 @@ def load_repro(
     ):
         raise ValueError("repro checksum mismatch")
     payload = json.loads(members["payload.json"])
-    if payload["format_version"] != 1:
+    if payload["format_version"] != 2:
         raise ValueError("unsupported repro format version")
     problem = _decode(payload["problem"], members)
     policy = _decode(payload["policy"], members)
@@ -384,7 +378,6 @@ def load_repro(
     return ReproCase(
         problem,
         policy,
-        payload["theta_seed"],
         payload["original_result"],
         payload["original_report"],
         environment,
