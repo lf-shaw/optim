@@ -1,0 +1,14 @@
+# 仅用于隔离的 Python 3.11 DYOPT 实验环境，不用于 optim 产品安装。
+numpy==1.24.4
+cvxpy==1.3.1
+pandas==1.5.3
+pycryptodome==3.21.0
+requests==2.27.0
+scipy==1.9.3
+uqer==1.3.38
+setuptools==69.5.1
+threadpoolctl==3.6.0
+# 固定本次解析出的求解器依赖，避免重跑时自动升级。
+ecos==2.0.14
+osqp==1.1.3
+scs==3.3.1

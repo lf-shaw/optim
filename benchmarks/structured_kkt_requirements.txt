@@ -1,0 +1,4 @@
+# 仅用于结构化 KKT 研究环境；生产 optim 不依赖这两项。
+# 其余依赖复用当前项目的 requirements.txt。
+cvxopt==1.3.3
+threadpoolctl==3.6.0
