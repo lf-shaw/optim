@@ -11,8 +11,6 @@ import pytest
 
 _PACKAGE_ROOT = Path(__file__).parents[1] / "optim"
 _LEGACY_MODULES = {
-    _PACKAGE_ROOT / "opt.py",
-    _PACKAGE_ROOT / "linopt.py",
     _PACKAGE_ROOT / "solver.py",
 }
 _CHINESE = re.compile(r"[\u4e00-\u9fff]")

@@ -105,8 +105,9 @@ else:
 框架或低延迟重复调用      prepare(...) / solve_prepared(...)
 ```
 
-旧的 `opt`、`linopt` 和 `solver` 模块仅在迁移期间保留延迟导入，后续将废弃。新代码不应继续
-依赖旧入口。
+旧的 `optim.opt`、`optim.linopt` 已移除，不提供兼容别名。原 `optimize` / `multioptimize`
+调用请迁移到 `PortfolioOptimizer.optimize(...)` / `optimize_range(...)`，并按新数据及约束契约
+重新组装参数。旧 `optim.solver` 暂时保留，不属于新版公共优化接口。
 
 ---
 

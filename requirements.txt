@@ -9,8 +9,6 @@
 numpy>=2.2,<3
 scipy>=1.15,<2
 pandas>=2.2
-bottleneck>=1.4,<2
-tqdm>=4.66,<5
 
 # Optional standard data integration used by the full development/test environment
 tuda2>=2.0.40

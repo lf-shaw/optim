@@ -21,6 +21,8 @@ dual_bounds 模块，诊断层构造辅助问题并解释证据。无法验证�
 `contributor_summaries`，缺少贡献时 contributors_frame 和 full 导出会报错，不伪造空证据。
 
 `PortfolioOptimizer(SolverPolicy(backend="auto"))` 默认 LP→HiGHS、QP→direct PIQP、Factor-QCQP→Clarabel。
+旧 `optim.opt` / `optim.linopt` 已删除，不提供兼容别名；单期与多期使用
+`PortfolioOptimizer.optimize` / `optimize_range`，不能原样套用旧参数。
 QP 失败可转 Clarabel；自动路径不调用 MOSEK。当前不支持 theta 搜索和跨期参数传播。
 复现包格式升级为 v2；v1 包需在原版本提取业务输入，再用新版重建问题与策略并导出 v2。
 原版本直接重新导出仍是 v1，不能完成迁移；不静默套用已删除的策略参数。

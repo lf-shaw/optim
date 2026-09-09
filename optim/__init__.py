@@ -1,7 +1,7 @@
 """统一组合优化公共 API。
 
-导入 :mod:`optim` 不会触发求解器 license 或可选数据源的副作用。迁移期间，旧版
-``opt``、``linopt`` 和 ``solver`` 模块仍可按需延迟加载。
+导入 :mod:`optim` 不会触发求解器 license 或可选数据源的副作用。
+旧版 ``opt``、``linopt`` 已移除；仅 ``solver`` 暂时保留延迟加载。
 """
 
 from __future__ import annotations
@@ -144,7 +144,7 @@ __all__ = [
 def __getattr__(name: str) -> Any:
     """仅在调用方显式访问时延迟加载旧版模块。"""
 
-    if name in {"opt", "linopt", "solver"}:
+    if name == "solver":
         module = import_module(f".{name}", __name__)
         globals()[name] = module
         return module
