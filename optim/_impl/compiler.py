@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from types import MappingProxyType
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 import numpy as np
 import scipy.sparse as sp
@@ -650,7 +650,10 @@ class _DomainBuilder:
         assert self.data.benchmark is not None
         names = self.risk_model.factor_names
         factor_types = self.risk_model.factor_types
-        selected: dict[int, tuple[float, float]] = {}
+        # 边界已由前置校验保证为二元组；此处只按 Python 序列读取。
+        # 避免 Cython 将固定长度 tuple 转成 C 结构体，在异常转换路径生成
+        # 未完全初始化的返回值；这里无需额外的二元组数值转换。
+        selected: dict[int, Sequence[float]] = {}
         if bounds.default is not None:
             selected.update(
                 {
