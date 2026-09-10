@@ -495,6 +495,11 @@ def validate_problem(problem: PortfolioProblem) -> ValidationReport:
     factor_risk: FactorRiskModel | None = None
     if isinstance(risk_model, FactorRiskModel):
         factor_risk = risk_model
+        if risk_model.assets is not None and not risk_model.assets.equals(data.assets):
+            collector.error(
+                "data.risk_model.assets", "asset_order_mismatch",
+                "risk model assets must match PortfolioData.assets; use make_portfolio_data to align labels",
+            )
         if pd.Timestamp(risk_model.asof) != date:
             collector.error(
                 "data.risk_model.asof",

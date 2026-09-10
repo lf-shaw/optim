@@ -195,6 +195,19 @@ def test_risk_alignment_and_units(universe):
         make_factor_risk_model(**kwargs)
 
 
+def test_risk_factory_default_assets_and_direct_data_validation(universe):
+    kwargs = risk_inputs(universe.index)
+    kwargs.pop("assets")
+    risk = make_factor_risk_model(**kwargs)
+    assert risk.assets.equals(kwargs["exposure"].index)
+    data = make_portfolio_data(date=DAY, universe=universe, risk_model=risk)
+    assert data.risk_model.assets.equals(universe.index)
+    invalid = replace(data, risk_model=risk)
+    from optim import PortfolioProblem
+    report = PortfolioOptimizer().validate(PortfolioProblem(invalid, MaximizeAlpha(), PortfolioConstraints()))
+    assert any(issue.code == "asset_order_mismatch" for issue in report.issues)
+
+
 @pytest.mark.parametrize(
     "field", ["exposure", "factor_covariance", "specific_volatility"]
 )

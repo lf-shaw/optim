@@ -170,7 +170,7 @@ class ObjectiveTolerance:
 class FactorRiskModel:
     """采用年化小数风险单位的单日因子风险模型。
 
-    ``exposure`` 的行对应 ``PortfolioData.assets``，列对应 ``factor_names``；
+    ``exposure`` 的行对应模型自身的 ``assets``，列对应 ``factor_names``；
     ``covariance`` 的两个轴使用同一因子顺序，``specific_volatility`` 使用资产顺序。
     对象构造后，核心层不会再推断单位或隐式重排数据。
 
@@ -192,6 +192,11 @@ class FactorRiskModel:
         该日模型的数据来源和版本信息；默认构造内存数据来源记录。
     annualization : str
         显式风险单位契约；默认为且当前编译器要求为 ``"annualized_decimal"``。
+    assets : pandas.Index | None
+        模型自身的股票坐标，与暴露行及特异波动率一一对应。带标签对象可交给
+        ``make_portfolio_data`` 按 universe 筛选和排序，不绑定某次优化样本。
+        默认 ``None`` 保留高级位置数组入口，此时调用方必须保证与 PortfolioData.assets 同序。
+        直接构造 PortfolioData 时若提供此标签，必须已经与其 assets 完全同序。
     """
 
     asof: pd.Timestamp
@@ -202,6 +207,11 @@ class FactorRiskModel:
     factor_types: tuple[str, ...]
     provenance: DataProvenance = field(default_factory=DataProvenance)
     annualization: str = "annualized_decimal"
+    assets: pd.Index | None = None
+
+    def __post_init__(self) -> None:
+        if self.assets is not None:
+            object.__setattr__(self, "assets", pd.Index(self.assets, copy=False))
 
 
 @dataclass(frozen=True)

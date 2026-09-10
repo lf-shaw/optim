@@ -18,9 +18,22 @@
 ## R1. 手工表格或已对齐数组求解单期
 
 手工表格推荐以下入口；`universe.index` 是股票，列为 alpha/tradable，基准与期初持仓
-使用股票索引 Series。risk 为按同一个 universe 股票顺序构造的风险对象；如果只有原始表，
+使用股票索引 Series。risk 若带 assets 会自动按标签对齐，无标签对象要求与 universe 同序；如果只有原始表，
 先用 `make_factor_risk_model(date=..., assets=universe.index, exposure=...,
 factor_covariance=..., specific_volatility=..., factor_types=...)` 装配。
+
+使用 tuda2 时，可独立获取带股票标签的风险快照：
+
+```python
+from optim.integrations.tuda2 import Tuda2DataSource
+
+source = Tuda2DataSource(risk_model="datayes")
+risk = source.create_risk_model(date="2026-08-31")  # 不传 assets，不获取基准或收益
+```
+
+随后传给 make_portfolio_data。相同日期不同 universe 可复用 risk，由数据工厂按标签
+筛选、排序；缺股票报错。同序数组可共享，禁止原地修改。多期回测仍用 optimize_range
+批量取数，不循环调用这个单日接口。
 
 单期 universe、benchmark Series、initial_weight 也可保留 `(dt, sid)` 索引；三者分别
 校验只能含一个与 date 一致的时间戳，不允许混入其他日期。检查通过后自动脱去日期层，

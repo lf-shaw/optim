@@ -1,6 +1,7 @@
 """问题派生和跨进程复现的回归检查。"""
 
 from zipfile import ZipFile
+from dataclasses import replace
 import hashlib
 import json
 
@@ -36,6 +37,16 @@ def test_problem_derivation(sample_lp_problem):
     assert original.with_objective(RiskAdjustedAlpha()).data is original.data
     assert original.with_data(alpha=None).data.alpha is None
     assert original.data.alpha is not None
+
+
+def test_labeled_risk_repro_roundtrip(tmp_path, sample_lp_problem):
+    risk = replace(sample_lp_problem.data.risk_model, assets=sample_lp_problem.data.assets)
+    problem = sample_lp_problem.with_data(risk_model=risk)
+    result = PortfolioOptimizer().solve(problem)
+    case = load_repro(export_repro(tmp_path / "labeled.zip", result=result))
+    assert case.problem.data.risk_model.assets.equals(problem.data.assets)
+    assert compile_problem(case.problem).fingerprint == result.fingerprint
+    assert case.solve().status == result.status
 
 
 @pytest.mark.parametrize("kind", ["lp", "qp", "qcqp"])

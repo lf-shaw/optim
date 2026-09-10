@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import cached_property
 from importlib import import_module
 from typing import Any, Mapping
@@ -21,12 +21,14 @@ from ..data import (
 from ..portfolio_types import (
     AlphaSpec,
     DataProvenance,
+    FactorRiskModel,
     PortfolioConstraints,
     PortfolioObjective,
     PortfolioProblem,
 )
 from ..data.contracts import _single_date_values
 from ..data._reindex import _reindex_rows
+from ..data.manual import _check_risk
 
 
 class Tuda2UnavailableError(ImportError):
@@ -154,6 +156,58 @@ class Tuda2DataSource:
         if len(requested) == 0:
             raise ValueError("dates must not be empty")
         _validate_benchmark_input(benchmark, requested)
+        risk_data = self._load_risk_frames(requested)
+        if isinstance(benchmark, str):
+            benchmark = self._module().get_index_weight(
+                benchmark, dts=requested, type=self.benchmark_weight_type,
+            )
+        return Tuda2LoadedData(risk_data=risk_data, benchmark=benchmark)
+
+    def create_risk_model(self, *, date: Any) -> FactorRiskModel:
+        """获取准确同日的完整因子风险快照，不绑定优化样本、不求解。
+
+        Parameters
+        ----------
+        date : Any
+            可转换为 pandas.Timestamp 的单个信息日，不能为空。不前填其他日期。
+
+        Returns
+        -------
+        FactorRiskModel
+            保留自身 assets 股票坐标、因子坐标和来源信息的年化小数风险对象。
+            股票范围以该日暴露表为准，特异风险必须覆盖；模型内部按标签对齐。
+            可交给 make_portfolio_data(risk_model=...)，由其按 universe 裁剪和排序。
+
+        Raises
+        ------
+        DataAlignmentError
+            日期缺失、股票或因子坐标不完整，或有效风险数值不合法。
+        ValueError
+            日期无法解析，或数据源 schema 无效。
+        Tuda2UnavailableError
+            未安装可选数据源或其接口版本不满足要求。
+
+        Notes
+        -----
+        每次调用按数据类型各获取一次暴露、协方差和特异风险，不获取基准、alpha、
+        持仓或收益率。模型可跨组合复用，调用方不得原地修改数据。此接口不设置全局缓存；
+        多期优化仍使用 optimize_range 的批量加载路径，不逐日调用本接口。
+        此处检查日期、坐标、单位约定和有限数值，完整问题校验仍由优化器负责。
+        """
+        day = pd.Timestamp(date)
+        if pd.isna(day):
+            raise DataAlignmentError("date must not be missing")
+        frames = self._load_risk_frames(pd.DatetimeIndex([day]))
+        assets = frames._exposure_slices._day(day).index
+        if not len(assets):
+            raise DataAlignmentError("risk model assets must not be empty")
+        risk = replace(frames.materialize(day, assets), assets=assets)
+        checked = _check_risk(risk, day, len(assets))
+        assert isinstance(checked, FactorRiskModel)
+        return checked
+
+    def _load_risk_frames(self, requested: pd.DatetimeIndex) -> FactorRiskFrames:
+        """共享原有批量风险 I/O 和 schema 处理，不筛选优化样本或读取基准。"""
         module = self._module()
 
         # schema 只读取一次并被 cached_property 缓存；先验证接口契约，再进行较昂贵的
@@ -188,12 +242,6 @@ class Tuda2DataSource:
             factor_order,
             schema_constants,
         )
-        if isinstance(benchmark, str):
-            benchmark = module.get_index_weight(
-                benchmark,
-                dts=requested,
-                type=self.benchmark_weight_type,
-            )
         provenance = DataProvenance(
             source="tuda2",
             version=_module_version(module),
@@ -202,16 +250,13 @@ class Tuda2DataSource:
                 "requested_dates": tuple(date.isoformat() for date in requested),
             },
         )
-        return Tuda2LoadedData(
-            risk_data=FactorRiskFrames(
-                exposure=exposure,
-                covariance=covariance,
-                specific_volatility=specific,
-                factor_types=factor_types,
-                constant_exposures=virtual_constants,
-                provenance=provenance,
-            ),
-            benchmark=benchmark,
+        return FactorRiskFrames(
+            exposure=exposure,
+            covariance=covariance,
+            specific_volatility=specific,
+            factor_types=factor_types,
+            constant_exposures=virtual_constants,
+            provenance=provenance,
         )
 
     def load_close_to_close_returns(

@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from optim import (
+    make_portfolio_data,
     DataAlignmentError,
     AlphaSpec,
     BenchmarkCoveragePolicy,
@@ -640,6 +641,106 @@ def test_range_custom_benchmark_without_index_io():
     assert all(step.result.status.has_solution for step in result.steps)
     assert not any(call[0] == "benchmark" for call in fake.calls)
     assert len([call for call in fake.calls if call[0] == "risk"]) == 3
+
+
+def test_create_risk_model_and_reuse_without_io():
+    fake = _FakeTuda2()
+    source = Tuda2DataSource(module=fake)
+    date = pd.Timestamp("2026-01-02")
+    risk = source.create_risk_model(date=date)
+    assert risk.assets.tolist() == ["a", "b"]
+    assert risk.factor_names == ("country", "size", "bank", "tech")
+    np.testing.assert_array_equal(risk.exposure[:, 0], [1., 1.])
+    assert risk.provenance.source_date == date
+    assert [call[1] for call in fake.calls if call[0] == "risk"] == ["exposure", "cov", "spec_risk"]
+    calls = list(fake.calls)
+    for sids in (["a", "b"], ["b", "a"], ["b"]):
+        data = make_portfolio_data(date=date, universe=pd.DataFrame({"alpha": np.ones(len(sids))}, index=sids), risk_model=risk)
+        positions = risk.assets.get_indexer(sids)
+        np.testing.assert_array_equal(data.risk_model.exposure, risk.exposure[positions])
+        np.testing.assert_array_equal(data.risk_model.specific_volatility, risk.specific_volatility[positions])
+        assert data.risk_model.assets.equals(data.assets)
+        assert data.risk_model.covariance is risk.covariance
+        if sids == ["a", "b"]:
+            assert np.shares_memory(data.risk_model.exposure, risk.exposure)
+    assert fake.calls == calls
+    assert not any(call[0] in {"benchmark", "returns"} for call in calls)
+    with pytest.raises(DataAlignmentError, match="does not cover"):
+        make_portfolio_data(date=date, universe=pd.DataFrame(index=["missing"]), risk_model=risk)
+    assert risk.assets.tolist() == ["a", "b"]
+
+
+def test_create_risk_model_rejects_missing_date_before_io():
+    fake = _FakeTuda2()
+    with pytest.raises(DataAlignmentError):
+        Tuda2DataSource(module=fake).create_risk_model(date=pd.NaT)
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("kind", ["exposure", "cov", "spec_risk"])
+def test_create_risk_model_never_substitutes_dates(kind):
+    class WrongDate(_FakeTuda2):
+        def get_risk_model(self, data_kind, *, dts, model):
+            if data_kind == kind:
+                dts = pd.DatetimeIndex(dts) - pd.Timedelta(days=1)
+            return super().get_risk_model(data_kind, dts=dts, model=model)
+    with pytest.raises(DataAlignmentError):
+        Tuda2DataSource(module=WrongDate()).create_risk_model(date="2026-01-02")
+
+
+def test_create_risk_model_requires_complete_specific_risk():
+    class MissingSpecific(_FakeTuda2):
+        def get_risk_model(self, kind, *, dts, model):
+            frame = super().get_risk_model(kind, dts=dts, model=model)
+            return frame.iloc[:1] if kind == "spec_risk" else frame
+    with pytest.raises(DataAlignmentError, match="does not cover"):
+        Tuda2DataSource(module=MissingSpecific()).create_risk_model(date="2026-01-02")
+
+
+def test_create_risk_model_respects_historical_covariance_rows():
+    class HistoricalSnapshot(_HistoricDataYesTuda2):
+        def get_risk_model(self, kind, *, dts, model):
+            # 返回含历史列并集的表；只选请求日期的行，不能把多余列变成当日因子。
+            frame = super().get_risk_model(kind, dts=pd.to_datetime(["2019-12-02", "2019-12-03"]), model=model)
+            return frame.loc[frame.index.get_level_values("dt").isin(dts)]
+    source = Tuda2DataSource(module=HistoricalSnapshot())
+    old = source.create_risk_model(date="2019-12-02")
+    new = source.create_risk_model(date="2019-12-03")
+    assert old.factor_names == ("country", "size", "old")
+    assert new.factor_names == ("country", "size", "new_a", "new_b")
+    assert np.isfinite(old.covariance).all() and np.isfinite(new.covariance).all()
+    assert old.assets.equals(new.assets)
+
+
+def test_existing_entrypoints_do_not_call_create_risk_model(monkeypatch):
+    def forbidden(*args, **kwargs):
+        pytest.fail("旧单期/多期路径不得调用新的单日风险工厂")
+    monkeypatch.setattr(Tuda2DataSource, "create_risk_model", forbidden)
+    for multi in (False, True):
+        fake = _FakeTuda2()
+        source = Tuda2DataSource(module=fake)
+        kwargs = dict(data_source=source, benchmark="000852.SH", initial_weight=pd.Series({"a": .5, "b": .5}), objective=MaximizeAlpha(), constraints=_constraints(), alpha_spec=AlphaSpec())
+        if multi:
+            result = PortfolioOptimizer().optimize_range(schedule=_schedule(), **kwargs)
+            assert all(step.result.status.has_solution for step in result.steps)
+        else:
+            date = _schedule().dates[0]
+            result = PortfolioOptimizer().optimize(date=date, universe=_schedule().day(date), **kwargs)
+            assert result.status.has_solution
+            assert result.problem.data.risk_model.assets is None
+        assert len([call for call in fake.calls if call[0] == "risk"]) == 3
+
+
+def test_snapshot_route_matches_original_single_period():
+    date = pd.Timestamp("2026-01-02")
+    universe = _schedule().day(date)
+    weights = pd.Series({"a": .5, "b": .5})
+    source = Tuda2DataSource(module=_FakeTuda2())
+    optimizer = PortfolioOptimizer()
+    original = optimizer.optimize(data_source=source, date=date, universe=universe, benchmark=weights, initial_weight=weights, objective=MaximizeAlpha(), constraints=_constraints(), alpha_spec=AlphaSpec())
+    data = make_portfolio_data(date=date, universe=universe, benchmark=weights, initial_weight=weights, risk_model=source.create_risk_model(date=date), alpha_spec=AlphaSpec())
+    observed = optimizer.optimize(data=data, objective=MaximizeAlpha(), constraints=_constraints())
+    pd.testing.assert_series_equal(observed.require_weights(), original.require_weights())
 
 
 def test_single_period_all_dated_inputs():

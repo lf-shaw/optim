@@ -104,8 +104,8 @@ group = "data"
 
 [[symbols]]
 name = "optim.make_factor_risk_model"
-signature = "make_factor_risk_model(*, date, assets, exposure, factor_covariance, specific_volatility, factor_types, constant_exposures=None, provenance=None) -> FactorRiskModel"
-summary = "单期带标签风险表按指定股票和有效因子对齐；年化小数协方差与特异标准差，不自动换算；返回位置对象，后续必须使用同一股票顺序"
+signature = "make_factor_risk_model(*, date, assets=None, exposure, factor_covariance, specific_volatility, factor_types, constant_exposures=None, provenance=None) -> FactorRiskModel"
+summary = "单期风险表装配；assets 默认使用当日暴露表完整股票范围；返回带 assets 标签的对象，可在 make_portfolio_data 中按不同 universe 对齐；风险单位须已为年化小数"
 group = "data"
 
 [[symbols]]
@@ -116,8 +116,8 @@ group = "model"
 
 [[symbols]]
 name = "optim.FactorRiskModel"
-signature = "FactorRiskModel(asof, exposure, covariance, specific_volatility, factor_names, factor_types, provenance=..., annualization='annualized_decimal')"
-summary = "因子暴露、年化小数因子协方差和年化小数特异波动率"
+signature = "FactorRiskModel(asof, exposure, covariance, specific_volatility, factor_names, factor_types, provenance=..., annualization='annualized_decimal', assets=None)"
+summary = "年化小数因子风险；可选 assets 保留自身股票坐标，供 make_portfolio_data 按标签裁剪排序；无标签位置数组仍由调用方保证与数据同序"
 group = "risk"
 
 [[symbols]]
@@ -214,6 +214,12 @@ group = "data"
 name = "optim.BenchmarkCoveragePolicy"
 signature = "BenchmarkCoveragePolicy(action='error', missing_mass_tolerance=0.0, weight_sum_tolerance=1e-8)"
 summary = "基准覆盖缺口默认报错；只有显式选择 renormalize_within_tolerance 才允许阈值内归一化"
+group = "data"
+
+[[symbols]]
+name = "optim.integrations.tuda2.Tuda2DataSource.create_risk_model"
+signature = "create_risk_model(*, date) -> FactorRiskModel"
+summary = "独立获取准确同日的完整风险快照，保留自身 assets；每类风险数据各获取一次，不取基准或收益；可复用于不同 universe 的 make_portfolio_data，多期仍使用批量入口"
 group = "data"
 
 [[symbols]]

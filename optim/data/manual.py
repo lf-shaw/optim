@@ -56,9 +56,10 @@ def make_portfolio_data(
         接受 sid 或只含 date 当天的 (dt, sid) 索引。不归一化、不强制合计为 1，预算匹配
         由优化器校验。None 不会自动替换成基准。
     risk_model : FactorRiskModel | FullCovarianceRiskModel | None
-        已构造、日期准确且按 universe 当日股票索引排列的位置风险对象。它不带股票标签，不能据此
-        检测顺序是否放错。None 不附加风险模型。原始风险表可先交给 make_factor_risk_model，
-        使用同一个 universe 的股票索引作为 assets。
+        已构造且日期准确的风险对象。FactorRiskModel 带 assets 时按 universe 的股票标签
+        裁剪和排序，缺股票报错；同序直接复用数组。无标签的位置对象必须由调用方保证同序。
+        None 不附加风险模型；原始表可先交给 make_factor_risk_model，tuda2 用户也可调用
+        Tuda2DataSource.create_risk_model(date=...)。
     alpha_spec : AlphaSpec | None
         alpha 单位和尺度声明，原样保留；例如标准化得分使用 AlphaSpec(units="standardized_score")。
     alpha_column : str
@@ -165,7 +166,7 @@ def make_portfolio_data(
         for name in extra_attribute_columns
     }
     if risk_model is not None:
-        risk_model = _check_risk(risk_model, day, len(assets))
+        risk_model = _align_risk(risk_model, day, assets)
     if alpha_values is not None:
         metadata["alpha_source_date"] = day
     return PortfolioData(
@@ -185,7 +186,7 @@ def make_portfolio_data(
 def make_factor_risk_model(
     *,
     date: str | pd.Timestamp,
-    assets: pd.Index | Sequence[str],
+    assets: pd.Index | Sequence[str] | None = None,
     exposure: pd.DataFrame,
     factor_covariance: pd.DataFrame,
     specific_volatility: pd.Series | pd.DataFrame,
@@ -199,8 +200,9 @@ def make_factor_risk_model(
     ----------
     date : str | pandas.Timestamp
         信息日。单层索引表由调用方声明为该日；日期 MultiIndex 必须包含准确同日记录。
-    assets : pandas.Index | Sequence[str]
-        非空、唯一的目标股票顺序，通常传 universe.index；多日 universe 应先取当天切片。
+    assets : pandas.Index | Sequence[str] | None
+        可选的非空、唯一目标股票顺序；默认使用当日 exposure 的完整股票索引。
+        显式传入时通常使用 universe.index，多日 universe 应先取当天切片。
         暴露和特异风险必须覆盖所有目标股票，多余股票裁掉，不补缺失值。
     exposure : pandas.DataFrame
         股票 × 因子暴露表，通常无量纲；单层股票索引或 (dt, sid) 索引。
@@ -221,7 +223,7 @@ def make_factor_risk_model(
     Returns
     -------
     FactorRiskModel
-        通过日期、标签、shape 和有限数值检查的位置数组对象；因子顺序见 factor_names。
+        通过日期、标签、shape 和有限数值检查的带标签数组对象；股票顺序见 assets，因子顺序见 factor_names。
         协方差对称性和半正定性由后续优化器校验，本函数不进行昂贵的分解检查。
 
     Raises
@@ -235,16 +237,12 @@ def make_factor_risk_model(
 
     Notes
     -----
-    不自动换算单位或年化。返回对象不携带股票标签，后续必须配合相同 assets 顺序使用。
+    不自动换算单位或年化。返回对象保留股票标签，可用于不同 universe 的数据组装。
     同序数据可以共享内存；如需隔离原地修改，请在调用前复制输入。
     """
     day = pd.Timestamp(date)
     if pd.isna(day):
         raise DataAlignmentError("date must not be missing")
-    assets = pd.Index(assets, copy=False)
-    _check_index(assets, "assets")
-    if not len(assets):
-        raise DataAlignmentError("assets must not be empty")
     if not isinstance(exposure, pd.DataFrame) or not isinstance(
         factor_covariance, pd.DataFrame
     ):
@@ -254,6 +252,10 @@ def make_factor_risk_model(
     origin = provenance or DataProvenance(source="memory", source_date=day)
     _check_source_date(origin, day, "provenance")
     exp = _day_table(exposure, day, "sid", "exposure")
+    assets = exp.index if assets is None else pd.Index(assets, copy=False)
+    _check_index(assets, "assets")
+    if not len(assets):
+        raise DataAlignmentError("assets must not be empty")
     cov = _day_table(factor_covariance, day, "factor", "factor_covariance")
     _check_index(exp.columns, "exposure.columns")
     _check_index(cov.columns, "factor_covariance.columns")
@@ -289,7 +291,7 @@ def make_factor_risk_model(
     # 保留准确的返回类型；与位置输入使用相同数值检查。
     checked = _check_risk(result, day, len(assets))
     assert isinstance(checked, FactorRiskModel)
-    return checked
+    return replace(checked, assets=assets)
 
 
 def _check_index(index: pd.Index, field: str) -> None:
@@ -402,6 +404,10 @@ def _check_risk(value: RiskModel, day: pd.Timestamp, n_assets: int) -> RiskModel
         raise DataAlignmentError("risk_model covariance has incorrect shape")
     if isinstance(value, FullCovarianceRiskModel):
         return replace(value, covariance=covariance)
+    if value.assets is not None:
+        _check_index(value.assets, "risk_model.assets")
+        if len(value.assets) != n_assets:
+            raise DataAlignmentError("risk_model assets have incorrect length")
     exposure = _numeric(value.exposure, "risk_model.exposure")
     specific = _numeric(value.specific_volatility, "risk_model.specific_volatility")
     if exposure.shape != (n_assets, size) or specific.shape != (n_assets,):
@@ -413,4 +419,23 @@ def _check_risk(value: RiskModel, day: pd.Timestamp, n_assets: int) -> RiskModel
         raise DataAlignmentError("risk_model factor_types must match factor_names")
     return replace(
         value, exposure=exposure, covariance=covariance, specific_volatility=specific
+    )
+
+
+def _align_risk(value: RiskModel, day: pd.Timestamp, assets: pd.Index) -> RiskModel:
+    """带股票坐标的模型在请求组装时才裁剪；因子轴和协方差不重新构造。"""
+    if not isinstance(value, FactorRiskModel) or value.assets is None:
+        return _check_risk(value, day, len(assets))
+    checked = _check_risk(value, day, len(value.assets))
+    assert isinstance(checked, FactorRiskModel)
+    if value.assets.equals(assets):
+        return checked
+    indexer = value.assets.get_indexer(assets)
+    missing = assets[indexer < 0]
+    if len(missing):
+        raise DataAlignmentError(f"risk model does not cover assets: {missing.tolist()[:10]}")
+    return replace(
+        checked, assets=assets,
+        exposure=checked.exposure.take(indexer, axis=0),
+        specific_volatility=checked.specific_volatility.take(indexer),
     )

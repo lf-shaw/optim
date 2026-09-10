@@ -92,8 +92,14 @@ specific_volatility      (n_assets,)
 risk_model=..., alpha_spec=...)`：universe 的股票索引确定资产顺序，alpha/tradable 是列，
 可选列名参数为 alpha_column/tradable_column；未提供 tradable 默认全 True，缺 alpha 保留 None。
 权重为带标签 Series；默认严格检查样本外基准，不能丢弃样本外非零持仓。单期股票表和权重
-的双层索引只能含请求日期，多日直接报错。原始风险表可用 `make_factor_risk_model` 单独装配，股票顺序取自同一
-universe，协方差和特异波动率必须已经使用年化小数单位。两个函数不调用数据源或求解器。
+的双层索引只能含请求日期，多日直接报错。原始风险表可用 `make_factor_risk_model` 单独装配，
+assets 省略时使用完整当日暴露股票范围；协方差和特异波动率必须已经使用年化小数单位。
+两个 make 函数不调用数据源或求解器。
+
+`Tuda2DataSource.create_risk_model(date=...)` 只获取准确同日的三类风险数据，返回带自身
+assets 标签的 FactorRiskModel。可供多个组合复用，由 make_portfolio_data 根据 universe
+对齐；缺股票报错。无标签风险对象仍要求调用方保证同序；直接 PortfolioData 不自动对齐。
+原有单期/多期数据源入口不调用此单日工厂，多期仍走批量 I/O，不重复逐日加载。
 
 ### 风险单位
 

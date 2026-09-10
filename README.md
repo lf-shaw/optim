@@ -350,7 +350,7 @@ data = make_portfolio_data(
     universe=universe,       # 股票索引；alpha / tradable 列
     benchmark=benchmark,    # 股票索引 Series，合计为 1
     initial_weight=initial_weight,  # 股票索引 Series，不自动归一化
-    risk_model=risk_model,  # 可省略；已有对象必须按 universe.index 排列
+    risk_model=risk_model,  # 带 assets 标签时自动对齐；无标签数组须提前同序
     alpha_spec=AlphaSpec(units="standardized_score"),
 )
 result = PortfolioOptimizer().optimize(
@@ -388,10 +388,33 @@ risk_model = make_factor_risk_model(
 ```
 
 该函数按标签对齐股票、因子和特异风险，以协方差行声明当日因子；不猜测原始供应商单位、
-不自动年化。先构造风险对象，再传给 `make_portfolio_data`。若更换股票集合/顺序，应重新
-装配风险对象，不能直接复用无股票标签的位置矩阵。
+不自动年化。`assets` 可省略，默认保留当日暴露表完整股票范围。返回对象保留自己的
+`assets` 标签，可以供不同 universe 复用，由 `make_portfolio_data` 按需裁剪、排序；
+缺股票报错，不静默取交集。高级位置数组对象若没有 assets 标签，仍须调用方保证同序。
 
-两个函数均不取数、不求解；同序且 dtype 合适时可共享底层数组，请勿原地修改已用于求解的
+已有 tuda2 数据源时，无需手工分别获取风险表：
+
+```python
+from optim.integrations.tuda2 import Tuda2DataSource
+from optim import make_portfolio_data, AlphaSpec
+
+source = Tuda2DataSource(risk_model="datayes")
+risk = source.create_risk_model(date="2026-08-31")
+data = make_portfolio_data(
+    date="2026-08-31", universe=universe,
+    benchmark=benchmark, initial_weight=initial_weight,
+    risk_model=risk, alpha_spec=AlphaSpec(units="standardized_score"),
+)
+```
+
+`create_risk_model` 只获取该日暴露、协方差、特异风险，各一次，不获取基准、alpha 或持仓
+收益；返回范围以该日完整暴露表为准，特异风险必须覆盖。复用 risk 构造其他组合不会取数。
+同序数组直接复用，改变样本只重排暴露行和特异风险，不重新构造协方差。日期必须准确匹配。
+直接使用 `PortfolioData(...)` 不自动对齐；带标签风险对象若与 data.assets 不同序，校验会
+报错，应改用 `make_portfolio_data`。原单期/多期数据源入口对齐流程保持不变，多期仍一次
+批量取数，不能在回测日循环中调用 `create_risk_model`。
+
+两个手工 make 函数均不取数、不求解；同序且 dtype 合适时可共享底层数组，请勿原地修改已用于求解的
 输入。完整可运行的分单元例子见 [manual_single_period.py](examples/manual_single_period.py)，
 包含装配时间、求解时间、字段查看、派生修改和手动诊断用法。
 
