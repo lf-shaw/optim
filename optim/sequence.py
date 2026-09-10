@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Mapping
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -127,9 +128,57 @@ class PortfolioSequenceResult:
 
 
 class SequenceDataError(ValueError):
-    """多期日期、收益或持仓状态无法按既定语义安全推进时抛出。"""
+    """序列数据无法安全推进；漂移阶段失败时保留可审计上下文。
 
-    pass
+    Attributes
+    ----------
+    date, previous_date : pandas.Timestamp | None
+        失败调仓日与上一调仓日；收益对应区间为 (previous_date, date]。
+    evidence : pandas.DataFrame | None
+        收益缺失的已持仓股票、原权重、绝对权重及缺失类别，不包含零持仓股票。
+    partial_result : PortfolioSequenceResult | None
+        已完成步骤及上一期实际组合，遵守 output_weights 策略；失败日尚未求解。
+    previous_weight : pandas.Series | None
+        失败前最后一个成功推进的目标持仓，未应用本次收益。
+    holding_return : pandas.Series | numpy.ndarray | None
+        本次传入的区间复合收益，可与 previous_weight 对照；不是日度收益原表。
+    dump_path : pathlib.Path | None
+        显式开启 failure_dump_dir 后生成的文件路径。
+    dump_error : str | None
+        自动导出失败原因；导出失败不覆盖原始数据异常。
+    """
+
+    def __init__(self, message: str, *, evidence: pd.DataFrame | None = None):
+        super().__init__(message)
+        self.evidence = evidence
+        self.date: pd.Timestamp | None = None
+        self.previous_date: pd.Timestamp | None = None
+        self.partial_result: PortfolioSequenceResult | None = None
+        self.previous_weight: pd.Series | None = None
+        self.holding_return: pd.Series | np.ndarray | None = None
+        self.dump_path: Path | None = None
+        self.dump_error: str | None = None
+
+    def dump(self, path: str | Path) -> Path:
+        """导出漂移故障上下文，不包含风险矩阵或完整求解器复现模型。
+
+        Parameters
+        ----------
+        path : str | pathlib.Path
+            新文件路径，.gz 后缀启用 gzip 压缩；不覆盖已有文件，不自动创建父目录。
+
+        Returns
+        -------
+        pathlib.Path
+            已写入文件路径。文件包含字段说明、收益缺失明细、持仓和已完成步骤摘要。
+
+        Raises
+        ------
+        OSError
+            文件已存在、父目录不存在或无法写入。普通求解不会自动调用此方法。
+        """
+        from ._sequence_failure import _dump_failure
+        return _dump_failure(self, Path(path))
 
 
 @_with_progress
@@ -140,6 +189,7 @@ def solve_sequence(
     holding_period_returns: Mapping[Any, pd.Series | np.ndarray] | None = None,
     sequence_policy: SequencePolicy | None = None,
     show_progress: bool = False,
+    failure_dump_dir: str | Path | None = None,
 ) -> PortfolioSequenceResult:
     """按确定性规则推进实际持仓并求解有序日期。
 
@@ -161,6 +211,9 @@ def solve_sequence(
     show_progress : bool
         默认 False；True 使用可选 tqdm.auto 显示预检与求解阶段。逐期显示日期、完成数、
         耗时和预计剩余时间；异常或提前停止时关闭进度条，不改变求解结果。
+    failure_dump_dir : str | pathlib.Path | None
+        默认 None，不写文件。指定目录后，仅持仓漂移的 SequenceDataError 自动导出压缩
+        上下文；异常仍抛出且保留 partial_result。不是求解器不可行报告或全模型复现包。
 
     Returns
     -------
@@ -275,12 +328,31 @@ def solve_sequence(
                 )
             else:
                 assert actual_weight is not None
-                pretrade = _mark_to_market(
-                    actual_weight,
-                    normalized_returns[date],
-                    pd.Index(template.data.assets, name="sid"),
-                    policy,
-                )
+                try:
+                    pretrade = _mark_to_market(
+                        actual_weight,
+                        normalized_returns[date],
+                        pd.Index(template.data.assets, name="sid"),
+                        policy,
+                    )
+                except SequenceDataError as exc:
+                    exc.date, exc.previous_date = date, dates[position - 1]
+                    exc.previous_weight = actual_weight.copy()
+                    exc.holding_return = normalized_returns[date].copy()
+                    exc.partial_result = PortfolioSequenceResult(
+                        steps=tuple(steps), stopped_date=date, final_weight=actual_weight.copy(),
+                        policy=policy, schedule_prepare_s=schedule_prepare_s,
+                    )
+                    exc.args = (f"{dates[position - 1].date()} -> {date.date()}: {exc}",)
+                    if failure_dump_dir is not None:
+                        from uuid import uuid4
+                        try:
+                            directory = Path(failure_dump_dir)
+                            directory.mkdir(parents=True, exist_ok=True)
+                            exc.dump_path = exc.dump(directory / f"sequence_failure_{date:%Y%m%d}_{uuid4().hex[:12]}.json.gz")
+                        except Exception as dump_exc:
+                            exc.dump_error = f"{type(dump_exc).__name__}: {dump_exc}"
+                    raise
             problem = replace(
                 template,
                 data=replace(
@@ -516,10 +588,20 @@ def _mark_to_market(
             )
         aligned_return = _reindex_rows(holding_return, previous_target.index)
         missing = aligned_return.isna().to_numpy()
-        missing_mass = float(previous_target.to_numpy()[missing].sum())
+        missing_mass = float(np.abs(previous_target.to_numpy()[missing]).sum())
         if missing_mass > policy.holding_missing_mass_tolerance:
+            held_missing = missing & (previous_target.to_numpy() != 0.0)
+            labels = previous_target.index[held_missing]
+            evidence = pd.DataFrame({
+                "weight": previous_target.to_numpy()[held_missing],
+                "absolute_weight": np.abs(previous_target.to_numpy()[held_missing]),
+                "reason": np.where(labels.isin(holding_return.index), "missing_value", "missing_sid"),
+            }, index=labels).sort_values("absolute_weight", ascending=False)
+            top = ", ".join(f"{sid}={row.weight:.6%}" for sid, row in evidence.head(10).iterrows())
             raise SequenceDataError(
-                f"missing close-to-close returns cover {missing_mass:.6%} of holdings"
+                f"missing close-to-close returns cover {missing_mass:.6%} of holdings; "
+                f"tolerance={policy.holding_missing_mass_tolerance:.6%}; "
+                f"{len(evidence)} held assets; largest: {top}", evidence=evidence,
             )
         aligned_return = aligned_return.fillna(0.0).to_numpy(float)
     else:

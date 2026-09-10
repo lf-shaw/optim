@@ -207,6 +207,12 @@ for step in sequence.steps:
 需要可选依赖 `optim[progress]`；默认关闭。显示数据准备阶段及按日期推进的预检/求解进度，
 提前停止保留已完成期数，异常退出自动关闭进度条，不改变求解结果或开启求解器日志。
 
+若希望生产机在缺失持仓收益时留下现场，两个多期入口均可传入
+`failure_dump_dir="tmp/sequence_failures"`（默认 None）。捕获 SequenceDataError 后，
+查看 `exc.evidence` 定位股票，`exc.partial_result` 获取已完成结果，`exc.dump_path` 为导出文件。
+不开启自动导出也能 `exc.dump("failure.json.gz")`。该文件是持仓/收益的故障记录，不是风险模型
+复现包；只包含区间收益，无法代替区间内日度数据核查。
+
 tuda2 的风险、基准和日收益按完整区间批量读取。默认链式首期免换手上限且不计入换手统计，
 `step.turnover_excluded=True`、`step.result.metrics.turnover_l1=None`；第二期起相对自然漂移后的
 `step.pretrade_weight` 计算。需要限制首期换手，设置 `ignore_first_turnover=False`。

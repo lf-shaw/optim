@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterable, Mapping
 
 import pandas as pd
@@ -380,6 +381,7 @@ class PortfolioOptimizer:
         holding_period_returns=None,
         sequence_policy: "SequencePolicy | None" = None,
         show_progress: bool = False,
+        failure_dump_dir: str | Path | None = None,
         independent_initial_weights=None,
         benchmark_policy: "BenchmarkCoveragePolicy | None" = None,
         tradable_universe: str | None = None,
@@ -419,6 +421,9 @@ class PortfolioOptimizer:
             默认 False。True 使用 tqdm.auto 显示取数、预检和逐期求解进度，需安装
             optim[progress]。已知期数的阶段显示计数和预计剩余时间；I/O 只标识阶段。
             该选项不启用求解器日志，不改变求解策略；异常或提前停止时关闭显示。
+        failure_dump_dir : str | pathlib.Path | None
+            默认 None；指定后在持仓漂移数据异常时自动导出压缩上下文，异常仍抛出。
+            不导出风险矩阵，不自动诊断或修改缺失收益。路径见异常 dump_path。
         independent_initial_weights : Any | None
             独立模式下按日期提供的期初权重。
         benchmark_policy : BenchmarkCoveragePolicy | None
@@ -481,6 +486,7 @@ class PortfolioOptimizer:
                 prepared.run,
                 holding_period_returns=prepared.holding_period_returns,
                 sequence_policy=resolved_policy,
+                failure_dump_dir=failure_dump_dir,
             )
         if (
             benchmark is not None
@@ -505,6 +511,7 @@ class PortfolioOptimizer:
             prepared_run,
             holding_period_returns=holding_period_returns,
             sequence_policy=sequence_policy,
+            failure_dump_dir=failure_dump_dir,
         )
 
     def solve_sequence(
@@ -514,6 +521,7 @@ class PortfolioOptimizer:
         holding_period_returns=None,
         sequence_policy=None,
         show_progress: bool = False,
+        failure_dump_dir: str | Path | None = None,
     ):
         """求解按日期排序的 close-to-close 组合序列。
 
@@ -532,6 +540,9 @@ class PortfolioOptimizer:
             默认 False；True 使用 tqdm.auto 显示预检及逐期求解进度，需安装
             optim[progress]。显示当前日期、已完成期数、耗时及预计剩余时间，
             不启用后端日志；异常或提前停止时自动关闭进度条。
+        failure_dump_dir : str | pathlib.Path | None
+            默认 None，不写文件。指定目录后，仅漂移数据异常自动导出关键上下文；异常
+            保留 partial_result、previous_weight、holding_return，支持手动 dump(path)。
 
         Returns
         -------
@@ -547,6 +558,7 @@ class PortfolioOptimizer:
             holding_period_returns=holding_period_returns,
             sequence_policy=sequence_policy,
             show_progress=show_progress,
+            failure_dump_dir=failure_dump_dir,
         )
 
     def diagnose(

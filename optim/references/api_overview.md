@@ -187,6 +187,12 @@ $$
 取数/对齐只显示阶段信息；预检与求解按日期计数，显示当前日期、耗时和预计剩余时间。
 计数包含已完成的失败尝试；提前停止不补齐总数，异常时关闭显示，不改变后端日志及求解行为。
 
+多期入口的 `failure_dump_dir=None` 默认不写文件。指定目录后，持仓漂移数据错误会导出
+压缩 JSON，上层仍抛出 SequenceDataError；异常的 date/previous_date、evidence DataFrame、
+previous_weight、holding_return 和 partial_result 用于排查，dump_path 指向文件。
+可手动调用异常的 dump(path)；这不是求解器不可行诊断，不重新求解、不包含风险矩阵。
+导出失败原因保存在 dump_error，不覆盖原异常。文件记录区间收益，具体日度缺失需另查源数据。
+
 链式首期免换手时可省略 initial_weight，将对齐后的首日基准中的可交易部分归一化初始化，
 原基准保持不变；无正权重可交易成分则报错。此时 asset_trade 必须为 None，tradable_universe
 可指定；默认冻结使不可交易股票固定在零。显式持仓则保持原样并按实际权重冻结。

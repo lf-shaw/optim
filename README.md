@@ -626,6 +626,41 @@ sequence = optimizer.solve_sequence(
 求解计数包含已完成的失败尝试，不代表全部成功。提前停止时保留真实完成数，异常或中断时关闭
 进度条。不开启后端日志、不改变策略及结果；关闭时不导入 tqdm，也不构造逐日显示文本。
 
+持仓漂移缺少收益时，`SequenceDataError` 会指出调仓区间、缺失持仓比例和最大的缺失股票。
+异常保留 `evidence`（股票明细 DataFrame）、`previous_weight`、`holding_return` 及
+`partial_result`（已完成的步骤，不会丢失已经求解的结果）。默认不写文件、不把缺失收益填零。
+如需把生产机故障发给开发者，可在两个多期入口指定 `failure_dump_dir="tmp/sequence_failures"`：
+
+```python
+from optim import SequenceDataError
+
+try:
+    sequence = optimizer.optimize_range(
+        data_source=source,
+        schedule=schedule,
+        benchmark="000300.SH",
+        objective=objective,
+        constraints=constraints,
+        alpha_spec=alpha_spec,
+        show_progress=True,
+        failure_dump_dir="tmp/sequence_failures",
+    )
+except SequenceDataError as exc:
+    failure = exc  # Notebook 中保留异常，便于后续检查
+    print(exc)
+    print(exc.evidence)
+    print(exc.dump_path, exc.dump_error)
+    partial = exc.partial_result
+    # 未开启自动导出时，也可手动执行 exc.dump("sequence_failure.json.gz")
+```
+
+该开关只导出持仓漂移数据错误，不代替不可行诊断。文件包含字段说明、上一组合及本次区间
+收益、缺失股票和已完成步骤摘要，不包含风险矩阵，也不是 `load_repro` 可加载的求解模型包。
+文件采用独立的 `optim.sequence_failure` 格式版本 1，普通 JSON/gzip 可读取。
+文件中的收益为区间复合值；若要追查区间内具体哪一天缺失，仍需按报告的股票和区间查看
+原始日度收益。`output_weights="none"` 时，partial_result 不恢复被关闭的历史权重输出，
+但仍保留最后实际持仓。自动导出失败不会覆盖原异常，原因见 `dump_error`。
+
 链式模式默认 `SequencePolicy(ignore_first_turnover=True)`：首期视为建仓，不施加换手上限，
 `step.turnover_excluded=True` 且 `step.result.metrics.turnover_l1=None`，不纳入均值或累计换手。
 第二期起恢复原换手上限及正常统计。需要首期也约束换手时显式设为 `False`。
