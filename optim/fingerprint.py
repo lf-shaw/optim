@@ -28,14 +28,20 @@ COMPILER_VERSION = "portfolio-canonical-v4-compact-l1"
 
 def _chunk(digest: Any, label: str, payload: bytes) -> None:
     encoded = label.encode("utf-8")
-    digest.update(len(encoded).to_bytes(4, "little"))
-    digest.update(encoded)
-    digest.update(len(payload).to_bytes(8, "little"))
+    # 保持原有字节协议；小型头部合并提交，数值矩阵 payload 不参与拼接，避免大块复制。
+    digest.update(
+        len(encoded).to_bytes(4, "little") + encoded
+        + len(payload).to_bytes(8, "little")
+    )
     digest.update(payload)
 
 
 def _feed(digest: Any, label: str, value: Any) -> None:
-    if value is None:
+    # 股票代码等普通字符串是对象数组递归的热点。必须用精确类型判断：str 的子类可能
+    # 同时是 Enum，仍应走下面的枚举语义。此快路径与末尾的旧编码逐字节相同。
+    if type(value) is str:
+        _chunk(digest, label, f"str:{value}".encode("utf-8"))
+    elif value is None:
         _chunk(digest, label, b"none")
     elif isinstance(value, Enum):
         _chunk(digest, label, f"enum:{type(value).__qualname__}:{value.value}".encode())
@@ -63,8 +69,23 @@ def _feed(digest: Any, label: str, value: Any) -> None:
                 payload = np.ascontiguousarray(value, dtype="<f8").tobytes()
             _chunk(digest, label, payload)
         else:
-            for index, item in enumerate(value.reshape(-1)):
-                _feed(digest, f"{label}[{index}]", item)
+            flat = value.reshape(-1)
+            if all(type(item) is str for item in flat):
+                # 对股票代码数组批量提交原有字节流，不改变标签、顺序或哈希协议。
+                # 分块限制临时内存；混合类型和字符串子类仍走完整语义编码。
+                for start in range(0, len(flat), 1024):
+                    chunks = []
+                    for index in range(start, min(start + 1024, len(flat))):
+                        encoded = f"{label}[{index}]".encode("utf-8")
+                        payload = f"str:{flat[index]}".encode("utf-8")
+                        chunks.append(
+                            len(encoded).to_bytes(4, "little") + encoded
+                            + len(payload).to_bytes(8, "little") + payload
+                        )
+                    digest.update(b"".join(chunks))
+            else:
+                for index, item in enumerate(flat):
+                    _feed(digest, f"{label}[{index}]", item)
     elif dataclasses.is_dataclass(value):
         _chunk(digest, f"{label}.type", type(value).__qualname__.encode())
         for item in dataclasses.fields(value):
