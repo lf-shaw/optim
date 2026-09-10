@@ -134,13 +134,24 @@ def test_single_period_rejects_multiple_dates(universe, field):
         make_portfolio_data(**kwargs)
 
 
-@pytest.mark.parametrize("bad", ["False", 1, None, pd.NA])
+@pytest.mark.parametrize("bad", ["False", "0", "1", 2, -1, 0.5, np.nan, np.inf, 1 + 0j, None, pd.NA])
 def test_tradable_must_be_boolean(universe, bad):
     universe["tradable"] = pd.Series(
         [True, bad, True], index=universe.index, dtype=object
     )
     with pytest.raises(TypeError, match="bool"):
         make_portfolio_data(date=DAY, universe=universe)
+
+
+@pytest.mark.parametrize("dtype", [bool, "int8", "int64", "float64", "Int64", "boolean", object])
+@pytest.mark.parametrize("multiindex", [False, True])
+def test_tradable_accepts_numeric_flags(universe, dtype, multiindex):
+    universe["tradable"] = pd.Series([1, 0, 1], index=universe.index, dtype=dtype)
+    if multiindex:
+        universe = dated(universe)
+    data = make_portfolio_data(date=DAY, universe=universe)
+    assert data.tradable.dtype == np.dtype(bool)
+    np.testing.assert_array_equal(data.tradable, [True, False, True])
 
 
 @pytest.mark.parametrize("bad", [np.nan, np.inf, 1 + 2j])

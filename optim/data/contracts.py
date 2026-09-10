@@ -70,7 +70,8 @@ class PortfolioSchedule:
     alpha_column : str
         alpha 类目标读取的 alpha 向量列名。
     tradable_column : str
-        标识本次调仓中资产是否可交易的布尔列名。
+        标识本次调仓中资产是否可交易的列名。接受 bool 或数值 0/1（1 可交易，0 不可交易），
+        不接受缺失值、字符串或其他数值。
     """
 
     universe: pd.DataFrame

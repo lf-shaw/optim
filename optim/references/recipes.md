@@ -94,7 +94,7 @@ data = PortfolioData(
     alpha_spec=AlphaSpec(units="standardized_score", scale=1.0),
     benchmark=np.asarray(benchmark_weight, dtype=float),
     initial_weight=np.asarray(pretrade_weight, dtype=float),
-    tradable=np.asarray(tradable, dtype=bool),
+    tradable=np.asarray(tradable),  # 布尔值或数值 0/1，不要提前将无效值强制转换为 bool
     risk_model=risk,
 )
 constraints = PortfolioConstraints(

@@ -550,8 +550,21 @@ def test_tuda2_default_fetches_each_full_range_once_and_reuses_it():
     assert len([call for call in fake.calls if call[0] == "returns"]) == 1
 
 
-def test_tuda2_tradability_is_fetched_once_for_the_full_range():
-    fake = _FakeTuda2()
+@pytest.mark.parametrize("numeric", [False, True])
+def test_tuda2_tradability_is_fetched_once_for_the_full_range(numeric):
+    class FlagsTuda2(_FakeTuda2):
+        def get_return(self, **kwargs):
+            # 本用例检验冻结持仓；提供完整收益，避免触发基类的缺失收益故障样本。
+            return super().get_return(**kwargs).fillna(0.0)
+
+        def get_universe(self, **kwargs):
+            frame = super().get_universe(**kwargs)
+            frame["tradable"] = np.tile([1, 0], len(frame) // 2)
+            if not numeric:
+                frame["tradable"] = frame["tradable"].astype(bool)
+            return frame
+
+    fake = FlagsTuda2()
     dates = tuple(pd.bdate_range("2026-01-02", periods=5).strftime("%Y-%m-%d"))
     result = PortfolioOptimizer().optimize_range(
         data_source=Tuda2DataSource(module=fake),
@@ -565,6 +578,7 @@ def test_tuda2_tradability_is_fetched_once_for_the_full_range():
         tradable_universe="tradeable_a_share",
     )
     assert len(result.steps) == len(dates)
+    assert all(step.result.status.has_solution for step in result.steps)
     calls = [call for call in fake.calls if call[0] == "universe"]
     assert calls == [
         (
@@ -573,6 +587,18 @@ def test_tuda2_tradability_is_fetched_once_for_the_full_range():
             tuple(pd.DatetimeIndex(pd.to_datetime(dates))),
         )
     ]
+
+
+@pytest.mark.parametrize("bad", ["0", 2, None])
+def test_tuda2_rejects_invalid_tradability(bad):
+    class InvalidFlags(_FakeTuda2):
+        def get_universe(self, **kwargs):
+            frame = super().get_universe(**kwargs)
+            frame["tradable"] = bad
+            return frame
+
+    with pytest.raises((TypeError, ValueError), match="tradab"):
+        Tuda2DataSource(module=InvalidFlags())._attach_tradability(_schedule(), "test")
 
 
 def test_tuda2_range_stops_after_full_preflight_before_returns_or_solver():

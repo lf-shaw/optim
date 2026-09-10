@@ -31,6 +31,7 @@ from ..validation import (
 )
 from .alignment import BenchmarkCoveragePolicy, DataAlignmentError, align_benchmark, _align_benchmark
 from ._reindex import _reindex_rows
+from ._tradable import _as_tradable
 from ._date_slices import _DateSlices
 from .contracts import FactorRiskFrames, PortfolioSchedule, _require_dt_sid
 
@@ -415,7 +416,7 @@ class InMemoryDataSource:
         if schedule.alpha_column in day:
             alpha = pd.to_numeric(day[schedule.alpha_column], errors="coerce").to_numpy(float)
         tradable = (
-            day[schedule.tradable_column].to_numpy(bool)
+            _as_tradable(day[schedule.tradable_column].to_numpy())
             if schedule.tradable_column in day
             else np.ones(len(day), dtype=bool)
         )

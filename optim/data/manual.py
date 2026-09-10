@@ -18,6 +18,7 @@ from ..portfolio_types import (
 )
 from .alignment import BenchmarkCoveragePolicy, DataAlignmentError, align_benchmark
 from ._reindex import _reindex_rows
+from ._tradable import _as_tradable
 from .contracts import FactorRiskFrames, _exact_covariance, _exact_xs, _single_date_values
 
 
@@ -46,7 +47,8 @@ def make_portfolio_data(
         股票表，非空且唯一的股票索引确定所有输出数组的顺序。单期表使用单层股票索引；
         也接受只含 date 当天的 (dt, sid) MultiIndex；不接受多个日期。alpha 列可省略，
         此时 data.alpha 为 None，由目标决定是否允许；tradable 列可省略，默认全为 True。
-        被提取的列不允许缺失值；tradable 必须为 bool，不隐式转换字符串或数字。
+        被提取的列不允许缺失值；tradable 接受 bool 或数值 0/1（1 可交易，0 不可交易），
+        不接受字符串或其他数值；组装后统一为 bool 数组。
     benchmark : pandas.Series | None
         非负、合计为 1 的基准。带标签的稀疏成分权重中未列出的样本股票填零；样本外基准
         依 benchmark_policy 处理。接受 sid 或只含 date 当天的 (dt, sid) 索引。
@@ -367,11 +369,7 @@ def _vector(
             f"{field} expected shape {(len(assets),)}, observed {array.shape}"
         )
     if boolean:
-        if array.dtype == np.dtype(bool):
-            return array
-        if not all(isinstance(item, (bool, np.bool_)) for item in array):
-            raise TypeError(f"{field} must contain bool values without missing entries")
-        return array.astype(bool, copy=False)
+        return _as_tradable(array, field)
     return _numeric(array, field)
 
 

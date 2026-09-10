@@ -359,7 +359,8 @@ result = PortfolioOptimizer().optimize(
 weights = result.require_weights()
 ```
 
-没有 `tradable` 列时默认全为可交易；没有 `alpha` 列时保留 `None`，适用于不带 alpha
+`tradable` 接受布尔值或数值 `0/1`（`1` 可交易、`0` 不可交易），组装后统一为布尔数组；
+不接受缺失值、字符串或其他数值。没有 `tradable` 列时默认全为可交易；没有 `alpha` 列时保留 `None`，适用于不带 alpha
 下限的跟踪误差最小化。已提供的交易状态必须是真正的 bool。列名可通过 `alpha_column` /
 `tradable_column` 指定；额外数值属性使用 `extra_attribute_columns=("score",)` 显式选取。
 缺失的基准成分/持仓行在样本内填零，但不丢弃样本外非零持仓；样本外基准默认报错，

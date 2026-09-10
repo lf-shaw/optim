@@ -28,6 +28,7 @@ from ..portfolio_types import (
 )
 from ..data.contracts import _single_date_values
 from ..data._reindex import _reindex_rows
+from ..data._tradable import _as_tradable
 from ..data.manual import _check_risk
 
 
@@ -550,7 +551,7 @@ class Tuda2DataSource:
                 f"tuda2 tradability has no exact rows for schedule keys {missing}"
             )
         universe = schedule.universe.copy()
-        universe[schedule.tradable_column] = aligned.to_numpy(bool)
+        universe[schedule.tradable_column] = _as_tradable(aligned.to_numpy())
         return PortfolioSchedule(
             universe,
             alpha_column=schedule.alpha_column,
