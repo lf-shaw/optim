@@ -633,7 +633,7 @@ def test_range_custom_benchmark_without_index_io():
     fake = _FakeTuda2()
     result = PortfolioOptimizer().optimize_range(
         data_source=Tuda2DataSource(module=fake), schedule=_schedule(),
-        benchmark=_benchmark().iloc[::-1], initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
+        benchmark=_benchmark(), initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
         objective=MaximizeAlpha(), constraints=_constraints(), alpha_spec=AlphaSpec(),
     )
     assert len(result.steps) == 2

@@ -17,6 +17,7 @@ from ..portfolio_types import (
     RiskModel,
 )
 from .alignment import BenchmarkCoveragePolicy, DataAlignmentError, align_benchmark
+from ._reindex import _reindex_rows
 from .contracts import FactorRiskFrames, _exact_covariance, _exact_xs, _single_date_values
 
 
@@ -353,9 +354,9 @@ def _vector(
             if not fill_zero and len(assets.difference(value.index)):
                 raise DataAlignmentError(f"{field} does not cover all assets")
             value = (
-                value.reindex(assets, fill_value=0.0)
+                _reindex_rows(value, assets, fill_value=0.0)
                 if fill_zero
-                else value.reindex(assets)
+                else _reindex_rows(value, assets)
             )
         value = value.to_numpy()
     array = np.asarray(value)

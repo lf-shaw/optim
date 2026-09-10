@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from functools import cached_property
 from types import MappingProxyType
 from typing import Mapping
 
@@ -11,6 +12,8 @@ import pandas as pd
 
 from ..portfolio_types import DataProvenance, FactorRiskModel
 from .alignment import DataAlignmentError
+from ._reindex import _reindex_rows
+from ._date_slices import _DateSlices
 
 
 def _require_dt_sid(index: pd.Index, field: str) -> pd.MultiIndex:
@@ -57,6 +60,8 @@ def _single_date_values(frame: pd.DataFrame | pd.Series, date: pd.Timestamp, fie
 class PortfolioSchedule:
     """策略提供的优化日期、资产、alpha 与逐资产属性。
 
+    构造后不得原地修改 universe 的数据或索引；需要变更时创建新的日程对象。
+
     Attributes
     ----------
     universe : pandas.DataFrame
@@ -78,12 +83,15 @@ class PortfolioSchedule:
         if dates.hasnans:
             raise DataAlignmentError("universe contains a missing optimization date")
 
-    @property
+    @cached_property
     def dates(self) -> pd.DatetimeIndex:
         """返回日程声明的、已排序且唯一的调仓日期。"""
 
-        values = self.universe.index.get_level_values("dt").unique()
-        return pd.DatetimeIndex(values).sort_values()
+        return self._date_slices._dates
+
+    @cached_property
+    def _date_slices(self):
+        return _DateSlices(self.universe, "sid", "universe")
 
     def day(self, date: pd.Timestamp) -> pd.DataFrame:
         """返回以资产标识为索引的严格同日样本空间切片。
@@ -104,7 +112,7 @@ class PortfolioSchedule:
             ``date`` 缺失时抛出；本方法不会用前一可用日期替代。
         """
 
-        return _exact_xs(self.universe, pd.Timestamp(date), "universe")
+        return self._date_slices._day(date)
 
 
 @dataclass(frozen=True)
@@ -160,6 +168,18 @@ class FactorRiskFrames:
             MappingProxyType(normalized),
         )
 
+    @cached_property
+    def _exposure_slices(self):
+        return _DateSlices(self.exposure, "sid", "risk exposure")
+
+    @cached_property
+    def _specific_slices(self):
+        return _DateSlices(self.specific_volatility, "sid", "specific volatility")
+
+    @cached_property
+    def _covariance_slices(self):
+        return _DateSlices(self.covariance, "factor", "factor covariance")
+
     def materialize(self, date: pd.Timestamp, assets: pd.Index) -> FactorRiskModel:
         """不做日期替代，创建一个按资产位置排列的风险模型。
 
@@ -182,9 +202,9 @@ class FactorRiskFrames:
         """
 
         date = pd.Timestamp(date)
-        exposure = _exact_xs(self.exposure, date, "risk exposure")
-        specific = _exact_xs(self.specific_volatility, date, "specific volatility")
-        covariance = _exact_covariance(self.covariance, date)
+        exposure = self._exposure_slices._day(date)
+        specific = self._specific_slices._day(date)
+        covariance = self._covariance_slices._day(date)
 
         if isinstance(specific, pd.DataFrame):
             if specific.shape[1] != 1:
@@ -252,8 +272,8 @@ class FactorRiskFrames:
                 exposure = exposure.take(indexer)
                 specific = specific.take(indexer)
         else:
-            exposure = exposure.reindex(assets)
-            specific = specific.reindex(assets)
+            exposure = _reindex_rows(exposure, assets)
+            specific = _reindex_rows(specific, assets)
 
         if not exposure_columns.equals(pd.Index(exposure.columns)):
             exposure = exposure.copy()

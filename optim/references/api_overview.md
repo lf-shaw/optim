@@ -44,6 +44,9 @@ optimizer = PortfolioOptimizer()
 同一个 `PortfolioOptimizer` 可以复用，但它只保存不可变求解策略，不保存样本空间、持仓、
 黑名单或多期状态。
 
+多期 prepare 会准备静态数据并保留逐日覆盖审计，后续求解复用。日程、风险表和准备后的
+输入不得原地修改；修改输入需要重新创建日程并 prepare。动态持仓仍按实际结果逐期检查。
+
 | 场景 | 推荐入口 |
 |---|---|
 | 已有严格对齐的完整单日问题 | `optimizer.solve(problem)` |

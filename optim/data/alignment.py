@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
+from ._reindex import _reindex_rows
 
 
 class DataAlignmentError(ValueError):
@@ -111,6 +112,11 @@ def align_benchmark(
         禁止缺失、缺失权重超过显式阈值，或没有保留任何正基准权重时抛出。
     """
 
+    return _align_benchmark(benchmark, assets, policy)
+
+
+def _align_benchmark(benchmark, assets, policy=None, *, aligned_values=None):
+    """共同执行原始基准审计；批量路径可传入已对齐的日切片，避免再次 reindex。"""
     policy = BenchmarkCoveragePolicy() if policy is None else policy
     if not isinstance(benchmark, pd.Series):
         raise TypeError("benchmark must be a pandas Series indexed by sid")
@@ -146,7 +152,10 @@ def align_benchmark(
                 f"the allowed {policy.missing_mass_tolerance:.6%}"
             )
 
-    aligned = numeric.reindex(assets, fill_value=0.0).to_numpy(float)
+    aligned = (
+        _reindex_rows(numeric, assets, fill_value=0.0).to_numpy(float)
+        if aligned_values is None else aligned_values
+    )
     retained = float(aligned.sum())
     if retained <= 0.0:
         raise BenchmarkCoverageError("optimization universe contains no benchmark weight")
@@ -154,7 +163,7 @@ def align_benchmark(
     if not np.isclose(retained, 1.0, rtol=0.0, atol=policy.weight_sum_tolerance):
         # 到达此分支表示上方已经确认调用方显式允许归一化。
         factor = 1.0 / retained
-        aligned *= factor
+        aligned = aligned * factor
     return AlignedBenchmark(
         values=aligned,
         missing_mass=missing_mass,

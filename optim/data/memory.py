@@ -8,7 +8,8 @@
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from functools import cached_property
 from typing import Mapping
 
 import numpy as np
@@ -28,8 +29,10 @@ from ..validation import (
     ValidationSeverity,
     validate_problem,
 )
-from .alignment import BenchmarkCoveragePolicy, DataAlignmentError, align_benchmark
-from .contracts import FactorRiskFrames, PortfolioSchedule, _exact_xs, _require_dt_sid
+from .alignment import BenchmarkCoveragePolicy, DataAlignmentError, align_benchmark, _align_benchmark
+from ._reindex import _reindex_rows
+from ._date_slices import _DateSlices
+from .contracts import FactorRiskFrames, PortfolioSchedule, _require_dt_sid
 
 
 class InMemoryDataSource:
@@ -72,6 +75,50 @@ class InMemoryDataSource:
         self.benchmark_policy = (
             BenchmarkCoveragePolicy() if benchmark_policy is None else benchmark_policy
         )
+        self._prepared_schedule = None
+        self._benchmark_cache = {}
+
+    @cached_property
+    def _benchmark_slices(self):
+        return _DateSlices(self.benchmark, "sid", "benchmark")
+
+    def _batch_for_schedule(self, schedule):
+        """按实际调仓坐标一次裁剪风险与权重；保留裁剪前的逐日覆盖审计。"""
+        target = schedule.universe.index
+        risk = self.risk_data
+        # 先验证完整坐标及覆盖；不能先补 NaN 再把缺少股票误当作普通数值缺失。
+        _ = risk._exposure_slices, risk._specific_slices
+        for table in (risk.exposure, risk.specific_volatility):
+            if not target.isin(table.index).all():
+                raise DataAlignmentError("risk model does not cover every requested (dt, sid)")
+        exposure = _reindex_rows(risk.exposure, target)
+        specific = _reindex_rows(risk.specific_volatility, target)
+        aligned_risk = replace(risk, exposure=exposure, specific_volatility=specific)
+        raw_benchmark = self.benchmark
+        if isinstance(raw_benchmark, pd.DataFrame):
+            raw_benchmark = raw_benchmark.iloc[:, 0]
+        numeric = pd.to_numeric(raw_benchmark, errors="coerce").astype(float)
+        aligned_weights = _reindex_rows(numeric, target, fill_value=0.0)
+        weight_slices = _DateSlices(aligned_weights, "sid", "aligned benchmark")
+        result = InMemoryDataSource(
+            risk_data=aligned_risk, benchmark=aligned_weights,
+            benchmark_policy=self.benchmark_policy,
+        )
+        result._prepared_schedule = schedule
+        for date in schedule.dates:
+            try:
+                original = self._benchmark_slices._day(date)
+                if isinstance(original, pd.DataFrame):
+                    original = original.iloc[:, 0]
+                weights = weight_slices._day(date)
+                result._benchmark_cache[date] = _align_benchmark(
+                    original, weights.index, self.benchmark_policy,
+                    aligned_values=weights.to_numpy(float),
+                )
+            except (DataAlignmentError, TypeError, ValueError) as exc:
+                # 让预检逐日汇总，某天基准有缺口不能被其他日期的正常权重平均掉。
+                result._benchmark_cache[date] = exc
+        return result
 
     def build_problems(
         self,
@@ -247,11 +294,11 @@ class InMemoryDataSource:
         independent_initial_weights: Mapping[pd.Timestamp, pd.Series] | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
     ) -> "PreparedPortfolioRun":
-        """预检全部日期，但不保留逐日稠密风险数组。
+        """准备全区间静态输入并预检全部日期，不保存逐日求解模型。
 
-        每个日期都会临时物化并静态校验，使独立数据错误在任何后端工作前一次聚合。临时数组
-        随即释放，求解时由 ``problem_at`` 再物化指定日期。由于源 frame 已驻留内存，这属于
-        有意的“先校验、后计算”，而非额外外部 I/O。
+        静态输入按实际调仓计划准备一次，并保留逐日基准覆盖审计。预检与后续求解复用准备
+        结果；逐日问题按需构造，不保存整段求解器模型。数据错误在首个后端工作前聚合。
+        准备后的输入不得原地修改；修改输入应重新创建日程和准备清单。
 
         Parameters
         ----------
@@ -275,8 +322,13 @@ class InMemoryDataSource:
                 pd.Timestamp(date): value
                 for date, value in independent_initial_weights.items()
             }
+        try:
+            prepared_source = self._batch_for_schedule(schedule)
+        except DataAlignmentError:
+            # 坐标或风险覆盖异常时保留原始输入，后续逐日预检定位并汇总错误；不修补数据。
+            prepared_source = self
         run = PreparedPortfolioRun(
-            data_source=self,
+            data_source=prepared_source,
             schedule=schedule,
             objective=objective,
             constraints=constraints,
@@ -305,7 +357,7 @@ class InMemoryDataSource:
                 continue
             issues.extend(validate_problem(problem).issues)
         return PreparedPortfolioRun(
-            data_source=self,
+            data_source=prepared_source,
             schedule=schedule,
             objective=objective,
             constraints=constraints,
@@ -337,14 +389,15 @@ class InMemoryDataSource:
         if len(assets) == 0:
             raise DataAlignmentError(f"universe is empty on {date.date()}")
 
-        benchmark_day = _exact_xs(self.benchmark, date, "benchmark")
-        if isinstance(benchmark_day, pd.DataFrame):
-            benchmark_day = benchmark_day.iloc[:, 0]
-        aligned_benchmark = align_benchmark(
-            benchmark_day,
-            assets,
-            self.benchmark_policy,
-        )
+        if self._prepared_schedule is schedule:
+            aligned_benchmark = self._benchmark_cache[date]
+            if isinstance(aligned_benchmark, Exception):
+                raise aligned_benchmark
+        else:
+            benchmark_day = self._benchmark_slices._day(date)
+            if isinstance(benchmark_day, pd.DataFrame):
+                benchmark_day = benchmark_day.iloc[:, 0]
+            aligned_benchmark = align_benchmark(benchmark_day, assets, self.benchmark_policy)
 
         selected_initial = initial_weight
         if independent_initial_weights is not None:
@@ -406,13 +459,13 @@ class InMemoryDataSource:
 class PreparedPortfolioRun:
     """已校验、按日惰性物化的轻量多期清单。
 
-    清单只保存批量 frame 引用和不可变运行配置，不为每个日期保留一套约
-    5,000 资产乘因子的 NumPy 数组。
+    清单保存按请求准备的批量数据及不可变运行配置，不额外保存一套逐日风险矩阵副本。
+    输入数组及索引不得原地修改；修改后应重新准备。
 
     Attributes
     ----------
     data_source : InMemoryDataSource
-        已加载的风险模型和基准数据源。
+        已准备的风险模型、基准数据源及覆盖审计；可能不是调用方原始数据源实例。
     schedule : PortfolioSchedule
         调仓日期、资产、alpha 和属性计划。
     objective : PortfolioObjective
@@ -506,7 +559,7 @@ def _align_initial(
             f"optimization universe omits {omitted_mass:.6%} initial holding mass on "
             f"{date.date()}"
         )
-    values = initial.reindex(assets, fill_value=0.0).to_numpy(float)
+    values = _reindex_rows(initial, assets, fill_value=0.0).to_numpy(float)
     if not np.all(np.isfinite(values)):
         raise DataAlignmentError("initial weights contain NaN or infinity")
     total = float(values.sum())

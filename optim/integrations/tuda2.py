@@ -26,6 +26,7 @@ from ..portfolio_types import (
     PortfolioProblem,
 )
 from ..data.contracts import _single_date_values
+from ..data._reindex import _reindex_rows
 
 
 class Tuda2UnavailableError(ImportError):
@@ -497,7 +498,7 @@ class Tuda2DataSource:
             raise ValueError("tuda2 universe contains duplicate (dt, sid) rows")
         if "tradable" not in frame.columns:
             raise ValueError("tuda2 universe does not contain the tradable field")
-        aligned = frame["tradable"].reindex(schedule.universe.index)
+        aligned = _reindex_rows(frame["tradable"], schedule.universe.index)
         if aligned.isna().any():
             missing = schedule.universe.index[aligned.isna()].tolist()[:10]
             raise ValueError(

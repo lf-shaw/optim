@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from .diagnostics import InfeasibilityReport
+from .data._reindex import _reindex_rows
 from .portfolio_types import (
     OptimizationResult,
     PortfolioProblem,
@@ -463,7 +464,7 @@ def _mark_to_market(
             raise SequenceDataError(
                 "holding-period return Series contains duplicate assets"
             )
-        aligned_return = holding_return.reindex(previous_target.index)
+        aligned_return = _reindex_rows(holding_return, previous_target.index)
         missing = aligned_return.isna().to_numpy()
         missing_mass = float(previous_target.to_numpy()[missing].sum())
         if missing_mass > policy.holding_missing_mass_tolerance:
@@ -488,7 +489,7 @@ def _mark_to_market(
         raise SequenceDataError("mark-to-market holdings have no positive value")
     drifted /= total
     drifted_series = pd.Series(drifted, index=previous_target.index, name="weight")
-    aligned = drifted_series.reindex(current_assets)
+    aligned = _reindex_rows(drifted_series, current_assets)
     missing_mass = float(
         drifted_series.loc[~drifted_series.index.isin(current_assets)].sum()
     )
