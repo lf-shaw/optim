@@ -1,7 +1,8 @@
 # optim — API Overview
 
 `optimize` / `optimize_range` 的 `benchmark` 接受指数代码或 pandas.Series。
-单期 Series 使用 sid 索引，多期要求严格同日的 (dt, sid) 索引；不广播、不补日期。
+单期 universe/权重 Series 支持 sid 或只含请求日期的 (dt, sid) 索引，双层日期必须为
+时间戳且唯一匹配 date；多期要求严格同日的 (dt, sid) 索引；不广播、不补日期。
 Series 输入不调用指数权重接口。旧参数 benchmark_sid 已移除，无兼容别名。
 PortfolioData / InMemoryDataSource 已绑定基准时，不允许重复传入 benchmark。
 
@@ -87,8 +88,8 @@ specific_volatility      (n_assets,)
 手工单期优先 `make_portfolio_data(date=..., universe=..., benchmark=..., initial_weight=...,
 risk_model=..., alpha_spec=...)`：universe 的股票索引确定资产顺序，alpha/tradable 是列，
 可选列名参数为 alpha_column/tradable_column；未提供 tradable 默认全 True，缺 alpha 保留 None。
-权重为带标签 Series；默认严格检查样本外基准，不能丢弃样本外非零持仓。多日输入必须准确
-匹配 date，不前填。原始风险表可用 `make_factor_risk_model` 单独装配，股票顺序取自同一
+权重为带标签 Series；默认严格检查样本外基准，不能丢弃样本外非零持仓。单期股票表和权重
+的双层索引只能含请求日期，多日直接报错。原始风险表可用 `make_factor_risk_model` 单独装配，股票顺序取自同一
 universe，协方差和特异波动率必须已经使用年化小数单位。两个函数不调用数据源或求解器。
 
 ### 风险单位

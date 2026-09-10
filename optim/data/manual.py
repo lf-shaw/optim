@@ -17,7 +17,7 @@ from ..portfolio_types import (
     RiskModel,
 )
 from .alignment import BenchmarkCoveragePolicy, DataAlignmentError, align_benchmark
-from .contracts import FactorRiskFrames, _exact_covariance, _exact_xs
+from .contracts import FactorRiskFrames, _exact_covariance, _exact_xs, _single_date_values
 
 
 def make_portfolio_data(
@@ -40,18 +40,20 @@ def make_portfolio_data(
     ----------
     date : str | pandas.Timestamp
         必填的信息日。普通单层索引表视为调用方声明的该日数据；若提供日期 MultiIndex，
-        必须存在准确同日记录，不使用前值替代。无日期标签的数据无法自动核实实际日期。
+        必须只含一个日期且等于 date，不裁剪多日数据。无日期标签的数据无法核实实际日期。
     universe : pandas.DataFrame
         股票表，非空且唯一的股票索引确定所有输出数组的顺序。单期表使用单层股票索引；
-        多日表必须使用名为 (dt, sid) 的 MultiIndex，仅提取 date 当天。alpha 列可省略，
+        也接受只含 date 当天的 (dt, sid) MultiIndex；不接受多个日期。alpha 列可省略，
         此时 data.alpha 为 None，由目标决定是否允许；tradable 列可省略，默认全为 True。
         被提取的列不允许缺失值；tradable 必须为 bool，不隐式转换字符串或数字。
     benchmark : pandas.Series | None
         非负、合计为 1 的基准。带标签的稀疏成分权重中未列出的样本股票填零；样本外基准
-        依 benchmark_policy 处理。None 表示未提供基准，不自动以期初持仓代替。
+        依 benchmark_policy 处理。接受 sid 或只含 date 当天的 (dt, sid) 索引。
+        None 表示未提供基准，不自动以期初持仓代替。
     initial_weight : pandas.Series | None
         交易前实际权重。带标签时允许只列持仓股票，其余样本股票填零；样本外非零持仓报错。
-        不归一化、不强制合计为 1，预算匹配由优化器校验。None 不会自动替换成基准。
+        接受 sid 或只含 date 当天的 (dt, sid) 索引。不归一化、不强制合计为 1，预算匹配
+        由优化器校验。None 不会自动替换成基准。
     risk_model : FactorRiskModel | FullCovarianceRiskModel | None
         已构造、日期准确且按 universe 当日股票索引排列的位置风险对象。它不带股票标签，不能据此
         检测顺序是否放错。None 不附加风险模型。原始风险表可先交给 make_factor_risk_model，
@@ -97,6 +99,7 @@ def make_portfolio_data(
         raise DataAlignmentError("date must not be missing")
     if not isinstance(universe, pd.DataFrame):
         raise TypeError("universe must be a labeled DataFrame")
+    universe = _single_date_values(universe, day, "universe")
     universe = _day_table(universe, day, "sid", "universe")
     _check_index(universe.columns, "universe.columns")
     assets = universe.index
@@ -107,6 +110,10 @@ def make_portfolio_data(
     for name, value in (("benchmark", benchmark), ("initial_weight", initial_weight)):
         if value is not None and not isinstance(value, pd.Series):
             raise TypeError(f"{name} must be a labeled Series")
+    if benchmark is not None:
+        benchmark = _single_date_values(benchmark, day, "benchmark")
+    if initial_weight is not None:
+        initial_weight = _single_date_values(initial_weight, day, "initial_weight")
     origin = provenance or DataProvenance(source="memory", source_date=day)
     _check_source_date(origin, day, "provenance")
     metadata = dict(origin.metadata)

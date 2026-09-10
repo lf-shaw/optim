@@ -25,6 +25,7 @@ from ..portfolio_types import (
     PortfolioObjective,
     PortfolioProblem,
 )
+from ..data.contracts import _single_date_values
 
 
 class Tuda2UnavailableError(ImportError):
@@ -424,9 +425,10 @@ class Tuda2DataSource:
         universe : pandas.DataFrame
             单日资产及 alpha/属性；可使用 sid 索引，或只含请求日期的 ``(dt, sid)`` 索引。
         benchmark : str | pandas.Series
-            指数代码或以 sid 为索引的单期权重，后者视为 date 当日输入，不请求指数权重。
+            指数代码或单期权重 Series；支持 sid 或只含请求日期的 (dt, sid) 索引，
+            后者先校验日期唯一且匹配。不请求指数权重。
         initial_weight : pandas.Series
-            交易前实际持仓，以 sid 为索引。
+            交易前实际持仓，支持 sid 或只含请求日期的 (dt, sid) 索引。
         objective, constraints, alpha_spec
             本次请求的目标、约束及 alpha 单位。
         benchmark_policy : BenchmarkCoveragePolicy | None
@@ -449,6 +451,11 @@ class Tuda2DataSource:
         """
 
         target_date = pd.Timestamp(date)
+        if not isinstance(initial_weight, pd.Series):
+            raise TypeError("initial_weight must be a pandas Series")
+        initial_weight = _single_date_values(initial_weight, target_date, "initial_weight")
+        if isinstance(benchmark, pd.Series):
+            benchmark = _single_date_values(benchmark, target_date, "benchmark")
         if isinstance(benchmark, pd.Series) and not isinstance(benchmark.index, pd.MultiIndex):
             benchmark = pd.concat({target_date: benchmark}, names=["dt"])
             benchmark.index = benchmark.index.set_names(["dt", "sid"])
@@ -669,23 +676,14 @@ def _single_date_schedule(
 ) -> PortfolioSchedule:
     if not isinstance(universe, pd.DataFrame):
         raise TypeError("universe must be a pandas DataFrame")
-    frame = universe.copy()
-    if isinstance(frame.index, pd.MultiIndex):
-        if tuple(frame.index.names) != ("dt", "sid"):
-            raise ValueError("universe MultiIndex names must be exactly ('dt', 'sid')")
-        dates = pd.DatetimeIndex(frame.index.get_level_values("dt").unique())
-        if len(dates) != 1 or pd.Timestamp(dates[0]) != date:
-            raise ValueError(
-                "single-period universe must contain exactly the requested date"
-            )
-    else:
-        if frame.index.has_duplicates:
-            raise ValueError("single-period universe contains duplicate sid rows")
-        sids = pd.Index(frame.index, name="sid")
-        frame.index = pd.MultiIndex.from_arrays(
-            [np.repeat(date.to_datetime64(), len(sids)), sids],
-            names=("dt", "sid"),
-        )
+    frame = _single_date_values(universe, date, "universe").copy(deep=False)
+    if frame.index.has_duplicates:
+        raise ValueError("single-period universe contains duplicate sid rows")
+    sids = pd.Index(frame.index, name="sid")
+    frame.index = pd.MultiIndex.from_arrays(
+        [np.repeat(date.to_datetime64(), len(sids)), sids],
+        names=("dt", "sid"),
+    )
     return PortfolioSchedule(frame)
 
 

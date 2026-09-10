@@ -31,6 +31,28 @@ def _exact_xs(frame: pd.DataFrame | pd.Series, date: pd.Timestamp, field: str):
     return frame.xs(date, level="dt", drop_level=True)
 
 
+def _single_date_values(frame: pd.DataFrame | pd.Series, date: pd.Timestamp, field: str):
+    """单期输入仅允许准确一个日期；脱去日期层，不复制数值或静默裁剪多日数据。"""
+    if pd.isna(date):
+        raise DataAlignmentError("date must not be missing")
+    if not isinstance(frame.index, pd.MultiIndex):
+        return frame
+    index = _require_dt_sid(frame.index, field)
+    dates = index.get_level_values("dt").unique()
+    if (
+        not isinstance(dates, pd.DatetimeIndex)
+        or dates.hasnans
+        or len(dates) != 1
+        or dates[0] != date
+    ):
+        raise DataAlignmentError(
+            f"single-period {field} must contain exactly the requested date {date}"
+        )
+    result = frame.copy(deep=False)
+    result.index = index.droplevel("dt")
+    return result
+
+
 @dataclass(frozen=True)
 class PortfolioSchedule:
     """策略提供的优化日期、资产、alpha 与逐资产属性。

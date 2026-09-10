@@ -236,8 +236,10 @@ class PortfolioOptimizer:
             实现单期数据准备协议的 tuda2 数据源。
         date, universe, initial_weight
             使用数据源时必需的单期日期、样本空间和交易前实际持仓。
+            universe 和 initial_weight 接受 sid 单层索引，或仅含一个与 date 匹配的
+            日期的 (dt, sid) 双层索引；多日、日期不匹配及重复坐标在取数前报错。
         benchmark : str | pandas.Series | None
-            数据源模式必需：指数代码，或以 sid 为索引的单期权重 Series。
+            数据源模式必需：指数代码，或以 sid / 单日 (dt, sid) 为索引的权重 Series。
             Series 视为指定 date 的基准，跳过指数权重 I/O；传 data 时不得重复提供。
         objective : PortfolioObjective
             业务目标。

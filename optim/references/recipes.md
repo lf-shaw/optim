@@ -22,6 +22,10 @@
 先用 `make_factor_risk_model(date=..., assets=universe.index, exposure=...,
 factor_covariance=..., specific_volatility=..., factor_types=...)` 装配。
 
+单期 universe、benchmark Series、initial_weight 也可保留 `(dt, sid)` 索引；三者分别
+校验只能含一个与 date 一致的时间戳，不允许混入其他日期。检查通过后自动脱去日期层，
+与 sid 单层输入可混用；适用于手工数据工厂及 tuda2 驱动的 optimize 入口。
+
 ```python
 from optim import make_portfolio_data, AlphaSpec, PortfolioOptimizer, MaximizeAlpha
 

@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from optim import (
+    DataAlignmentError,
     AlphaSpec,
     BenchmarkCoveragePolicy,
     FactorRiskFrames,
@@ -639,6 +640,49 @@ def test_range_custom_benchmark_without_index_io():
     assert all(step.result.status.has_solution for step in result.steps)
     assert not any(call[0] == "benchmark" for call in fake.calls)
     assert len([call for call in fake.calls if call[0] == "risk"]) == 3
+
+
+def test_single_period_all_dated_inputs():
+    fake = _FakeTuda2()
+    date = pd.Timestamp("2026-01-02")
+    universe = _schedule().day(date)
+    initial = pd.Series({"a": 0.5, "b": 0.5})
+    def dated(value):
+        return pd.concat({date: value}, names=["dt", "sid"])
+    result = PortfolioOptimizer().optimize(
+        data_source=Tuda2DataSource(module=fake), date=date,
+        universe=dated(universe), benchmark=dated(initial), initial_weight=dated(initial),
+        objective=MaximizeAlpha(), constraints=_constraints(), alpha_spec=AlphaSpec(),
+    )
+    assert result.status.has_solution
+    assert result.problem.data.assets.nlevels == 1
+    np.testing.assert_allclose(result.problem.data.initial_weight, [0.5, 0.5])
+
+
+@pytest.mark.parametrize("field", ["universe", "benchmark", "initial_weight"])
+@pytest.mark.parametrize("bad", ["multiple", "mismatch", "duplicate", "names", "missing", "string"])
+def test_single_period_bad_dates_before_io(field, bad):
+    fake = _FakeTuda2()
+    date = pd.Timestamp("2026-01-02")
+    kwargs = dict(
+        data_source=Tuda2DataSource(module=fake), date=date,
+        universe=_schedule().day(date), benchmark=pd.Series({"a": 0.5, "b": 0.5}),
+        initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
+        objective=MaximizeAlpha(), constraints=_constraints(), alpha_spec=AlphaSpec(),
+    )
+    value = kwargs[field]
+    target = {"mismatch": date + pd.Timedelta(days=1), "missing": pd.NaT, "string": str(date)}.get(bad, date)
+    value = pd.concat({target: value}, names=["dt", "sid"])
+    if bad == "multiple":
+        value = pd.concat([value, pd.concat({date + pd.Timedelta(days=1): kwargs[field]}, names=["dt", "sid"])])
+    elif bad == "duplicate":
+        value = pd.concat([value, value])
+    elif bad == "names":
+        value.index = value.index.set_names(["date", "sid"])
+    kwargs[field] = value
+    with pytest.raises(DataAlignmentError):
+        PortfolioOptimizer().optimize(**kwargs)
+    assert fake.calls == []
 
 
 @pytest.mark.parametrize("benchmark", [

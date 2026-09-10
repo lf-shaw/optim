@@ -99,7 +99,7 @@ group = "model"
 [[symbols]]
 name = "optim.make_portfolio_data"
 signature = "make_portfolio_data(*, date, universe, benchmark=None, initial_weight=None, risk_model=None, alpha_spec=None, alpha_column='alpha', tradable_column='tradable', extra_attribute_columns=(), benchmark_policy=None, provenance=None) -> PortfolioData"
-summary = "单期股票 DataFrame 装配：索引确定股票顺序，alpha/tradable 为列，权重 Series 按标签对齐；严格同日，不取数不求解，支持 Notebook 参数帮助"
+summary = "单期股票 DataFrame 装配：alpha/tradable 为列，权重 Series 按标签对齐；股票表及权重支持 sid 或日期唯一匹配的 (dt,sid) 索引，不裁剪多日数据，不取数不求解"
 group = "data"
 
 [[symbols]]

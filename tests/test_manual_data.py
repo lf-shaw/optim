@@ -126,6 +126,14 @@ def test_exact_date_required(universe, field):
         make_portfolio_data(**kwargs)
 
 
+@pytest.mark.parametrize("field", ["universe", "benchmark", "initial_weight"])
+def test_single_period_rejects_multiple_dates(universe, field):
+    kwargs = dict(date=DAY, universe=universe, benchmark=pd.Series({"A": 1.}), initial_weight=pd.Series({"A": 1.}))
+    kwargs[field] = pd.concat([dated(kwargs[field]), dated(kwargs[field], day=DAY + pd.Timedelta(days=1))])
+    with pytest.raises(DataAlignmentError, match="exactly the requested date"):
+        make_portfolio_data(**kwargs)
+
+
 @pytest.mark.parametrize("bad", ["False", 1, None, pd.NA])
 def test_tradable_must_be_boolean(universe, bad):
     universe["tradable"] = pd.Series(

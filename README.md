@@ -326,6 +326,11 @@ $$
 `universe.index` 是唯一股票顺序，`alpha`、`tradable` 放在同一个 DataFrame。
 基准和期初持仓独立传入带股票索引的 Series，避免要求这些稀疏权重与 universe 预先同序。
 
+单期 `make_portfolio_data(...)` 和 `optimizer.optimize(data_source=..., ...)` 的
+`universe`、基准 Series、`initial_weight` 均接受 `sid` 单层索引或 `(dt, sid)` 双层索引，
+也可混用。双层索引的 dt 必须为时间戳、只有一个非空日期且等于请求的 `date`；重复坐标、
+多个日期或日期不匹配直接报错，不会自动挑选一天。日期检查不触发取数或求解。
+
 ```python
 from optim import make_portfolio_data, AlphaSpec, MaximizeAlpha, PortfolioOptimizer
 
