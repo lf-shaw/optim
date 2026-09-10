@@ -373,7 +373,7 @@ class PortfolioOptimizer:
         objective: "PortfolioObjective",
         constraints: "PortfolioConstraints",
         alpha_spec: "AlphaSpec | None",
-        initial_weight: pd.Series,
+        initial_weight: pd.Series | None = None,
         benchmark: str | pd.Series | None = None,
         holding_period_returns=None,
         sequence_policy: "SequencePolicy | None" = None,
@@ -400,8 +400,11 @@ class PortfolioOptimizer:
             各日期共享的静态约束；不得包含非空单期交易名单。
         alpha_spec : AlphaSpec | None
             alpha 单位和尺度；alpha 目标必须提供。
-        initial_weight : pandas.Series
-            链式序列首日的实际期初权重，以资产为索引。
+        initial_weight : pandas.Series | None
+            链式首日实际持仓。默认首期免换手时可省略，将首日基准中的可交易部分归一化
+            作为初始持仓；无正权重的可交易基准成分时报错。此时 asset_trade 必须为 None，
+            tradable_universe 仍可用于取数；默认冻结使不可交易资产固定在零权重。
+            独立模式不适用。
         benchmark : str | pandas.Series | None
             外部数据源使用的指数代码或严格 (dt, sid) 索引的逐日权重 Series。
             缺日期报错，不广播单期权重、不前向填充。内存源已绑定基准，必须保持 None。
@@ -431,6 +434,12 @@ class PortfolioOptimizer:
             任一日期缺少严格同日数据或标签无法安全对齐。
         """
 
+        resolved_policy = SequencePolicy() if sequence_policy is None else sequence_policy
+        if initial_weight is None:
+            if resolved_policy.mode != "chained" or not resolved_policy.ignore_first_turnover:
+                raise ValueError("omitting initial_weight requires chained mode and ignore_first_turnover=True")
+            if constraints.asset_trade is not None:
+                raise ValueError("asset_trade must be None when initial_weight is omitted; use single-period optimize for operational asset instructions")
         if constraints.asset_trade is not None and not constraints.asset_trade.is_empty:
             raise ValueError(
                 "static asset_trade constraints are not accepted by optimize_range; "
@@ -442,9 +451,6 @@ class PortfolioOptimizer:
         if not isinstance(data_source, InMemoryDataSource):
             if benchmark is None:
                 raise ValueError("external data_source requires benchmark")
-            resolved_policy = (
-                SequencePolicy() if sequence_policy is None else sequence_policy
-            )
             prepared = data_source.prepare_sequence(
                 schedule=schedule,
                 benchmark=benchmark,
@@ -458,6 +464,7 @@ class PortfolioOptimizer:
                 require_holding_returns=resolved_policy.mode == "chained",
                 tradable_universe=tradable_universe,
                 extra_attribute_columns=extra_attribute_columns,
+                sequence_policy=resolved_policy,
             )
             return self.solve_sequence(
                 prepared.run,
@@ -481,6 +488,7 @@ class PortfolioOptimizer:
             initial_weight=initial_weight,
             independent_initial_weights=independent_initial_weights,
             extra_attribute_columns=extra_attribute_columns,
+            sequence_policy=resolved_policy,
         )
         return self.solve_sequence(
             prepared_run,

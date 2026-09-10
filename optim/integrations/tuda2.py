@@ -25,6 +25,7 @@ from ..portfolio_types import (
     PortfolioConstraints,
     PortfolioObjective,
     PortfolioProblem,
+    SequencePolicy,
 )
 from ..data.contracts import _single_date_values
 from ..data._reindex import _reindex_rows
@@ -352,7 +353,7 @@ class Tuda2DataSource:
         *,
         schedule: PortfolioSchedule,
         benchmark: str | pd.Series,
-        initial_weight: pd.Series,
+        initial_weight: pd.Series | None = None,
         objective: PortfolioObjective,
         constraints: PortfolioConstraints,
         alpha_spec: AlphaSpec | None,
@@ -362,6 +363,7 @@ class Tuda2DataSource:
         require_holding_returns: bool = True,
         tradable_universe: str | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
+        sequence_policy: SequencePolicy | None = None,
     ) -> Tuda2PreparedSequence:
         """一次获取完整区间，预检并返回求解器无关的多期输入。
 
@@ -375,8 +377,10 @@ class Tuda2DataSource:
             策略定义的调仓日期、资产、alpha 和属性。
         benchmark : str | pandas.Series
             指数代码或严格 (dt, sid) 索引的逐日权重；不广播或替代缺失日期。
-        initial_weight : pandas.Series
-            链式首日实际持仓，以 sid 为索引。
+        initial_weight : pandas.Series | None
+            链式首日实际持仓；省略时须由 sequence_policy 明确允许基准初始化。
+        sequence_policy : SequencePolicy | None
+            首期建仓策略，由 optimize_range 传入。
         objective : PortfolioObjective
             各日期共享的目标。
         constraints : PortfolioConstraints
@@ -409,6 +413,8 @@ class Tuda2DataSource:
             预检发现任一日期的输入或静态模型错误。
         """
 
+        if initial_weight is None and constraints.asset_trade is not None:
+            raise ValueError("asset_trade must be None when initial_weight is omitted")
         effective_schedule = (
             schedule
             if tradable_universe is None
@@ -429,6 +435,7 @@ class Tuda2DataSource:
             initial_weight=initial_weight,
             independent_initial_weights=independent_initial_weights,
             extra_attribute_columns=extra_attribute_columns,
+            sequence_policy=sequence_policy,
         )
         prepared.validation.raise_for_errors()
 

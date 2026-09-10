@@ -448,7 +448,7 @@ def test_sequence_only_keeps_stopped_problem(sample_lp_problem):
             turnover=TurnoverLimit(0.0),
         ),
     )
-    stopped = optimizer.solve_sequence([bad])
+    stopped = optimizer.solve_sequence([bad], sequence_policy=SequencePolicy(ignore_first_turnover=False))
     assert stopped.stopped_problem is not None
     assert stopped.steps[0].result.problem is None
     report = optimizer.diagnose(
@@ -456,7 +456,7 @@ def test_sequence_only_keeps_stopped_problem(sample_lp_problem):
     )
     assert report.linear_feasible is False
     held = optimizer.solve_sequence(
-        [bad], sequence_policy=SequencePolicy(on_failure="hold")
+        [bad], sequence_policy=SequencePolicy(on_failure="hold", ignore_first_turnover=False)
     )
     assert held.stopped_problem is None
     assert held.steps[0].result.problem is None

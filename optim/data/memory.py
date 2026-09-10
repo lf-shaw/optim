@@ -22,6 +22,7 @@ from ..portfolio_types import (
     PortfolioData,
     PortfolioObjective,
     PortfolioProblem,
+    SequencePolicy,
 )
 from ..validation import (
     ValidationIssue,
@@ -32,6 +33,7 @@ from ..validation import (
 from .alignment import BenchmarkCoveragePolicy, DataAlignmentError, align_benchmark, _align_benchmark
 from ._reindex import _reindex_rows
 from ._tradable import _as_tradable
+from ._sequence_initial import _first_period_problem
 from ._date_slices import _DateSlices
 from .contracts import FactorRiskFrames, PortfolioSchedule, _require_dt_sid
 
@@ -242,7 +244,7 @@ class InMemoryDataSource:
         objective: PortfolioObjective,
         constraints: PortfolioConstraints,
         alpha_spec: AlphaSpec | None,
-        initial_weight: pd.Series,
+        initial_weight: pd.Series | None,
         independent_initial_weights: Mapping[pd.Timestamp, pd.Series] | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
     ) -> PortfolioProblem:
@@ -291,9 +293,10 @@ class InMemoryDataSource:
         objective: PortfolioObjective,
         constraints: PortfolioConstraints,
         alpha_spec: AlphaSpec | None,
-        initial_weight: pd.Series,
+        initial_weight: pd.Series | None = None,
         independent_initial_weights: Mapping[pd.Timestamp, pd.Series] | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
+        sequence_policy: SequencePolicy | None = None,
     ) -> "PreparedPortfolioRun":
         """准备全区间静态输入并预检全部日期，不保存逐日求解模型。
 
@@ -309,6 +312,8 @@ class InMemoryDataSource:
             独立模式的逐日初始组合。
         extra_attribute_columns : tuple[str, ...]
             需要物化的额外属性列。
+        sequence_policy : SequencePolicy | None
+            首期建仓策略；由 optimize_range 传入。None 保持单期模板原有约束。
 
         Returns
         -------
@@ -339,6 +344,7 @@ class InMemoryDataSource:
             extra_attribute_columns=tuple(extra_attribute_columns),
             validation=ValidationReport(),
             prepare_s=0.0,
+            sequence_policy=sequence_policy,
         )
         issues: list[ValidationIssue] = []
         for date in run.dates:
@@ -368,6 +374,7 @@ class InMemoryDataSource:
             extra_attribute_columns=tuple(extra_attribute_columns),
             validation=ValidationReport(tuple(issues)),
             prepare_s=time.perf_counter() - started,
+            sequence_policy=sequence_policy,
         )
 
     def _materialize_problem(
@@ -379,7 +386,7 @@ class InMemoryDataSource:
         objective: PortfolioObjective,
         constraints: PortfolioConstraints,
         alpha_spec: AlphaSpec | None,
-        initial_weight: pd.Series,
+        initial_weight: pd.Series | None,
         independent_initial_weights: Mapping[pd.Timestamp, pd.Series] | None,
         extra_attribute_columns: tuple[str, ...],
     ) -> PortfolioProblem:
@@ -410,7 +417,10 @@ class InMemoryDataSource:
         elif position > 0:
             # 序列预检只需要 shape 正确的占位权重；链式引擎会在实际求解前替换为自然漂移持仓。
             selected_initial = pd.Series(aligned_benchmark.values, index=assets)
-        aligned_initial = _align_initial(selected_initial, assets, constraints.budget, date)
+        aligned_initial = (
+            None if selected_initial is None
+            else _align_initial(selected_initial, assets, constraints.budget, date)
+        )
 
         alpha = None
         if schedule.alpha_column in day:
@@ -475,8 +485,8 @@ class PreparedPortfolioRun:
         各日期共享的静态约束。
     alpha_spec : AlphaSpec | None
         alpha 单位和尺度。
-    initial_weight : pandas.Series
-        链式首日或默认期初权重。
+    initial_weight : pandas.Series | None
+        链式首日或默认期初权重；None 仅在首期建仓策略允许时使用基准初始化。
     independent_initial_weights : Mapping[pandas.Timestamp, pandas.Series] | None
         独立模式的逐日期期初权重。
     extra_attribute_columns : tuple[str, ...]
@@ -485,6 +495,8 @@ class PreparedPortfolioRun:
         全日期预检的聚合报告。
     prepare_s : float
         全区间预检 wall-clock 秒数。
+    sequence_policy : SequencePolicy | None
+        准备时采用的首期建仓策略，实际求解时不得改变其初始化语义。
     """
 
     data_source: InMemoryDataSource
@@ -492,11 +504,12 @@ class PreparedPortfolioRun:
     objective: PortfolioObjective
     constraints: PortfolioConstraints
     alpha_spec: AlphaSpec | None
-    initial_weight: pd.Series
+    initial_weight: pd.Series | None
     independent_initial_weights: Mapping[pd.Timestamp, pd.Series] | None
     extra_attribute_columns: tuple[str, ...]
     validation: ValidationReport
     prepare_s: float
+    sequence_policy: SequencePolicy | None = None
 
     @property
     def dates(self) -> pd.DatetimeIndex:
@@ -530,7 +543,7 @@ class PreparedPortfolioRun:
             location = int(self.dates.get_loc(date))
         except KeyError as exc:
             raise KeyError(f"date {date.date()} is not in the prepared schedule") from exc
-        return self.data_source.materialize_problem(
+        problem = self.data_source.materialize_problem(
             self.schedule,
             date,
             location,
@@ -541,6 +554,9 @@ class PreparedPortfolioRun:
             independent_initial_weights=self.independent_initial_weights,
             extra_attribute_columns=self.extra_attribute_columns,
         )
+        if location == 0 and self.sequence_policy is not None:
+            return _first_period_problem(problem, self.sequence_policy)
+        return problem
 
 
 def _align_initial(

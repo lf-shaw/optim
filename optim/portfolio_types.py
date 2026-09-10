@@ -1285,6 +1285,11 @@ class SequencePolicy:
     output_weights : str
         ``"none"`` 不保存逐日权重，``"sparse"`` 仅保存清理后的非零权重，``"all"`` 保存
         完整权重；默认为 ``"sparse"``。
+    ignore_first_turnover : bool
+        默认 True：链式首期不限制换手，且结果 turnover_l1 为 None，不参与换手统计。
+        缺省首期持仓时，将同日基准中的可交易部分归一化初始化；无正权重可交易成分时报错。
+        此时不允许 asset_trade 指令，默认不可交易冻结仍生效，其初始权重为零。
+        第二期起恢复换手约束及统计；独立模式不使用此选项。
     """
 
     mode: str = "chained"
@@ -1294,8 +1299,11 @@ class SequencePolicy:
     holding_missing_mass_tolerance: float = 0.0
     renormalize_missing_holdings: bool = False
     output_weights: str = "sparse"
+    ignore_first_turnover: bool = True
 
     def __post_init__(self) -> None:
+        if not isinstance(self.ignore_first_turnover, bool):
+            raise TypeError("ignore_first_turnover must be bool")
         if self.mode not in {"chained", "independent"}:
             raise ValueError("sequence mode must be 'chained' or 'independent'")
         if self.holding_update != "mark_to_market":

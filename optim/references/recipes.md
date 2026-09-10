@@ -203,8 +203,13 @@ for step in sequence.steps:
     print(step.date, step.result.status, step.result.timings.total_s)
 ```
 
-tuda2 的风险、基准和日收益按完整区间批量读取；每日 turnover 相对自然漂移后的
-`step.pretrade_weight` 计算。
+tuda2 的风险、基准和日收益按完整区间批量读取。默认链式首期免换手上限且不计入换手统计，
+`step.turnover_excluded=True`、`step.result.metrics.turnover_l1=None`；第二期起相对自然漂移后的
+`step.pretrade_weight` 计算。需要限制首期换手，设置 `ignore_first_turnover=False`。
+默认建仓模式可省略 initial_weight，将首日基准中的可交易部分归一化作为初始持仓，原基准不变；
+无正权重可交易成分时报错。asset_trade 必须为 None，tradable_universe 仍可指定。
+默认冻结使不可交易股票固定在零权重；显式提供持仓时不做筛选，按真实权重冻结。
+首期缺省持仓且建仓失败时停止，即使 on_failure 为 hold 也不滚动虚构持仓。
 
 ---
 

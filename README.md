@@ -604,6 +604,17 @@ sequence = PortfolioOptimizer().optimize_range(
 
 tuda2 风险模型、基准权重和日度收益按完整区间一次取足；逐日优化循环不会反复发起 I/O。
 
+链式模式默认 `SequencePolicy(ignore_first_turnover=True)`：首期视为建仓，不施加换手上限，
+`step.turnover_excluded=True` 且 `step.result.metrics.turnover_l1=None`，不纳入均值或累计换手。
+第二期起恢复原换手上限及正常统计。需要首期也约束换手时显式设为 `False`。
+
+默认建仓模式允许省略 `initial_weight`：从第一期对齐后的基准中提取可交易股票，归一化作为
+初始持仓（原基准须与资金预算一致），原始基准不变。无正权重可交易基准成分时明确报错。
+此时 `asset_trade` 必须为 `None`；仍可指定 `tradable_universe` 获取交易状态，默认
+`freeze_nontradable=True` 将不可交易股票固定在零权重。显式提供持仓则不筛选或归一化，
+仍按真实期初权重冻结。没有真实初始持仓且首期建仓失败时，即使配置 `on_failure="hold"` 也停止，不推进
+虚构持仓。独立模式及单期求解不享受首期换手豁免。
+
 如果风险模型和基准已经以 pandas 对象常驻内存，使用相同的多期入口，不需要逐日
 构造 `PortfolioProblem`：
 

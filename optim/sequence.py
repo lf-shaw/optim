@@ -15,6 +15,7 @@ import pandas as pd
 
 from .diagnostics import InfeasibilityReport
 from .data._reindex import _reindex_rows
+from .data._sequence_initial import _first_period_problem
 from .portfolio_types import (
     OptimizationResult,
     PortfolioProblem,
@@ -52,6 +53,8 @@ class SequenceStep:
         恢复求解实际采用的换手率上限。
     derived_from : ProblemFingerprint | None
         原始不可行问题的 fingerprint，用于证明恢复问题的派生关系。
+    turnover_excluded : bool
+        本期换手是否因首期建仓约定排除；为真时 result.metrics.turnover_l1 为 None。
     """
 
     date: pd.Timestamp
@@ -63,6 +66,7 @@ class SequenceStep:
     minimum_feasible_turnover: float | None = None
     effective_turnover_limit: float | None = None
     derived_from: ProblemFingerprint | None = None
+    turnover_excluded: bool = False
 
 
 @dataclass(frozen=True)
@@ -160,13 +164,16 @@ def solve_sequence(
     Raises
     ------
     SequenceDataError
-        日期无序/重复、链式首日无期初持仓、收益日期缺失或持仓漂移无法安全对齐。
+        日期无序/重复、首期初始化条件不满足、收益日期缺失或持仓漂移无法安全对齐。
     PortfolioValidationError
         任一静态问题未通过预检。
     """
 
-    policy = SequencePolicy() if sequence_policy is None else sequence_policy
     from .data.memory import PreparedPortfolioRun
+
+    policy = SequencePolicy() if sequence_policy is None else sequence_policy
+    if isinstance(problems, PreparedPortfolioRun) and sequence_policy is None and problems.sequence_policy is not None:
+        policy = problems.sequence_policy
 
     schedule_prepare_s = 0.0
     if isinstance(problems, PreparedPortfolioRun):
@@ -195,11 +202,25 @@ def solve_sequence(
 
     # 在首个昂贵求解前校验所有静态日期和收益日期。后续链式期初权重虽为动态值，调用方仍
     # 提供 shape 正确的占位值，以便提前完成其余检查。
+    first_template = problem_at(0)
+    synthetic_initial = (
+        problems.initial_weight is None
+        if isinstance(problems, PreparedPortfolioRun)
+        else first_template.data.initial_weight is None
+    ) and policy.mode == "chained"
+    if isinstance(problems, PreparedPortfolioRun) and problems.sequence_policy is not None and (
+        problems.sequence_policy.mode != policy.mode
+        or problems.sequence_policy.ignore_first_turnover != policy.ignore_first_turnover
+    ):
+        raise SequenceDataError("sequence initialization policy differs from prepared run; prepare again")
+    try:
+        first_template = _first_period_problem(first_template, policy)
+    except ValueError as exc:
+        raise SequenceDataError(str(exc)) from exc
     if not prevalidated:
         for position in range(len(dates)):
-            report = optimizer.validate(problem_at(position))
+            report = optimizer.validate(first_template if position == 0 else problem_at(position))
             report.raise_for_errors()
-    first_template = problem_at(0)
     if policy.mode == "chained" and first_template.data.initial_weight is None:
         raise SequenceDataError("chained sequence requires first-day initial weights")
     normalized_returns: dict[pd.Timestamp, pd.Series | np.ndarray] = {}
@@ -289,16 +310,19 @@ def solve_sequence(
         if result.status.has_solution:
             solved_weight = result.require_weights()
             actual_weight = solved_weight.copy()
-        elif policy.mode == "chained" and policy.on_failure == "hold":
+        elif policy.mode == "chained" and policy.on_failure == "hold" and not (position == 0 and synthetic_initial):
             actual_weight = pretrade.copy() if pretrade is not None else actual_weight
         else:
             stopped_date = date
-            if policy.on_failure == "stop":
+            if policy.on_failure == "stop" or (position == 0 and synthetic_initial):
                 stopped_problem = result.problem or problem
 
         # 单期结果保留准确问题以便直接诊断；序列只在顶层保留一个 stop 问题，避免 2500 日
         # 回测因每步结果反向持有风险矩阵而显著增加内存。
         stored_result = replace(_apply_output_policy(result, policy), problem=None)
+        turnover_excluded = policy.mode == "chained" and position == 0 and policy.ignore_first_turnover
+        if turnover_excluded and stored_result.metrics is not None:
+            stored_result = replace(stored_result, metrics=replace(stored_result.metrics, turnover_l1=None))
         steps.append(
             SequenceStep(
                 date=date,
@@ -310,6 +334,7 @@ def solve_sequence(
                 minimum_feasible_turnover=minimum_feasible_turnover,
                 effective_turnover_limit=effective_turnover,
                 derived_from=derived_from,
+                turnover_excluded=turnover_excluded,
             )
         )
         if stopped_date is not None:

@@ -179,7 +179,14 @@ $$
 
 - `mode="chained"`；
 - `on_failure="stop"`；
+- `ignore_first_turnover=True`：仅链式首期豁免换手上限，结果换手为 None（不是零），不计入统计；
 - `output_weights="sparse"`，仅保留绝对值不小于默认 `1e-5` 的权重。
+
+链式首期免换手时可省略 initial_weight，将对齐后的首日基准中的可交易部分归一化初始化，
+原基准保持不变；无正权重可交易成分则报错。此时 asset_trade 必须为 None，tradable_universe
+可指定；默认冻结使不可交易股票固定在零。显式持仓则保持原样并按实际权重冻结。
+原基准须匹配 budget，不推测非单位预算的初始化方式。无真实持仓且
+首期失败时停止，不能按 hold 滚动虚构持仓。第二期起使用漂移持仓正常约束换手并统计。
 
 ---
 

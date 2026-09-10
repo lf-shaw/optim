@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -70,6 +72,62 @@ def _benchmark(dates=("2026-01-02", "2026-01-05"), *, outside=False):
         series.index = pd.MultiIndex.from_product([[date], series.index], names=["dt", "sid"])
         pieces.append(series)
     return pd.concat(pieces)
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_range_optional_initial_and_first_turnover(external):
+    dates = ("2026-01-02", "2026-01-05")
+    source = (
+        Tuda2DataSource(module=_FakeTuda2()) if external
+        else InMemoryDataSource(risk_data=_frames(), benchmark=_benchmark())
+    )
+    schedule = _schedule(dates)
+    result = PortfolioOptimizer().optimize_range(
+        data_source=source, schedule=schedule,
+        benchmark="000852.SH" if external else None,
+        tradable_universe="tradeable_a_share" if external else None,
+        objective=MaximizeAlpha(), constraints=_constraints(), alpha_spec=AlphaSpec(),
+        holding_period_returns={pd.Timestamp(dates[1]): pd.Series(0.0, index=["a", "b"])},
+    )
+    assert len(result.steps) == 2
+    assert all(step.result.status.has_solution for step in result.steps)
+    assert result.steps[0].result.metrics.turnover_l1 is None
+    assert result.steps[1].result.metrics.turnover_l1 is not None
+
+
+@pytest.mark.parametrize("external", [False, True])
+def test_range_missing_initial_normalizes_tradable_benchmark(external):
+    schedule = _schedule(("2026-01-02",))
+    universe = schedule.universe.copy()
+    universe.iloc[0, universe.columns.get_loc("tradable")] = False
+    result = PortfolioOptimizer().optimize_range(
+            data_source=(Tuda2DataSource(module=_FakeTuda2()) if external else InMemoryDataSource(risk_data=_frames(), benchmark=_benchmark())),
+            benchmark="000852.SH" if external else None,
+            schedule=PortfolioSchedule(universe), objective=MaximizeAlpha(),
+            constraints=PortfolioConstraints(), alpha_spec=AlphaSpec(),
+        )
+    np.testing.assert_allclose(result.steps[0].pretrade_weight.reindex(["a", "b"], fill_value=0), [0, 1])
+    assert result.steps[0].result.require_weights().get("a", 0.0) == 0.0
+
+
+@pytest.mark.parametrize("freeze", [False, True])
+def test_range_tradable_source_without_initial_checks_effective_freeze(freeze):
+    class NontradableSource(_FakeTuda2):
+        def get_universe(self, **kwargs):
+            frame = super().get_universe(**kwargs)
+            frame["tradable"] = 0
+            return frame
+
+    def run():
+        return PortfolioOptimizer().optimize_range(
+            data_source=Tuda2DataSource(module=NontradableSource()),
+            schedule=_schedule(("2026-01-02",)), benchmark="000852.SH",
+            objective=MaximizeAlpha(), constraints=replace(_constraints(), freeze_nontradable=freeze),
+            alpha_spec=AlphaSpec(), tradable_universe="tradeable_a_share",
+        )
+
+    with pytest.raises(PortfolioValidationError, match="no positive tradable benchmark"):
+        run()
 
 
 def _constraints():

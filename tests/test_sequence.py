@@ -161,6 +161,7 @@ def test_explicit_turnover_recovery_uses_exact_linear_minimum():
     sequence = PortfolioOptimizer().solve_sequence(
         [problem],
         sequence_policy=SequencePolicy(
+            ignore_first_turnover=False,
             turnover_recovery=TurnoverRecoveryPolicy(max_turnover=2.0),
             output_weights="none",
         ),
@@ -230,6 +231,7 @@ def test_factor_turnover_recovery_searches_full_convex_feasibility_boundary(
         fake,
         [problem],
         sequence_policy=SequencePolicy(
+            ignore_first_turnover=False,
             turnover_recovery=TurnoverRecoveryPolicy(
                 max_turnover=0.80,
                 buffer=1e-5,
@@ -248,3 +250,75 @@ def test_factor_turnover_recovery_searches_full_convex_feasibility_boundary(
 def test_turnover_recovery_v1_always_resets_next_period():
     with pytest.raises(ValueError, match="always resets"):
         TurnoverRecoveryPolicy(max_turnover=0.20, reset_next_period=False)
+
+
+def test_first_turnover_default_exclusion_and_second_restoration(sample_lp_problem):
+    first = replace(sample_lp_problem, constraints=replace(sample_lp_problem.constraints, turnover=TurnoverLimit(0.0)))
+    second = _next_day(first)
+    result = PortfolioOptimizer().solve_sequence(
+        [first, second], holding_period_returns={second.data.date: np.zeros(4)},
+    )
+    assert all(step.result.status.has_solution for step in result.steps)
+    assert result.steps[0].turnover_excluded
+    assert result.steps[0].result.metrics.turnover_l1 is None
+    assert not result.steps[1].turnover_excluded
+    assert result.steps[1].result.metrics.turnover_l1 == pytest.approx(0.0, abs=1e-7)
+    assert not np.allclose(result.steps[0].result.require_weights().reindex(first.data.assets, fill_value=0.0), first.data.initial_weight)
+    assert first.constraints.turnover.limit == 0.0
+    constrained = PortfolioOptimizer().solve_sequence(
+        [first], sequence_policy=SequencePolicy(ignore_first_turnover=False),
+    )
+    assert constrained.steps[0].result.metrics.turnover_l1 == pytest.approx(0.0, abs=1e-7)
+
+
+def test_missing_initial_uses_benchmark_and_requires_no_operational_constraints(sample_lp_problem):
+    from optim import AssetTradeConstraints
+
+    problem = replace(sample_lp_problem, data=replace(sample_lp_problem.data, initial_weight=None))
+    result = PortfolioOptimizer().solve_sequence([problem])
+    np.testing.assert_array_equal(result.steps[0].pretrade_weight, problem.data.benchmark)
+    assert result.steps[0].result.status.has_solution
+    assert problem.data.initial_weight is None
+    with pytest.raises(SequenceDataError, match="initial_weight"):
+        PortfolioOptimizer().solve_sequence([problem], sequence_policy=SequencePolicy(ignore_first_turnover=False))
+    with pytest.raises(SequenceDataError, match="asset_trade"):
+        PortfolioOptimizer().solve_sequence([replace(problem, constraints=replace(problem.constraints, asset_trade=AssetTradeConstraints()))])
+    blocked = replace(problem, data=replace(problem.data, tradable=np.array([0, 1, 1, 1])))
+    initialized = PortfolioOptimizer().solve_sequence([blocked])
+    np.testing.assert_allclose(initialized.steps[0].pretrade_weight.reindex(problem.data.assets, fill_value=0), [0, 1/3, 1/3, 1/3])
+    assert initialized.steps[0].result.require_weights().get("a", 0.0) == 0.0
+    np.testing.assert_array_equal(blocked.data.benchmark, np.full(4, 0.25))
+    with pytest.raises(SequenceDataError, match="no positive tradable benchmark"):
+        PortfolioOptimizer().solve_sequence([replace(blocked, data=replace(blocked.data, tradable=np.zeros(4, dtype=bool)))])
+    unfrozen = replace(blocked, constraints=replace(blocked.constraints, freeze_nontradable=False))
+    assert PortfolioOptimizer().solve_sequence([unfrozen]).steps[0].result.status.has_solution
+
+
+def test_failed_synthetic_initial_cannot_hold_fictitious_portfolio(sample_lp_problem, monkeypatch):
+    problem = replace(
+        sample_lp_problem,
+        data=replace(sample_lp_problem.data, initial_weight=None),
+    )
+    optimizer = PortfolioOptimizer()
+    solved = optimizer.solve(sample_lp_problem)
+    monkeypatch.setattr(optimizer, "_solve_prevalidated", lambda candidate: replace(solved, status=SolveStatus.INFEASIBLE, weights=None, problem=candidate))
+    result = optimizer.solve_sequence([problem], sequence_policy=SequencePolicy(on_failure="hold"))
+    assert result.stopped_date == problem.data.date
+    assert result.final_weight is None
+    assert result.stopped_problem.constraints.turnover is None
+
+
+def test_independent_mode_does_not_exclude_first_turnover(sample_lp_problem):
+    result = PortfolioOptimizer().solve_sequence([sample_lp_problem], sequence_policy=SequencePolicy(mode="independent"))
+    assert not result.steps[0].turnover_excluded
+    assert result.steps[0].result.metrics.turnover_l1 is not None
+
+
+def test_explicit_initial_keeps_nontradable_holdings(sample_lp_problem):
+    problem = replace(sample_lp_problem, data=replace(sample_lp_problem.data, tradable=np.array([0, 1, 1, 1])))
+    result = PortfolioOptimizer().solve_sequence([problem])
+    step = result.steps[0]
+    assert step.result.status.has_solution
+    np.testing.assert_array_equal(step.pretrade_weight, problem.data.initial_weight)
+    assert step.result.require_weights()["a"] == pytest.approx(0.25)
+    assert step.result.metrics.turnover_l1 is None
