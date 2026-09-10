@@ -73,9 +73,13 @@ from .data import (
     InMemoryDataSource,
     PortfolioSchedule,
     PreparedPortfolioRun,
+    make_portfolio_data,
+    make_factor_risk_model,
 )
 
 __all__ = [
+    "make_portfolio_data",
+    "make_factor_risk_model",
     "__version__",
     "AlignmentReport",
     "AlphaSpec",

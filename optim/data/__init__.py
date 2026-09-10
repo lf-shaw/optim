@@ -8,6 +8,7 @@ from .alignment import (
 )
 from .contracts import FactorRiskFrames, PortfolioSchedule
 from .memory import InMemoryDataSource, PreparedPortfolioRun
+from .manual import make_factor_risk_model, make_portfolio_data
 
 __all__ = [
     "BenchmarkCoverageError",
@@ -18,4 +19,6 @@ __all__ = [
     "PortfolioSchedule",
     "PreparedPortfolioRun",
     "align_benchmark",
+    "make_portfolio_data",
+    "make_factor_risk_model",
 ]

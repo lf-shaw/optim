@@ -97,6 +97,18 @@ summary = "单次优化请求的不可变完整定义"
 group = "model"
 
 [[symbols]]
+name = "optim.make_portfolio_data"
+signature = "make_portfolio_data(*, date, universe, benchmark=None, initial_weight=None, risk_model=None, alpha_spec=None, alpha_column='alpha', tradable_column='tradable', extra_attribute_columns=(), benchmark_policy=None, provenance=None) -> PortfolioData"
+summary = "单期股票 DataFrame 装配：索引确定股票顺序，alpha/tradable 为列，权重 Series 按标签对齐；严格同日，不取数不求解，支持 Notebook 参数帮助"
+group = "data"
+
+[[symbols]]
+name = "optim.make_factor_risk_model"
+signature = "make_factor_risk_model(*, date, assets, exposure, factor_covariance, specific_volatility, factor_types, constant_exposures=None, provenance=None) -> FactorRiskModel"
+summary = "单期带标签风险表按指定股票和有效因子对齐；年化小数协方差与特异标准差，不自动换算；返回位置对象，后续必须使用同一股票顺序"
+group = "data"
+
+[[symbols]]
 name = "optim.PortfolioData"
 signature = "PortfolioData(date, assets, alpha, benchmark, initial_weight, tradable, risk_model=None, alpha_spec=None, extra_attributes={}, provenance=...)"
 summary = "严格同日、共用唯一 assets 位置坐标的单日数值输入"

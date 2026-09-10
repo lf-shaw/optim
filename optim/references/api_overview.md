@@ -82,7 +82,14 @@ specific_volatility      (n_assets,)
 ```
 
 所有数组必须使用同一准确日期。手工 `PortfolioData` 不会按标签重新对齐；需要表格对齐时使用
-`InMemoryDataSource` 或 `Tuda2DataSource`。
+`make_portfolio_data`、`InMemoryDataSource` 或 `Tuda2DataSource`。
+
+手工单期优先 `make_portfolio_data(date=..., universe=..., benchmark=..., initial_weight=...,
+risk_model=..., alpha_spec=...)`：universe 的股票索引确定资产顺序，alpha/tradable 是列，
+可选列名参数为 alpha_column/tradable_column；未提供 tradable 默认全 True，缺 alpha 保留 None。
+权重为带标签 Series；默认严格检查样本外基准，不能丢弃样本外非零持仓。多日输入必须准确
+匹配 date，不前填。原始风险表可用 `make_factor_risk_model` 单独装配，股票顺序取自同一
+universe，协方差和特异波动率必须已经使用年化小数单位。两个函数不调用数据源或求解器。
 
 ### 风险单位
 

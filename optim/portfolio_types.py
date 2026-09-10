@@ -239,6 +239,11 @@ class PortfolioData:
     所有资产维数组均按 ``assets`` 的位置解释。带标签的 pandas 对齐必须在数据源适配层完成，
     不能推迟到校验器或编译器。只有不使用 alpha 的目标才允许 ``alpha=None``。
 
+    手工表格输入可用 ``make_portfolio_data(universe=..., ...)``，由股票表索引确定顺序。
+    在 Notebook 中使用 ``PortfolioData?`` 查看构造参数，或 ``dataclasses.fields(PortfolioData)``
+    查看字段定义；类名后的点补全不一定列出无默认值的 dataclass 字段。实例为 frozen，
+    如需改值请用 ``dataclasses.replace(data, alpha=...)`` 创建新对象，不原地修改数组。
+
     Attributes
     ----------
     date : pandas.Timestamp

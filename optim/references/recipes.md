@@ -15,7 +15,31 @@
 
 ---
 
-## R1. 使用已经对齐的数组求解单期 Factor-QCQP
+## R1. 手工表格或已对齐数组求解单期
+
+手工表格推荐以下入口；`universe.index` 是股票，列为 alpha/tradable，基准与期初持仓
+使用股票索引 Series。risk 为按同一个 universe 股票顺序构造的风险对象；如果只有原始表，
+先用 `make_factor_risk_model(date=..., assets=universe.index, exposure=...,
+factor_covariance=..., specific_volatility=..., factor_types=...)` 装配。
+
+```python
+from optim import make_portfolio_data, AlphaSpec, PortfolioOptimizer, MaximizeAlpha
+
+data = make_portfolio_data(
+    date="2026-08-31", universe=universe,
+    benchmark=benchmark, initial_weight=initial_weight, risk_model=risk,
+    alpha_spec=AlphaSpec(units="standardized_score"),
+)
+result = PortfolioOptimizer().optimize(
+    data=data, objective=MaximizeAlpha(), constraints=constraints,
+)
+```
+
+缺 tradable 列默认全可交易，缺 alpha 列仅用于允许无 alpha 的目标；风险单位为年化小数。
+Notebook 用 `make_portfolio_data?` 查看参数；`dataclasses.fields(PortfolioData)` 查看字段，
+`dataclasses.replace(data, alpha=new_alpha)` 派生数据，不原地修改已求解对象的数组。
+
+如果输入已经严格对齐，可继续直接构造数组对象：
 
 ```python
 import numpy as np

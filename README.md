@@ -321,6 +321,73 @@ $$
 
 ## 8. 完整手工单期示例
 
+### 8.1 从 DataFrame 装配（推荐手工输入与 Notebook 使用）
+
+`universe.index` 是唯一股票顺序，`alpha`、`tradable` 放在同一个 DataFrame。
+基准和期初持仓独立传入带股票索引的 Series，避免要求这些稀疏权重与 universe 预先同序。
+
+```python
+from optim import make_portfolio_data, AlphaSpec, MaximizeAlpha, PortfolioOptimizer
+
+data = make_portfolio_data(
+    date="2026-08-31",
+    universe=universe,       # 股票索引；alpha / tradable 列
+    benchmark=benchmark,    # 股票索引 Series，合计为 1
+    initial_weight=initial_weight,  # 股票索引 Series，不自动归一化
+    risk_model=risk_model,  # 可省略；已有对象必须按 universe.index 排列
+    alpha_spec=AlphaSpec(units="standardized_score"),
+)
+result = PortfolioOptimizer().optimize(
+    data=data, objective=MaximizeAlpha(), constraints=constraints,
+)
+weights = result.require_weights()
+```
+
+没有 `tradable` 列时默认全为可交易；没有 `alpha` 列时保留 `None`，适用于不带 alpha
+下限的跟踪误差最小化。已提供的交易状态必须是真正的 bool。列名可通过 `alpha_column` /
+`tradable_column` 指定；额外数值属性使用 `extra_attribute_columns=("score",)` 显式选取。
+缺失的基准成分/持仓行在样本内填零，但不丢弃样本外非零持仓；样本外基准默认报错，
+仅显式 `benchmark_policy=BenchmarkCoveragePolicy(action="renormalize_within_tolerance", ...)`
+允许阈值内归一化。数据按准确同日装配，不进行前值填充。
+
+“风险表”指以下三个带标签输入，已有风险对象时不必重复提供：
+
+| 输入 | 索引与列 | 单位 |
+|---|---|---|
+| `exposure` | 股票 × 因子 | 因子暴露，通常无量纲 |
+| `factor_covariance` | 因子 × 因子 | 年化小数协方差 |
+| `specific_volatility` | 股票索引 Series（或单列 DataFrame） | 年化小数标准差 |
+
+```python
+from optim import make_factor_risk_model
+
+risk_model = make_factor_risk_model(
+    date="2026-08-31", assets=universe.index,
+    exposure=exposure,
+    factor_covariance=factor_covariance,
+    specific_volatility=specific_volatility,
+    factor_types={"SIZE": "style", "country": "country"},
+    constant_exposures={"country": 1.0},  # 仅当该常数列未存储于 exposure 时指定
+)
+```
+
+该函数按标签对齐股票、因子和特异风险，以协方差行声明当日因子；不猜测原始供应商单位、
+不自动年化。先构造风险对象，再传给 `make_portfolio_data`。若更换股票集合/顺序，应重新
+装配风险对象，不能直接复用无股票标签的位置矩阵。
+
+两个函数均不取数、不求解；同序且 dtype 合适时可共享底层数组，请勿原地修改已用于求解的
+输入。完整可运行的分单元例子见 [manual_single_period.py](examples/manual_single_period.py)，
+包含装配时间、求解时间、字段查看、派生修改和手动诊断用法。
+
+在仓库根目录运行 `python -m examples.manual_single_period`；安装 wheel 后也可将该文件
+复制到任意目录运行，或将 `# %%` 单元逐个放入 Notebook。
+
+Notebook 中用 `make_portfolio_data?` 或括号后 Shift+Tab 查看参数。`PortfolioData` 是 frozen
+dataclass，类名后的点补全未必显示必填字段；可用 `dataclasses.fields(PortfolioData)` 查看，
+用 `dataclasses.replace(data, alpha=new_alpha)` 派生新对象，而不是 `data.alpha = ...`。
+
+### 8.2 已经严格对齐的位置数组
+
 ```python
 import numpy as np
 import pandas as pd
