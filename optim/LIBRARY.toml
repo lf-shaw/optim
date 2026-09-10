@@ -62,8 +62,14 @@ group = "optimizer"
 
 [[symbols]]
 name = "optim.PortfolioOptimizer.optimize_range"
-signature = "optimize_range(*, data_source, schedule, objective, constraints, alpha_spec, initial_weight=None, benchmark=None, holding_period_returns=None, sequence_policy=None, independent_initial_weights=None, benchmark_policy=None, tradable_universe=None, extra_attribute_columns=()) -> PortfolioSequenceResult"
-summary = "多期入口；benchmark 为指数代码或严格 (dt,sid) Series，不广播不补日期；数据源全区间预检，链式模式按 close-to-close 收益推进持仓"
+signature = "optimize_range(*, data_source, schedule, objective, constraints, alpha_spec, initial_weight=None, benchmark=None, holding_period_returns=None, sequence_policy=None, show_progress=False, independent_initial_weights=None, benchmark_policy=None, tradable_universe=None, extra_attribute_columns=()) -> PortfolioSequenceResult"
+summary = "多期入口；benchmark 为指数代码或严格 (dt,sid) Series，不广播不补日期；全区间预检，链式模式按 close-to-close 收益推进；show_progress=True 可显示 tqdm.auto 阶段进度，需安装 optim[progress]，不改变求解行为"
+group = "optimizer"
+
+[[symbols]]
+name = "optim.PortfolioOptimizer.solve_sequence"
+signature = "solve_sequence(problems, *, holding_period_returns=None, sequence_policy=None, show_progress=False) -> PortfolioSequenceResult"
+summary = "显式问题或准备清单的多期入口；show_progress=True 显示预检和逐期求解日期、计数及预计剩余时间，需安装 optim[progress]；提前停止或异常时关闭进度条"
 group = "optimizer"
 
 [[symbols]]

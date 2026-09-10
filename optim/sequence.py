@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from .diagnostics import InfeasibilityReport
+from ._progress import _current_progress, _with_progress
 from .data._reindex import _reindex_rows
 from .data._sequence_initial import _first_period_problem
 from .portfolio_types import (
@@ -131,12 +132,14 @@ class SequenceDataError(ValueError):
     pass
 
 
+@_with_progress
 def solve_sequence(
     optimizer: Any,
     problems: Iterable[PortfolioProblem],
     *,
     holding_period_returns: Mapping[Any, pd.Series | np.ndarray] | None = None,
     sequence_policy: SequencePolicy | None = None,
+    show_progress: bool = False,
 ) -> PortfolioSequenceResult:
     """按确定性规则推进实际持仓并求解有序日期。
 
@@ -155,6 +158,9 @@ def solve_sequence(
         资产标签对齐；ndarray 必须按上一期持仓顺序。
     sequence_policy : SequencePolicy | None
         持仓推进、失败、恢复和输出策略。
+    show_progress : bool
+        默认 False；True 使用可选 tqdm.auto 显示预检与求解阶段。逐期显示日期、完成数、
+        耗时和预计剩余时间；异常或提前停止时关闭进度条，不改变求解结果。
 
     Returns
     -------
@@ -170,6 +176,10 @@ def solve_sequence(
     """
 
     from .data.memory import PreparedPortfolioRun
+
+    progress = _current_progress()
+    if progress is not None:
+        progress.phase("序列预检")
 
     policy = SequencePolicy() if sequence_policy is None else sequence_policy
     if isinstance(problems, PreparedPortfolioRun) and sequence_policy is None and problems.sequence_policy is not None:
@@ -218,9 +228,15 @@ def solve_sequence(
     except ValueError as exc:
         raise SequenceDataError(str(exc)) from exc
     if not prevalidated:
+        if progress is not None:
+            progress.phase("静态预检", len(dates))
         for position in range(len(dates)):
+            if progress is not None:
+                progress.date(dates[position])
             report = optimizer.validate(first_template if position == 0 else problem_at(position))
             report.raise_for_errors()
+            if progress is not None:
+                progress.advance()
     if policy.mode == "chained" and first_template.data.initial_weight is None:
         raise SequenceDataError("chained sequence requires first-day initial weights")
     normalized_returns: dict[pd.Timestamp, pd.Series | np.ndarray] = {}
@@ -241,7 +257,12 @@ def solve_sequence(
     stopped_date: pd.Timestamp | None = None
     stopped_problem: PortfolioProblem | None = None
 
+    if progress is not None:
+        progress.phase("逐期求解", len(dates))
+
     for position in range(len(dates)):
+        if progress is not None:
+            progress.date(dates[position])
         template = first_template if position == 0 else problem_at(position)
         date = dates[position]
         if policy.mode == "chained":
@@ -337,9 +358,13 @@ def solve_sequence(
                 turnover_excluded=turnover_excluded,
             )
         )
+        if progress is not None:
+            progress.advance()
         if stopped_date is not None:
             break
 
+    if progress is not None:
+        progress.finish("求解完成" if stopped_date is None else "求解已停止")
     return PortfolioSequenceResult(
         steps=tuple(steps),
         stopped_date=stopped_date,

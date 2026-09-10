@@ -203,6 +203,10 @@ for step in sequence.steps:
     print(step.date, step.result.status, step.result.timings.total_s)
 ```
 
+长区间可在 `optimize_range` 或 `solve_sequence` 调用中指定 `show_progress=True`。
+需要可选依赖 `optim[progress]`；默认关闭。显示数据准备阶段及按日期推进的预检/求解进度，
+提前停止保留已完成期数，异常退出自动关闭进度条，不改变求解结果或开启求解器日志。
+
 tuda2 的风险、基准和日收益按完整区间批量读取。默认链式首期免换手上限且不计入换手统计，
 `step.turnover_excluded=True`、`step.result.metrics.turnover_l1=None`；第二期起相对自然漂移后的
 `step.pretrade_weight` 计算。需要限制首期换手，设置 `ignore_first_turnover=False`。

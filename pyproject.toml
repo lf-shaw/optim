@@ -46,6 +46,7 @@ dependencies = [
 
 [project.optional-dependencies]
 tuda2 = ["tuda2>=2.0.40"]
+progress = ["tqdm>=4.66"]
 
 [tool.setuptools_scm]
 version_file = "optim/_version.py"

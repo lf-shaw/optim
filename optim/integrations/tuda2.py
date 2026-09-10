@@ -10,6 +10,8 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
+from .._progress import _current_progress
+
 from ..data import (
     BenchmarkCoveragePolicy,
     DataAlignmentError,
@@ -441,6 +443,9 @@ class Tuda2DataSource:
 
         returns = holding_period_returns
         if require_holding_returns and returns is None:
+            progress = _current_progress()
+            if progress is not None:
+                progress.phase("读取持仓收益")
             sids = (
                 effective_schedule.universe.index.get_level_values("sid")
                 .unique()

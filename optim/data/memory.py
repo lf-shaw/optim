@@ -15,6 +15,8 @@ from typing import Mapping
 import numpy as np
 import pandas as pd
 
+from .._progress import _current_progress
+
 from ..portfolio_types import (
     AlphaSpec,
     DataProvenance,
@@ -322,6 +324,9 @@ class InMemoryDataSource:
         """
 
         started = time.perf_counter()
+        progress = _current_progress()
+        if progress is not None:
+            progress.phase("数据对齐")
         normalized_independent = None
         if independent_initial_weights is not None:
             normalized_independent = {
@@ -347,7 +352,11 @@ class InMemoryDataSource:
             sequence_policy=sequence_policy,
         )
         issues: list[ValidationIssue] = []
+        if progress is not None:
+            progress.phase("静态预检", len(run.dates))
         for date in run.dates:
+            if progress is not None:
+                progress.date(date)
             try:
                 problem = run.problem_at(date)
             except (DataAlignmentError, TypeError, ValueError) as exc:
@@ -361,8 +370,10 @@ class InMemoryDataSource:
                         context={"exception_type": type(exc).__name__},
                     )
                 )
-                continue
-            issues.extend(validate_problem(problem).issues)
+            else:
+                issues.extend(validate_problem(problem).issues)
+            if progress is not None:
+                progress.advance()
         return PreparedPortfolioRun(
             data_source=prepared_source,
             schedule=schedule,

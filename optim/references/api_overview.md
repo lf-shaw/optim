@@ -182,6 +182,11 @@ $$
 - `ignore_first_turnover=True`：仅链式首期豁免换手上限，结果换手为 None（不是零），不计入统计；
 - `output_weights="sparse"`，仅保留绝对值不小于默认 `1e-5` 的权重。
 
+`optimizer.optimize_range(..., show_progress=True)` 和 `optimizer.solve_sequence(..., show_progress=True)`
+开启可选 tqdm.auto 进度条（安装 `optim[progress]`），默认关闭，不属于 SequencePolicy。
+取数/对齐只显示阶段信息；预检与求解按日期计数，显示当前日期、耗时和预计剩余时间。
+计数包含已完成的失败尝试；提前停止不补齐总数，异常时关闭显示，不改变后端日志及求解行为。
+
 链式首期免换手时可省略 initial_weight，将对齐后的首日基准中的可交易部分归一化初始化，
 原基准保持不变；无正权重可交易成分则报错。此时 asset_trade 必须为 None，tradable_universe
 可指定；默认冻结使不可交易股票固定在零。显式持仓则保持原样并按实际权重冻结。

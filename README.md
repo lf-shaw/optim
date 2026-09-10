@@ -604,6 +604,28 @@ sequence = PortfolioOptimizer().optimize_range(
 
 tuda2 风险模型、基准权重和日度收益按完整区间一次取足；逐日优化循环不会反复发起 I/O。
 
+多期入口 `optimize_range()` 和 `solve_sequence()` 均支持 `show_progress=True`，默认关闭。
+先安装可选依赖（完整开发 requirements 已包含）：
+
+```bash
+python -m pip install 'optim[progress]'
+```
+
+在上面的 `optimize_range` 调用中加入 `show_progress=True` 即可。显式问题序列也可开启：
+
+```python
+sequence = optimizer.solve_sequence(
+    problems,
+    holding_period_returns=holding_period_returns,
+    show_progress=True,
+)
+```
+
+显示使用 `tqdm.auto`，适配终端和 Jupyter。数据读取/对齐阶段只显示阶段名称及计时，不虚构
+百分比；静态预检和逐期求解显示当前日期、阶段已完成期数、耗时及预计剩余时间。各阶段重新计数，
+求解计数包含已完成的失败尝试，不代表全部成功。提前停止时保留真实完成数，异常或中断时关闭
+进度条。不开启后端日志、不改变策略及结果；关闭时不导入 tqdm，也不构造逐日显示文本。
+
 链式模式默认 `SequencePolicy(ignore_first_turnover=True)`：首期视为建仓，不施加换手上限，
 `step.turnover_excluded=True` 且 `step.result.metrics.turnover_l1=None`，不纳入均值或累计换手。
 第二期起恢复原换手上限及正常统计。需要首期也约束换手时显式设为 `False`。

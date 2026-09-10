@@ -23,6 +23,7 @@ Mosek>=11.2,<12
 openpyxl>=3.1,<4
 tables>=3.10,<4
 psutil>=6,<8
+tqdm>=4.66
 
 # Local build and test tooling
 Cython>=3,<4

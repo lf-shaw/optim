@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping
 import pandas as pd
 
 from .model import compile_problem
+from ._progress import _current_progress, _with_progress
 from ._impl.solver_adapter import SolverAdapter
 from .portfolio_types import (
     AssetTradeConstraints,
@@ -365,6 +366,7 @@ class PortfolioOptimizer:
             PortfolioProblem(data=data, objective=objective, constraints=config),
         )
 
+    @_with_progress
     def optimize_range(
         self,
         *,
@@ -377,6 +379,7 @@ class PortfolioOptimizer:
         benchmark: str | pd.Series | None = None,
         holding_period_returns=None,
         sequence_policy: "SequencePolicy | None" = None,
+        show_progress: bool = False,
         independent_initial_weights=None,
         benchmark_policy: "BenchmarkCoveragePolicy | None" = None,
         tradable_universe: str | None = None,
@@ -412,6 +415,10 @@ class PortfolioOptimizer:
             相邻调仓日之间的 close-to-close 复合收益；链式模式由序列引擎按标签读取。
         sequence_policy : SequencePolicy | None
             持仓漂移、失败和输出策略；``None`` 使用默认策略。
+        show_progress : bool
+            默认 False。True 使用 tqdm.auto 显示取数、预检和逐期求解进度，需安装
+            optim[progress]。已知期数的阶段显示计数和预计剩余时间；I/O 只标识阶段。
+            该选项不启用求解器日志，不改变求解策略；异常或提前停止时关闭显示。
         independent_initial_weights : Any | None
             独立模式下按日期提供的期初权重。
         benchmark_policy : BenchmarkCoveragePolicy | None
@@ -447,6 +454,10 @@ class PortfolioOptimizer:
             )
 
         from .data import InMemoryDataSource
+
+        progress = _current_progress()
+        if progress is not None:
+            progress.phase("取数与对齐")
 
         if not isinstance(data_source, InMemoryDataSource):
             if benchmark is None:
@@ -502,6 +513,7 @@ class PortfolioOptimizer:
         *,
         holding_period_returns=None,
         sequence_policy=None,
+        show_progress: bool = False,
     ):
         """求解按日期排序的 close-to-close 组合序列。
 
@@ -516,6 +528,10 @@ class PortfolioOptimizer:
             调仓区间的 close-to-close 复合收益；链式模式需要。
         sequence_policy : SequencePolicy | None
             多期状态推进策略；``None`` 使用默认值。
+        show_progress : bool
+            默认 False；True 使用 tqdm.auto 显示预检及逐期求解进度，需安装
+            optim[progress]。显示当前日期、已完成期数、耗时及预计剩余时间，
+            不启用后端日志；异常或提前停止时自动关闭进度条。
 
         Returns
         -------
@@ -530,6 +546,7 @@ class PortfolioOptimizer:
             problems,
             holding_period_returns=holding_period_returns,
             sequence_policy=sequence_policy,
+            show_progress=show_progress,
         )
 
     def diagnose(
