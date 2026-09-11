@@ -35,6 +35,7 @@ from .._core import (
     CoreSolveStatus,
     CoreSolver,
     CoreSolverOptions,
+    ThreadResolution,
 )
 from ..diagnostics import InfeasibilityReport
 from ..model.canonical import CompiledProblem, FactorQCQP, LinearProgram
@@ -85,9 +86,9 @@ class _Evaluation:
 class SolverAdapter:
     """把公共策略和结果契约转换到稳定的数值核心边界。"""
 
-    def __init__(self, policy: SolverPolicy):
+    def __init__(self, policy: SolverPolicy, thread_resolution: ThreadResolution):
         self.policy = policy
-        self._core = CoreSolver(core_options_from_policy(policy))
+        self._core = CoreSolver(core_options_from_policy(policy, thread_resolution))
 
     def prepare(self, compiled: CompiledProblem) -> SolverHandle:
         """把上层已经编译的数值问题封装为不透明句柄。"""
@@ -110,6 +111,7 @@ class SolverAdapter:
         handle: object,
         *,
         prepare_s: float,
+        compile_s: float,
     ) -> OptimizationResult:
         """路由、求解并验收同一个不透明 canonical 问题。"""
 
@@ -131,6 +133,7 @@ class SolverAdapter:
             evaluation,
             total_started,
             prepare_s,
+            compile_s,
         )
 
     def diagnose(
@@ -307,6 +310,7 @@ class SolverAdapter:
         evaluation: _Evaluation,
         total_started: float,
         prepare_s: float,
+        compile_s: float,
     ) -> OptimizationResult:
         """把私有后端证据规范化为稳定的公共结果契约。"""
 
@@ -377,7 +381,8 @@ class SolverAdapter:
                     if isinstance(parsed_date, pd.Timestamp):
                         source_dates[label] = parsed_date
         timings = SolveTimings(
-            prepare_s=prepare_s,
+            prepare_s=max(0.0, prepare_s - compile_s),
+            compile_s=compile_s,
             backend_setup_s=sum(item.setup_s for item in backend_results),
             backend_solve_s=sum(item.solve_s for item in backend_results),
             validation_s=evaluation.validation_s,
@@ -619,10 +624,17 @@ def _metadata_float(metadata: Any, key: str, default: float) -> float:
     return value if np.isfinite(value) else default
 
 
-def core_options_from_policy(policy: SolverPolicy) -> CoreSolverOptions:
+def core_options_from_policy(
+    policy: SolverPolicy,
+    thread_resolution: ThreadResolution | None = None,
+) -> CoreSolverOptions:
     """把公共策略一次性压平为数值核心选项。"""
 
     tuning = policy.tuning
+    if thread_resolution is None:
+        from .._core import resolve_thread_setting
+
+        thread_resolution = resolve_thread_setting(tuning.threads)
     return CoreSolverOptions(
         backend=policy.backend,
         lp_prescreen=policy.lp_prescreen,
@@ -631,6 +643,9 @@ def core_options_from_policy(policy: SolverPolicy) -> CoreSolverOptions:
         piqp_max_iter=tuning.piqp_max_iter,
         piqp_inequality_form=tuning.piqp_inequality_form,
         feasibility_tolerance=tuning.feasibility_tolerance,
+        thread_policy=thread_resolution.policy,
+        thread_limit=thread_resolution.limit,
+        effective_cpu_count=thread_resolution.effective_cpus,
     )
 
 

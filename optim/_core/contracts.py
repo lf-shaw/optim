@@ -135,6 +135,12 @@ class CoreSolverOptions:
         PIQP 线性不等式展开方式。
     feasibility_tolerance : float
         核心独立复算 canonical 可行性使用的绝对容差。
+    thread_policy : str
+        已解析的线程策略：auto、max 或 fixed。
+    thread_limit : int
+        本次 optim 数值作用域和可配置原生后端使用的线程上限。
+    effective_cpu_count : int
+        affinity 与 cgroup quota 共同允许的 CPU 上界。
     """
 
     lp_prescreen: bool
@@ -143,4 +149,7 @@ class CoreSolverOptions:
     piqp_max_iter: int
     piqp_inequality_form: str
     feasibility_tolerance: float
+    thread_policy: str = "auto"
+    thread_limit: int = 1
+    effective_cpu_count: int = 1
     backend: str = "auto"

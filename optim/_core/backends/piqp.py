@@ -19,7 +19,13 @@ from ..contracts import (
     CoreInfeasibilityEvidence,
     CoreSolveStatus as SolveStatus,
 )
-from .base import BackendOptions, BackendResult, capture_infeasibility, dual_entries
+from .base import (
+    BackendOptions,
+    BackendResult,
+    capture_infeasibility,
+    dual_entries,
+    thread_diagnostics,
+)
 
 
 def piqp_distribution_version() -> str | None:
@@ -179,6 +185,9 @@ class PIQPBackend:
                 message=f"{type(exc).__name__}: {exc}",
                 setup_s=time.perf_counter() - setup_started,
                 diagnostics={
+                    **thread_diagnostics(
+                        options, native_threads=1, native_thread_limit=1
+                    ),
                     "inequality_form": form,
                     "objective_scale": objective_scale,
                 },
@@ -199,6 +208,9 @@ class PIQPBackend:
                 setup_s=setup_s,
                 solve_s=time.perf_counter() - solve_started,
                 diagnostics={
+                    **thread_diagnostics(
+                        options, native_threads=1, native_thread_limit=1
+                    ),
                     "inequality_form": form,
                     "objective_scale": objective_scale,
                 },
@@ -217,6 +229,7 @@ class PIQPBackend:
             )
         info = result.info
         diagnostics = {
+            **thread_diagnostics(options, native_threads=1, native_thread_limit=1),
             "inequality_form": form,
             "objective_scale": objective_scale,
             "objective_scale_reference": model.objective_scale_reference,

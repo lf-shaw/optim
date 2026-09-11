@@ -44,6 +44,13 @@ optimizer = PortfolioOptimizer()
 同一个 `PortfolioOptimizer` 可以复用，但它只保存不可变求解策略，不保存样本空间、持仓、
 黑名单或多期状态。
 
+`SolverTuning(threads="auto")` 默认采用经当前组合基准验证的后端专属低延迟策略：数值库与
+Clarabel/MOSEK 为单线程，HiGHS 保留原生自动调度；
+`threads="max"` 使用 affinity 与 cgroup quota 共同允许的 CPU 上界，正整数表示明确请求的
+线程上限，超过该上界时创建优化器会直接报错。优化器自动在数值阶段应用设置并在返回或异常
+时恢复；多期只设置一次。作用域内的 BLAS 限制可能影响同进程其他 Python 线程，并发优化
+建议使用独立进程。
+
 多期 prepare 会准备静态数据并保留逐日覆盖审计，后续求解复用。日程、风险表和准备后的
 输入不得原地修改；修改输入需要重新创建日程并 prepare。动态持仓仍按实际结果逐期检查。
 

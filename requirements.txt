@@ -18,6 +18,8 @@ highspy>=1.15,<2
 piqp>=0.6.4
 clarabel==0.11.1
 Mosek>=11.2,<12
+# optim 在数值调用期间动态限制并恢复进程内 BLAS 线程池。
+threadpoolctl>=3.6
 
 # Supported file formats and benchmark telemetry
 openpyxl>=3.1,<4

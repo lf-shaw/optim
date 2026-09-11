@@ -73,8 +73,11 @@ def lift_weights(
     sparse_active = "exact_sparse_total_active" in compiled.compiler_optimizations
     factor_values = None
     if isinstance(problem.data.risk_model, FactorRiskModel) and active is not None:
-        factor_values = (
-            np.asarray(problem.data.risk_model.exposure, dtype=float).T @ active
+        factor_values = np.einsum(
+            "ij,i->j",
+            np.asarray(problem.data.risk_model.exposure, dtype=float),
+            active,
+            optimize=False,
         )
         factor_lookup = {
             name: factor_values[index]
@@ -210,11 +213,23 @@ def evaluate_solution(
         None if data.benchmark is None else np.asarray(data.benchmark, dtype=float)
     )
     active = None if benchmark is None else weight - benchmark
+    factor_active = None
     factor_variance = specific_variance = tracking_error = None
     if isinstance(data.risk_model, FactorRiskModel) and active is not None:
-        factor = np.asarray(data.risk_model.exposure, dtype=float).T @ active
+        factor_active = np.einsum(
+            "ij,i->j",
+            np.asarray(data.risk_model.exposure, dtype=float),
+            active,
+            optimize=False,
+        )
         factor_variance = float(
-            factor @ np.asarray(data.risk_model.covariance, dtype=float) @ factor
+            np.einsum(
+                "i,ij,j->",
+                factor_active,
+                np.asarray(data.risk_model.covariance, dtype=float),
+                factor_active,
+                optimize=False,
+            )
         )
         specific_variance = float(
             np.square(np.asarray(data.risk_model.specific_volatility) * active).sum()
@@ -241,7 +256,18 @@ def evaluate_solution(
                 )
             )
 
-    alpha_value = None if data.alpha is None else float(np.asarray(data.alpha) @ weight)
+    alpha_value = (
+        None
+        if data.alpha is None
+        else float(
+            np.einsum(
+                "i,i->",
+                np.asarray(data.alpha, dtype=float),
+                weight,
+                optimize=False,
+            )
+        )
+    )
     objective_value: float | None
     if isinstance(problem.objective, MaximizeAlpha):
         objective_value = alpha_value
@@ -325,8 +351,7 @@ def evaluate_solution(
                 violations[existing] = violation
 
     max_style = max_industry = None
-    if isinstance(data.risk_model, FactorRiskModel) and active is not None:
-        factor_active = np.asarray(data.risk_model.exposure, dtype=float).T @ active
+    if factor_active is not None:
         style_idx = [
             index
             for index, kind in enumerate(data.risk_model.factor_types)

@@ -20,6 +20,7 @@ from .base import (
     BackendResult,
     capture_infeasibility,
     dual_entries,
+    thread_diagnostics,
 )
 from ..dual_bounds import lp_dual_bound_diagnostics
 
@@ -83,6 +84,7 @@ class MosekBackend:
             task = env.Task(0, 0)
             if not options.verbose:
                 task.putintparam(mosek.iparam.log, 0)
+            task.putintparam(mosek.iparam.num_threads, int(options.thread_limit))
             if options.time_limit_s is not None:
                 task.putdouparam(
                     mosek.dparam.optimizer_max_time,
@@ -183,6 +185,13 @@ class MosekBackend:
                 solve_s=solve_s,
                 infeasibility=evidence,
                 diagnostics={
+                    **thread_diagnostics(
+                        options,
+                        native_threads=_task_int(
+                            task, mosek.iinfitem.intpnt_num_threads
+                        ),
+                        native_thread_limit=options.thread_limit,
+                    ),
                     **evidence_errors,
                     "primal_feasibility_tolerance": primal_feasibility,
                     "primal_objective": primal_obj,
@@ -230,6 +239,7 @@ class MosekBackend:
             if license_path is not None:
                 fusion.Model.putlicensepath(str(license_path))
             fusion_model = fusion.Model("portfolio_factor_qcqp")
+            fusion_model.setSolverParam("numThreads", int(options.thread_limit))
             primal_feasibility = _primal_feasibility_tolerance(domain, options)
             fusion_model.setSolverParam("intpntCoTolPfeas", primal_feasibility)
             if options.time_limit_s is not None:
@@ -305,6 +315,13 @@ class MosekBackend:
                 solve_s=solve_s,
                 infeasibility=evidence,
                 diagnostics={
+                    **thread_diagnostics(
+                        options,
+                        native_threads=_fusion_int(
+                            fusion_model, "intpntNumThreads"
+                        ),
+                        native_thread_limit=options.thread_limit,
+                    ),
                     **evidence_errors,
                     "primal_feasibility_tolerance": primal_feasibility,
                     "primal_objective": primal_obj,
@@ -545,6 +562,15 @@ def _fusion_double(model: Any, name: str) -> float | None:
 def _fusion_int(model: Any, name: str) -> int | None:
     try:
         return int(model.getSolverIntInfo(name))
+    except Exception:
+        return None
+
+
+def _task_int(task: Any, item: Any) -> int | None:
+    """安全读取可选 MOSEK Task 整数信息项。"""
+
+    try:
+        return int(task.getintinf(item))
     except Exception:
         return None
 

@@ -42,6 +42,12 @@ class BackendOptions:
         PIQP 不等式表示（``"auto"``、``"compact"`` 或 ``"one_sided"``）；其他后端忽略。
     collect_dual_bound : bool
         显式诊断 LP 是否复算拉格朗日下界；默认关闭，避免普通优化增加矩阵运算。
+    thread_policy : str
+        已解析的线程策略：auto、max 或 fixed。
+    thread_limit : int
+        本次调用请求的线程上限。
+    effective_cpu_count : int
+        当前进程按 affinity 与 cgroup quota 计算的可用 CPU 上界。
     """
 
     verbose: bool = False
@@ -52,6 +58,9 @@ class BackendOptions:
     objective_scale_target: float | None = 0.2
     inequality_form: str = "auto"
     collect_dual_bound: bool = False
+    thread_policy: str = "auto"
+    thread_limit: int = 1
+    effective_cpu_count: int = 1
 
 
 @dataclass(frozen=True)
@@ -127,6 +136,26 @@ class SolverBackend(Protocol):
             标准化原生状态、候选向量和遥测。
         """
         ...
+
+
+def thread_diagnostics(
+    options: BackendOptions,
+    *,
+    native_threads: int | None = None,
+    native_thread_limit: int | None = None,
+) -> dict[str, Any]:
+    """生成各后端一致的线程策略遥测。"""
+
+    result: dict[str, Any] = {
+        "thread_policy": options.thread_policy,
+        "thread_limit": options.thread_limit,
+        "effective_cpu_count": options.effective_cpu_count,
+    }
+    if native_thread_limit is not None:
+        result["native_thread_limit"] = int(native_thread_limit)
+    if native_threads is not None:
+        result["native_threads"] = int(native_threads)
+    return result
 
 
 def capture_infeasibility(

@@ -42,6 +42,8 @@ _TYPES = {
         "AssetTradeConstraints",
         "SolverPolicy",
         "SolverTuning",
+        "SequencePolicy",
+        "TurnoverRecoveryPolicy",
     )
 }
 

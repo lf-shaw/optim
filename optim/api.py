@@ -16,6 +16,7 @@ import pandas as pd
 from .model import compile_problem
 from ._progress import _current_progress, _with_progress
 from ._impl.solver_adapter import SolverAdapter
+from ._core import NumericalThreadScope, numerical_thread_scope
 from .portfolio_types import (
     AssetTradeConstraints,
     OptimizationResult,
@@ -59,6 +60,9 @@ class PreparedPortfolioProblem:
         私有编译器实际采用、且已证明数学等价的结构优化标识。
     prepare_s : float
         校验和编译的合计 wall-clock 秒数。
+    compile_s : float
+        :attr:`prepare_s` 中业务语义编译为 canonical 模型所占的 wall-clock 秒数。
+        该字段是准备总耗时的子集，不应与 ``prepare_s`` 相加。
     _solver_handle : object | None
         优化器内部使用的短生命周期准备状态；调用方不得读取、序列化或跨进程复用。
     """
@@ -68,6 +72,7 @@ class PreparedPortfolioProblem:
     fingerprint: ProblemFingerprint | None
     compiler_optimizations: tuple[str, ...]
     prepare_s: float
+    compile_s: float = 0.0
     _solver_handle: object | None = field(default=None, repr=False, compare=False)
 
 
@@ -90,7 +95,8 @@ class PortfolioOptimizer:
 
     def __init__(self, policy: SolverPolicy | None = None):
         self.policy = SolverPolicy() if policy is None else policy
-        self._solver = SolverAdapter(self.policy)
+        self._thread_scope = NumericalThreadScope(self.policy.tuning.threads)
+        self._solver = SolverAdapter(self.policy, self._thread_scope.resolution)
 
     def validate(self, problem: PortfolioProblem) -> ValidationReport:
         """聚合输入及模型的低成本静态问题，不编译也不求解。
@@ -108,6 +114,7 @@ class PortfolioOptimizer:
 
         return validate_problem(problem)
 
+    @numerical_thread_scope
     def prepare(self, problem: PortfolioProblem) -> PreparedPortfolioProblem:
         """校验请求，并在有效时创建可重复求解的准备对象。
 
@@ -129,10 +136,12 @@ class PortfolioOptimizer:
         solver_handle = None
         fingerprint = None
         compiler_optimizations: tuple[str, ...] = ()
+        compile_s = 0.0
         if report.is_valid:
-            solver_handle = self._solver.prepare(
-                compile_problem(problem, validate=False)
-            )
+            compile_started = time.perf_counter()
+            compiled = compile_problem(problem, validate=False)
+            compile_s = time.perf_counter() - compile_started
+            solver_handle = self._solver.prepare(compiled)
             fingerprint, compiler_optimizations = self._solver.metadata(solver_handle)
         return PreparedPortfolioProblem(
             problem=problem,
@@ -140,6 +149,7 @@ class PortfolioOptimizer:
             fingerprint=fingerprint,
             compiler_optimizations=compiler_optimizations,
             prepare_s=time.perf_counter() - started,
+            compile_s=compile_s,
             _solver_handle=solver_handle,
         )
 
@@ -154,7 +164,10 @@ class PortfolioOptimizer:
         """
 
         started = time.perf_counter()
-        solver_handle = self._solver.prepare(compile_problem(problem, validate=False))
+        compile_started = time.perf_counter()
+        compiled = compile_problem(problem, validate=False)
+        compile_s = time.perf_counter() - compile_started
+        solver_handle = self._solver.prepare(compiled)
         fingerprint, compiler_optimizations = self._solver.metadata(solver_handle)
         return PreparedPortfolioProblem(
             problem=problem,
@@ -162,9 +175,11 @@ class PortfolioOptimizer:
             fingerprint=fingerprint,
             compiler_optimizations=compiler_optimizations,
             prepare_s=time.perf_counter() - started,
+            compile_s=compile_s,
             _solver_handle=solver_handle,
         )
 
+    @numerical_thread_scope
     def _solve_prevalidated(
         self,
         problem: PortfolioProblem,
@@ -175,6 +190,7 @@ class PortfolioOptimizer:
             self._prepare_prevalidated(problem),
         )
 
+    @numerical_thread_scope
     def solve(
         self,
         problem: PortfolioProblem,
@@ -514,6 +530,7 @@ class PortfolioOptimizer:
             failure_dump_dir=failure_dump_dir,
         )
 
+    @numerical_thread_scope
     def solve_sequence(
         self,
         problems,
@@ -561,6 +578,7 @@ class PortfolioOptimizer:
             failure_dump_dir=failure_dump_dir,
         )
 
+    @numerical_thread_scope
     def diagnose(
         self,
         problem: PortfolioProblem | OptimizationResult,
@@ -650,6 +668,7 @@ class PortfolioOptimizer:
             backend=backend,
         )
 
+    @numerical_thread_scope
     def solve_prepared(
         self,
         prepared: PreparedPortfolioProblem,
@@ -686,4 +705,5 @@ class PortfolioOptimizer:
             prepared.problem,
             prepared._solver_handle,
             prepare_s=prepared.prepare_s,
+            compile_s=prepared.compile_s,
         )

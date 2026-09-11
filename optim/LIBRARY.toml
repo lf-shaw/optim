@@ -193,6 +193,12 @@ summary = "auto 默认 HiGHS LP / direct PIQP QP / Clarabel Factor-QCQP；mosek 
 group = "policy"
 
 [[symbols]]
+name = "optim.SolverTuning"
+signature = "SolverTuning(..., threads='auto')"
+summary = "threads 支持 auto、max 或正整数；auto 使用实测后端专属配置（BLAS/Clarabel/MOSEK 单线程，HiGHS 原生自动），max 按 affinity 与 cgroup quota 解析，正整数超过有效 CPU 上界时报错；数值调用结束或异常时自动恢复线程池，多期只设置一次"
+group = "policy"
+
+[[symbols]]
 name = "optim.SequencePolicy"
 signature = "SequencePolicy(mode='chained', on_failure='stop', turnover_recovery=None, output_weights='sparse', ignore_first_turnover=True, ...)"
 summary = "链式首期默认免换手上限且换手指标为 None，不计入统计；无初始持仓且无 asset_trade 时，将首日基准可交易部分归一化初始化，原基准不变，不可交易股票默认冻结为零；无正权重可交易成分时报错；第二期恢复换手约束，独立模式不豁免"

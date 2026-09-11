@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import gc
 
 import numpy as np
 import pandas as pd
@@ -113,6 +114,45 @@ def test_sequence_does_not_repeat_static_validation_inside_daily_loop(
     )
     assert result.stopped_date is None
     assert validated_dates == [sample_lp_problem.data.date, second.data.date]
+
+
+def test_sequence_suspends_cyclic_gc_and_restores_caller_state(
+    sample_lp_problem, monkeypatch
+):
+    optimizer = PortfolioOptimizer()
+    original = optimizer._solve_prevalidated
+    observed = []
+
+    def checked(problem):
+        observed.append(gc.isenabled())
+        return original(problem)
+
+    monkeypatch.setattr(optimizer, "_solve_prevalidated", checked)
+    assert gc.isenabled()
+    result = optimizer.solve_sequence([sample_lp_problem])
+    assert result.steps[0].result.status.has_solution
+    assert observed == [False]
+    assert gc.isenabled()
+
+    gc.disable()
+    try:
+        optimizer.solve_sequence([sample_lp_problem])
+        assert not gc.isenabled()
+    finally:
+        gc.enable()
+
+
+def test_sequence_restores_cyclic_gc_after_exception(sample_lp_problem, monkeypatch):
+    optimizer = PortfolioOptimizer()
+
+    def fail(_problem):
+        assert not gc.isenabled()
+        raise RuntimeError("test failure")
+
+    monkeypatch.setattr(optimizer, "_solve_prevalidated", fail)
+    with pytest.raises(RuntimeError, match="test failure"):
+        optimizer.solve_sequence([sample_lp_problem])
+    assert gc.isenabled()
 
 
 def test_factor_sequence_uses_clarabel_without_search_state(sample_lp_problem):

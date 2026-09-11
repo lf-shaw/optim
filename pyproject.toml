@@ -42,11 +42,13 @@ dependencies = [
     "piqp>=0.6.4",
     "clarabel==0.11.1",
     "Mosek>=11.2,<12",
+    "threadpoolctl>=3.6",
 ]
 
 [project.optional-dependencies]
 tuda2 = ["tuda2>=2.0.40"]
 progress = ["tqdm>=4.66"]
+devtools = ["pyarrow>=14.0"]
 
 [tool.setuptools_scm]
 version_file = "optim/_version.py"

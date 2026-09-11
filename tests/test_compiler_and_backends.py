@@ -88,6 +88,11 @@ def test_highs_lp_end_to_end(sample_lp_problem):
     assert result.metrics.objective == np.dot(sample_lp_problem.data.alpha, weight)
     assert result.certificate is not None
     assert result.violations == ()
+    assert result.timings.compile_s > 0.0
+    assert result.timings.prepare_s >= 0.0
+    assert result.timings.total_s >= (
+        result.timings.prepare_s + result.timings.compile_s
+    )
 
 
 def test_direct_piqp_risk_adjusted_qp(sample_data, sample_constraints):

@@ -54,7 +54,12 @@ def extend_factor_domain(model: FactorQCQP) -> LinearDomain:
             shape=(base.n_constraints, n_variables),
         )
         original_rows = (original_rows + direct_factor_bounds).tocsc()
-        benchmark_shift = risk.exposure[:, bound_factors].T @ risk.benchmark
+        benchmark_shift = np.einsum(
+            "ij,i->j",
+            risk.exposure[:, bound_factors],
+            risk.benchmark,
+            optimize=False,
+        )
         extended_lower[bound_rows] -= benchmark_shift
         extended_upper[bound_rows] -= benchmark_shift
     factor_rows = np.arange(n_factors, dtype=np.int32)
@@ -71,7 +76,9 @@ def extend_factor_domain(model: FactorQCQP) -> LinearDomain:
         format="csc",
     )
     factor_definition = exposure_rows + factor_identity
-    factor_rhs = risk.exposure.T @ risk.benchmark
+    factor_rhs = np.einsum(
+        "ij,i->j", risk.exposure, risk.benchmark, optimize=False
+    )
     A = sp.vstack([original_rows, factor_definition], format="csc")
     A.sum_duplicates()
     A.eliminate_zeros()

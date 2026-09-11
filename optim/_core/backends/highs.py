@@ -18,6 +18,7 @@ from .base import (
     BackendOptions,
     BackendResult,
     capture_infeasibility,
+    thread_diagnostics,
 )
 from ..dual_bounds import lp_dual_bound_diagnostics
 
@@ -76,6 +77,12 @@ class HighsBackend:
 
         solver = highspy.Highs()
         solver.setOptionValue("output_flag", bool(options.verbose))
+        # 真实大样本 LP 中，HiGHS 自身的 threads=0 调度优于显式固定为一；这与外层 BLAS
+        # 默认限制为一并不冲突。max/固定整数仍按调用者请求设置原生上限。
+        native_thread_limit = (
+            0 if options.thread_policy == "auto" else int(options.thread_limit)
+        )
+        thread_status = solver.setOptionValue("threads", native_thread_limit)
         if options.time_limit_s is not None:
             solver.setOptionValue("time_limit", float(options.time_limit_s))
 
@@ -114,6 +121,10 @@ class HighsBackend:
             )
         )
         diagnostics = {
+            **thread_diagnostics(
+                options, native_thread_limit=native_thread_limit
+            ),
+            "thread_option_status": str(thread_status),
             "run_status": str(run_status),
             "max_primal_infeasibility": float(
                 getattr(info, "max_primal_infeasibility", np.nan)

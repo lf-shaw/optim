@@ -197,8 +197,14 @@ class FactorRiskOperator:
 
         weight = np.asarray(vector, dtype=float)[self.weight_indices]
         active = weight - self.benchmark
-        factor = self.exposure.T @ active
-        factor_variance = float(factor @ self.covariance @ factor)
+        factor = np.einsum(
+            "ij,i->j", self.exposure, active, optimize=False
+        )
+        factor_variance = float(
+            np.einsum(
+                "i,ij,j->", factor, self.covariance, factor, optimize=False
+            )
+        )
         specific_variance = float(np.square(self.specific_volatility * active).sum())
         total = max(0.0, factor_variance + specific_variance)
         return total, factor_variance, specific_variance

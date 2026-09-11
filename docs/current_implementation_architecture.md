@@ -1,6 +1,6 @@
 # 统一组合优化器当前实现架构
 
-更新日期：2026-08-31。
+更新日期：2026-09-11。
 
 本文面向代码审阅，描述仓库当前实现，而不是未来目标态。后端选择依据见
 [`solver_backend_decision.md`](solver_backend_decision.md)，接口最初设计见
@@ -14,7 +14,8 @@
 1. 一个优化请求由不可变的 `PortfolioProblem(data, objective, constraints)` 完整描述，求解器
    对象不保存黑名单、冻结名单或其他可跨请求泄漏的业务状态。
 2. 输入先经过不调用 solver 的聚合校验，再编译为 solver-independent canonical model。
-3. LP、QP、单一 factor-model TE 约束分别走 HiGHS、direct PIQP、PIQP frontier strategy。
+3. auto 路线中，LP、QP、单一 factor-model TE 约束分别走 HiGHS、direct PIQP 和
+   Clarabel/QDLDL；显式选择 MOSEK 时只使用 MOSEK，不自动回退。
 4. backend 报告 `solved` 后仍需由公共验收层复算约束、风险和目标；backend 状态不是直接的
    返回证书。
 5. 普通求解失败返回结构化 `OptimizationResult`；输入/schema/模型定义错误在建立 backend
@@ -49,17 +50,16 @@
                          │
           ┌──────────────┼──────────────────┐
           ▼              ▼                  ▼
-       HiGHS LP       PIQP QP       factor-QCQP strategy
+       HiGHS LP       PIQP QP       Clarabel factor-QCQP
                                           │
-                              PIQP 参数 QP / 可选 HiGHS LP
+                                  可选 HiGHS LP 预筛
                          │
                          ▼
             canonical 数值可行性复算
                          │
-                  未通过且允许 fallback
+             QP 未通过 auto 验收
                          │
-           MOSEK ─不可用/失败→ Clarabel QDLDL
-             └─不可行/无界→ 终止回退
+                 Clarabel QDLDL 复核
                          │
                          ▼
              evaluate_solution 业务验收
@@ -76,22 +76,22 @@
 | 数据对齐 | `data/alignment.py`、`data/contracts.py`、`data/memory.py` | 严格同日 `(dt, sid)` 对齐、benchmark 覆盖、风险模型物化、序列预检 |
 | 外部数据适配 | `integrations/tuda2.py` | 风险、benchmark、可交易性及 C2C 收益的批量 I/O |
 | 静态校验 | `validation.py` | shape、单位、日期、有限性、PSD、约束组合和交易清单预检 |
-| 单股域解析 | `asset_bounds.py` | 合并绝对/主动边界、黑名单、冻结、单边交易和非交易冻结 |
+| 单股域解析 | `_impl/asset_bounds.py` | 合并绝对/主动边界、黑名单、冻结、单边交易和非交易冻结 |
 | canonical 上层契约 | `model/canonical.py` | 编译结果、fingerprint 与 core 数值 payload 的上层入口 |
-| 编译器 | `model/compiler.py` | 问题分类、辅助变量布局、稀疏约束与目标构造、fingerprint |
+| 编译器 | `_impl/compiler.py` | 问题分类、辅助变量布局、稀疏约束与目标构造、fingerprint |
 | 数值核心契约 | `_core/canonical.py`、`_core/contracts.py` | 纯数值 canonical payload、core 状态和扁平选项；不依赖上层模块 |
 | backend | `_core/backends/*` | HiGHS/PIQP/MOSEK/Clarabel 调用及原生状态标准化 |
-| factor-QCQP | `_core/factor_qcqp.py` | LP 严格预筛、参数 QP、theta 搜索、PIQP workspace 生命周期和 gap |
+| factor-QCQP | `_core/factor_conic.py` | 将 factor + diagonal 风险算子提升为稀疏二阶锥 |
+| 线程控制 | `_core/thread_control.py` | 解析 auto/max/固定策略、cgroup/affinity CPU 上界和动态 BLAS 作用域 |
 | core 路由 | `_core/engine.py` | 一次调用内完成分类路由、fallback 和 canonical 可行性复算 |
-| 内部适配 | `_solver_adapter.py` | 公共 policy/core options、状态、结果和证书之间的一次性映射 |
+| 内部适配 | `_impl/solver_adapter.py` | 公共 policy/core options、状态、结果和证书之间的一次性映射 |
 | 统一入口 | `api.py` | prepare、单期/多期 facade 和显式诊断入口 |
-| 结果验收 | `solution.py` | 辅助变量重建、全部 canonical 约束与业务指标复算 |
-| 多期 | `sequence.py` | C2C 漂移、theta 传播、失败策略和显式换手恢复 |
+| 结果验收 | `_impl/solution.py` | 辅助变量重建、全部 canonical 约束与业务指标复算 |
+| 多期 | `sequence.py` | C2C 漂移、失败策略和显式换手恢复 |
 | 显式诊断 | `diagnostics.py` | Phase-I、线性最小换手、最小 TE 诊断 |
 | 审计 | `fingerprint.py` | semantic/canonical hash 与 compiler version |
 
-旧的 `opt.py`、`linopt.py`、`solver.py` 仅由 `optim.__getattr__` 延迟加载。新版正常 import 和
-求解路径不依赖它们。
+旧的 `opt.py`、`linopt.py`、`solver.py` 已删除，不提供兼容别名。
 
 ## 3. 公共对象模型
 
@@ -123,8 +123,8 @@ TE 为年化小数波动率。核心不会根据数值量级猜单位。
 | 目标 | TE 约束 | 分类 | 当前可求解性 |
 |---|---|---|---|
 | `MaximizeAlpha` | 无 | LP | HiGHS |
-| `MaximizeAlpha` | 有 | Factor-QCQP | PIQP frontier，失败后 MOSEK/Clarabel |
-| `RiskAdjustedAlpha` | 无 | QP | direct PIQP，失败后 MOSEK/Clarabel |
+| `MaximizeAlpha` | 有 | Factor-QCQP | Clarabel；显式 backend=mosek 时使用 MOSEK |
+| `RiskAdjustedAlpha` | 无 | QP | direct PIQP，失败后 Clarabel 复核 |
 | `RiskAdjustedAlpha` | 有 | CONIC | 已分类，但当前 compiler 明确报 unsupported |
 | `MinimizeTrackingError` | 任意 | QP | direct PIQP |
 
@@ -276,12 +276,10 @@ prepare(problem)
 solve_prepared
     ├── LP             -> HiGHS
     ├── QP             -> PIQP
-    └── Factor-QCQP    -> factor frontier strategy
+    └── Factor-QCQP    -> Clarabel QDLDL
              │
-    canonical 数值复算未通过且为 QP/QCQP
-        ├── MOSEK（配置为 licensed fallback 时）
-        ├── MOSEK 不可行/无界 -> 保留确定状态并终止回退
-        └── MOSEK 不可用或求解失败 -> Clarabel QDLDL
+    auto QP canonical 数值复算未通过
+        └── Clarabel QDLDL 复核
              │
     _audit_backend_result
         ├── evaluate_solution
@@ -292,16 +290,15 @@ solve_prepared
     _result -> OptimizationResult
 ```
 
-LP 当前没有 fallback。QP/QCQP fallback 每次都使用同一个 `CompiledProblem`；每个 backend
-结果都单独经过相同的独立验收。MOSEK 已经成功运行并报告不可行或无界时，不再让免费后端的
-数值失败覆盖其数学状态；MOSEK 未安装、无 license、数值失败或达到求解限制时才进入
-Clarabel。
+LP 和 Factor-QCQP 的 auto 路线当前没有 fallback；QP 的 PIQP 候选未通过时由 Clarabel 复核。
+显式 backend 只执行指定求解器，不预筛、不回退；显式 MOSEK 缺安装或有效 license 时抛出
+`RuntimeError`。所有 backend 候选都经过相同的独立验收。
 
 小权重清理阈值默认为 `1e-5`，即 0.1 bp 权重。清理流程先置零再按预算归一化，然后重建
 turnover/factor 等辅助变量。如果破坏可行性或使已认证 objective gap 超限，则丢弃清理结果，
 返回原始可行解。
 
-## 7. Factor-QCQP strategy
+## 7. Factor-QCQP 锥路线
 
 原问题是：
 
@@ -313,47 +310,31 @@ $$
 \end{aligned}
 $$
 
-其中 `X` 是统一线性域，`R` 是 low-rank factor + diagonal specific risk。当前 strategy 增加
-factor exposure 变量，把不同 theta 对应的问题写成共享 `P/A/bounds`、只更新线性项 `q` 的
-参数 QP：
+其中 $\mathcal X$ 是统一线性域，$R$ 是 low-rank factor + diagonal specific risk。编译器
+复用 factor-active 变量，将风险预算直接表示为二阶锥：
 
 $$
-\begin{aligned}
-\min_x\quad & \frac12s_RR(x)-\theta s_\alpha\alpha^{\mathsf T}x \\
-\text{s.t.}\quad & x\in\mathcal X.
-\end{aligned}
+\left\|
+\begin{bmatrix}
+F^{1/2}E^{\mathsf T}(x-b) \\
+D(x-b)
+\end{bmatrix}
+\right\|_2 \le B.
 $$
 
-`risk_scale=10000` 只延续已经生产验证的 theta 数值尺度；公开 TE 和 certificate 仍回到
-annualized decimal risk 与原始 alpha 单位。
+Clarabel 直接求解这一锥模型，不再进行 theta 搜索，也不把 PIQP 描述为 SOCP solver。显式
+`backend="mosek"` 使用 MOSEK Fusion 求同一个 canonical factor-QCQP。公开 TE 和验收始终
+回到 annualized decimal risk 单位。
 
-### 7.1 搜索过程
+项目仍强制依赖官方 `piqp>=0.6.4`，但 PIQP 只承担普通凸 QP；该版本包含此前审计的
+dual-recovery 越界修复。每次 QP 建立新的 direct sparse workspace，不跨日期复用。
 
-1. 从显式 `theta_seed` 或 `theta_initial` 开始；
-2. 以 `theta_growth` 扩张/收缩，寻找风险可行与超预算的 bracket；
-3. 在 bracket 内使用有保护的线性插值/二分逼近风险边界；
-4. 用最终精度重解；若最终解因数值误差越过风险边界，再执行有界恢复；
-5. 计算 frontier slack gap、QP subproblem gap 和 total gap；
-6. total gap 超过业务 tolerance 时返回 `LIMIT_REACHED`，由统一路由进入 fallback。
-
-同一天的搜索复用一个 PIQP workspace，只更新 `q`。跨日期不复用 workspace。
-
-### 7.2 PIQP 生命周期
-
-项目强制依赖官方 `piqp>=0.6.4`；该版本已包含上游 dual-recovery 越界修复，`auto`
-固定使用 compact 双边约束。one-sided 展开仅保留为显式诊断/性能对照选项，不承担旧版本兼容。
-
-首次 cold solve 失败不会用完全相同参数盲重试。只有 workspace 已经成功求解、随后 update
-路径失败，并且 policy 允许时，才销毁并用当前 QP 冷重建一次；再失败则返回统一 fallback。
-
-### 7.3 可选 LP prescreen
+### 7.1 可选 LP prescreen
 
 `lp_prescreen=False` 是默认值。显式开启后，HiGHS 先求相同线性域上的全局 alpha 最优点。
-如果该点同时满足 $\operatorname{TE}(x)\le B-m_R$，它就是 QCQP 的严格全局最优解，返回
-`VERIFIED` 证书；否则其耗时累计到主路线并继续 PIQP frontier。
-
-frontier strategy 当前证书标记为 `NUMERICAL_ESTIMATE`，因为 total gap 包含 PIQP 报告的
-数值 primal-dual gap；LP prescreen 通过时才是该路线的严格 `VERIFIED` 证书。
+如果该点同时满足 $\operatorname{TE}(x)\le B$，它就是 QCQP 的严格全局最优解，返回
+`VERIFIED` 证书；否则其耗时累计到主路线并继续 Clarabel。LP prescreen 通过时为严格
+`VERIFIED` 证书；锥求解结果保留原生 gap 信息，并由公共层独立复算全部约束与风险。
 
 ## 8. 结果、失败与诊断
 
@@ -389,9 +370,6 @@ x_pretrade(t) = normalize(x_target(t-1) * (1 + return(t-1, t)))
 随后把它写入第 `t` 日 `PortfolioData.initial_weight`，因此 turnover 始终相对真实漂移后的
 期初持仓。冷启动/independent 模式则使用调用者提供的逐日初始权重。
 
-`theta_seed="auto"` 在 chained 模式等价于 `previous`，在 independent 模式等价于 `fixed`。
-只传播上一成功日的最终 theta 数值，不传播 workspace；失败或没有 theta 时回到固定起点。
-
 普通不可行默认 `stop`；显式 `on_failure="hold"` 才继续持有漂移后组合。换手恢复还需要显式
 `TurnoverRecoveryPolicy(max_turnover=...)`：先运行 deep diagnosis，只有线性最小换手处于授权
 区间内才尝试放宽；含 TE 时可能进一步在授权区间内二分寻找可行上界。恢复只对当日生效，
@@ -401,11 +379,13 @@ x_pretrade(t) = normalize(x_target(t-1) * (1 + return(t-1, t)))
 
 - 数据 I/O 与数学求解分层；tuda2 区间数据一次取足，日循环不访问 tuda2。
 - canonical 和 backend 使用 NumPy/CSC 数组；pandas 主要留在边界对齐与结果标签层。
-- risk QP/factor strategy 直接利用 factor + diagonal 结构，不构造资产维度 dense covariance。
+- risk QP/factor conic 编译直接利用 factor + diagonal 结构，不构造资产维度 dense covariance。
 - factor bounds 复用 factor-active 变量，避免重复 dense exposure block。
 - 大型 registry 使用 immutable metadata flyweight 和批量 fingerprint 编码。
 - 不引入 chunk/LRU 分支；序列规模应在启动前做容量判断。
 - 当前不跨日期复用 canonical sparse template，也不跨日期复用 PIQP workspace。
+- `SolverTuning.threads="auto"` 在整个数值序列外只建立一次动态作用域；BLAS、Clarabel 和
+  MOSEK 默认单线程，HiGHS 保留实测更快的原生自动调度，退出时恢复线程池。
 
 真实 v5 35 日开发机结果见
 [`v5_unified_optimizer_real_benchmark.md`](v5_unified_optimizer_real_benchmark.md)。当前 5200×47
@@ -421,17 +401,15 @@ x_pretrade(t) = normalize(x_target(t-1) * (1 + return(t-1, t)))
 
 1. `FullCovarianceRiskModel` 尚未编译；通用 CONIC/SOCP canonical compiler 尚未实现。
 2. `RiskAdjustedAlpha + TrackingErrorLimit` 会分类为 CONIC，随后明确报 unsupported。
-3. `SolverPolicy.lp/qp/factor_qcqp_strategy/factor_qcqp_subproblem_backend` 当前是目标态 contract；
-   `solve_prepared()` 仍固定路由 HiGHS、PIQP 和 frontier。
-4. `SolverPolicy.validate_solution` 当前不关闭验收；实现始终独立验证，这是现阶段正确性不变量。
-5. `SolverTuning.polish`、`repeat_failed_cold_solve` 当前没有接入 backend 行为。
-6. `RunFingerprint`、`SolverAttempt.backend_payload_hash` 已定义但尚未由主流程填充；当前结果使用
+3. `SolverPolicy.validate_solution` 当前不关闭验收；实现始终独立验证，这是现阶段正确性不变量。
+4. `SolverTuning.polish`、`SolverPolicy.repeat_failed_cold_solve` 当前没有接入 backend 行为。
+5. `RunFingerprint`、`SolverAttempt.backend_payload_hash` 已定义但尚未由主流程填充；当前结果使用
    `ProblemFingerprint`。
-7. `SolveTimings.compile_s/postprocess_s` 尚未单独拆分，prepare 和 total 字段已经可用。
-8. 二阶段“近似 alpha 最优集合内最小化与上一期距离”尚未实现。
-9. `PreparedPortfolioProblem` 只公开 fingerprint、编译优化和耗时；数值准备状态是不可序列化
+6. `SolveTimings.compile_s` 已单独计量；`postprocess_s` 尚未单独拆分。
+7. 二阶段“近似 alpha 最优集合内最小化与上一期距离”尚未实现。
+8. `PreparedPortfolioProblem` 只公开 fingerprint、编译优化和耗时；数值准备状态是不可序列化
    的 opaque handle。
-10. wheel 保留带内联类型的公共 Python facade 和 `py.typed`；`_core` 数值实现显式 Cython
+9. wheel 保留带内联类型的公共 Python facade 和 `py.typed`；`_core` 数值实现显式 Cython
    编译，只保留包初始化入口，不分发实现模块对应的 `.py/.pyi/.c/.cpp` 或注解 HTML。
 
 这些条目应作为审阅后的实施清单，而不是在本轮文档整理中顺手改变。
@@ -441,10 +419,10 @@ x_pretrade(t) = normalize(x_target(t-1) * (1 + return(t-1, t)))
 为了先验证语义再看数值细节，建议按以下顺序阅读：
 
 1. `portfolio_types.py`：公共数据、目标、约束、policy 和结果语义；
-2. `validation.py`、`asset_bounds.py`：前置校验和交易约束优先级；
-3. `model/canonical.py`、`model/compiler.py`：统一数学模型；
-4. `api.py`、`_solver_adapter.py`：公共入口及内部求解边界转换；
-5. `_core/engine.py`、`_core/factor_qcqp.py`、`_core/backends/piqp.py`：路由与专用快速路径；
-6. `solution.py`：solver-independent 正确性边界；
+2. `validation.py`、`_impl/asset_bounds.py`：前置校验和交易约束优先级；
+3. `model/canonical.py`、`_impl/compiler.py`：统一数学模型；
+4. `api.py`、`_impl/solver_adapter.py`：公共入口及内部求解边界转换；
+5. `_core/engine.py`、`_core/factor_conic.py`、`_core/backends/*`：路由与后端；
+6. `_impl/solution.py`：solver-independent 正确性边界；
 7. `data/*`、`integrations/tuda2.py`、`sequence.py`：数据与多期状态推进；
 8. `diagnostics.py`：显式不可行诊断。

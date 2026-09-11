@@ -490,7 +490,10 @@ class _DomainBuilder:
                 shape=(len(rows), self.layout.n_variables),
             )
             factor_matrix = self._pad(sp.csc_matrix(exposure.T)) + factor_identity
-            rhs = exposure.T @ benchmark
+            # 资产数通常远大于因子数。这里使用确定性的逐元素归约，避免一次规模很小的
+            # GEMV 唤醒进程级 BLAS 线程池；在受 CPU quota 限制的容器中，线程池唤醒和
+            # 自旋等待可能比这次数值计算本身更昂贵。
+            rhs = np.einsum("ij,i->j", exposure, benchmark, optimize=False)
             self.add_block(
                 factor_matrix,
                 rhs,
@@ -680,7 +683,7 @@ class _DomainBuilder:
         if benchmark is not None:
             for key, pair in config.extra_active.items():
                 values = np.asarray(self.data.extra_attributes[key], dtype=float)
-                shift = float(values @ benchmark)
+                shift = float(np.einsum("i,i->", values, benchmark, optimize=False))
                 self.add_block(
                     self._weight_block(values),
                     pair[0] + shift,
@@ -823,7 +826,12 @@ class _DomainBuilder:
             )
         else:
             exposure = np.asarray(self.risk_model.exposure, dtype=float)[:, indices]
-            benchmark_shift = exposure.T @ np.asarray(self.data.benchmark, dtype=float)
+            benchmark_shift = np.einsum(
+                "ij,i->j",
+                exposure,
+                np.asarray(self.data.benchmark, dtype=float),
+                optimize=False,
+            )
             lower = lower + benchmark_shift
             upper = upper + benchmark_shift
             matrix = self._pad(sp.csc_matrix(exposure.T))
@@ -987,7 +995,9 @@ def _compile_qp(problem: PortfolioProblem) -> tuple[QuadraticProgram, tuple[str,
         alpha = np.asarray(problem.data.alpha, dtype=float)
         # 预算等式使 alpha 平移在数学上只改变常数。以基准为中心，使 PIQP 缩放取决于 alpha
         # 离散程度，而不是风险线性项或任意公共水平。
-        alpha_shift = float(alpha @ risk.benchmark)
+        alpha_shift = float(
+            np.einsum("i,i->", alpha, risk.benchmark, optimize=False)
+        )
         centered_alpha = alpha - alpha_shift
         q[domain.weight_indices] -= centered_alpha
         objective_scale_reference = float(np.max(np.abs(centered_alpha)))

@@ -30,6 +30,12 @@ from .engine import (
     CoreSolveResult,
     CoreSolver,
 )
+from .thread_control import (
+    NumericalThreadScope,
+    ThreadResolution,
+    numerical_thread_scope,
+    resolve_thread_setting,
+)
 
 __all__ = [
     "CORE_ABI_VERSION",
@@ -49,6 +55,10 @@ __all__ = [
     "FactorRiskOperator",
     "LinearDomain",
     "LinearProgram",
+    "NumericalThreadScope",
+    "numerical_thread_scope",
     "QuadraticProgram",
+    "ThreadResolution",
+    "resolve_thread_setting",
     "VariableRecord",
 ]

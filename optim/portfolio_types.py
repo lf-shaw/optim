@@ -963,7 +963,7 @@ class SolveTimings:
     Attributes
     ----------
     prepare_s : float
-        校验和上层准备耗时。
+        静态校验和上层句柄准备耗时，不含 ``compile_s``。
     compile_s : float
         业务语义到 canonical 模型的编译耗时。
     backend_setup_s : float
@@ -1165,6 +1165,11 @@ class SolverTuning:
         最终候选约束验收允许的最大绝对违约；默认为 ``1e-5``。
     weight_zero_tolerance : float
         输出及多期状态中将权重视为数值零的绝对阈值；默认为 ``1e-5``。
+    threads : {"auto", "max"} | int
+        数值求解线程策略。``"auto"`` 默认使用当前基准验证的后端专属低延迟配置；
+        ``"max"`` 使用进程 affinity 与 cgroup quota 共同允许的 CPU 上界；正整数表示明确
+        请求的线程上限，并且不得超过该 CPU 上界。环境相关上限在创建优化器时校验。设置由
+        优化器在求解期间自动应用并在退出时恢复。
     """
 
     alpha_target: float = 0.2
@@ -1174,6 +1179,17 @@ class SolverTuning:
     polish: bool = True
     feasibility_tolerance: float = 1e-5
     weight_zero_tolerance: float = 1e-5
+    threads: str | int = "auto"
+
+    def __post_init__(self) -> None:
+        named = isinstance(self.threads, str) and self.threads in {"auto", "max"}
+        fixed = (
+            isinstance(self.threads, int)
+            and not isinstance(self.threads, bool)
+            and self.threads > 0
+        )
+        if not (named or fixed):
+            raise ValueError("threads must be 'auto', 'max' or a positive integer")
 
 
 @dataclass(frozen=True)

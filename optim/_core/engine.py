@@ -203,6 +203,9 @@ class CoreSolver:
             eps_rel=self.options.final_eps,
             objective_scale_target=self.options.alpha_target,
             inequality_form=self.options.piqp_inequality_form,
+            thread_policy=self.options.thread_policy,
+            thread_limit=self.options.thread_limit,
+            effective_cpu_count=self.options.effective_cpu_count,
         )
 
     def _audit(
@@ -212,6 +215,13 @@ class CoreSolver:
     ) -> tuple[BackendResult, bool, float]:
         """从 primal 复算 canonical 行、变量边界和适用的风险预算。"""
 
+        diagnostics = dict(result.diagnostics)
+        diagnostics.setdefault("thread_policy", self.options.thread_policy)
+        diagnostics.setdefault("thread_limit", self.options.thread_limit)
+        diagnostics.setdefault(
+            "effective_cpu_count", self.options.effective_cpu_count
+        )
+        result = replace(result, diagnostics=diagnostics)
         if not result.status.has_solution or result.primal is None:
             return result, False, 0.0
         vector = np.asarray(result.primal, dtype=float).reshape(-1)

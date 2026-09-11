@@ -35,6 +35,7 @@ REQUIRED_CORE_MODULES = {
     "dual_bounds",
     "engine",
     "factor_conic",
+    "thread_control",
     "backends/base",
     "backends/clarabel",
     "backends/highs",

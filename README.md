@@ -1118,6 +1118,38 @@ optimizer = PortfolioOptimizer(
 - 多期默认保存稀疏权重，避免输出完整的 `date × universe` dense 历史；
 - 深度诊断只对选定问题手工执行。
 
+优化器默认自行管理数值线程，不要求调用者在外层书写线程上下文：
+
+```python
+from optim import PortfolioOptimizer, SolverPolicy, SolverTuning
+
+# 当前真实组合基准下的低延迟默认值：单线程。
+optimizer = PortfolioOptimizer(
+    SolverPolicy(tuning=SolverTuning(threads="auto"))
+)
+
+# 使用 CPU affinity 与 cgroup quota 共同允许的最大线程数。
+max_threads = PortfolioOptimizer(
+    SolverPolicy(tuning=SolverTuning(threads="max"))
+)
+
+# 明确请求固定线程上限；超过 effective CPU 数会直接报错。
+fixed = PortfolioOptimizer(
+    SolverPolicy(tuning=SolverTuning(threads=4))
+)
+```
+
+`auto` 不是运行时反复试算：它采用当前组合问题基准确定的后端专属配置——BLAS、PIQP、
+Clarabel/QDLDL 和 MOSEK 使用单线程，HiGHS 保留其原生自动调度（实测优于显式固定为一），
+避免机械地统一线程数。`max` 同时读取
+进程 CPU affinity 和 cgroup v1/v2 quota；例如 affinity 可见 64 核而 `cpu.max` 为
+`1200000 100000` 时解析为 12。整数表示调用者明确指定的线程上限，创建优化器时若超过
+effective CPU 数会直接报错；底层串行算法仍可能只用一个线程。
+
+线程限制仅包围 optim 的数值阶段；多期调用在整个求解循环外只设置一次，正常返回或异常退出
+都会恢复原线程池状态。BLAS 的限制在部分运行库中是进程级的，因此作用域存续期间，同进程
+其他 Python 线程的数值任务也可能受到影响；需要并发求解时应使用独立进程。
+
 编译器会根据最终有效资产边界与固定预算消除已证明冗余的 L1 约束，而不是根据某次解上
 约束不活跃就删除它。只做多的总主动权重采用直接生成的紧凑布局：利用
 $\lVert w-b\rVert_1=B-\sum_i b_i+2\sum_i(b_i-w_i)_+$，只对有效区间跨过基准的资产

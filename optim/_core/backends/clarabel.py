@@ -20,6 +20,7 @@ from .base import (
     BackendResult,
     capture_infeasibility,
     dual_entries,
+    thread_diagnostics,
 )
 from ..dual_bounds import lp_dual_bound_diagnostics
 
@@ -111,6 +112,7 @@ class ClarabelBackend:
         settings.tol_gap_rel = float(options.eps_rel)
         settings.tol_feas = float(options.eps_abs)
         settings.direct_solve_method = "qdldl"
+        settings.max_threads = int(options.thread_limit)
         if options.time_limit_s is not None:
             settings.time_limit = float(options.time_limit_s)
 
@@ -195,6 +197,11 @@ class ClarabelBackend:
             evidence = capture_infeasibility(
                 lambda: _infeasibility(data, solution, self.name), evidence_errors
             )
+        native_threads = None
+        try:
+            native_threads = int(solver.get_info().linsolver.threads)
+        except (AttributeError, TypeError, ValueError):
+            pass
         return BackendResult(
             backend=self.name,
             status=status,
@@ -207,6 +214,11 @@ class ClarabelBackend:
             solve_s=solve_s,
             infeasibility=evidence,
             diagnostics={
+                **thread_diagnostics(
+                    options,
+                    native_threads=native_threads,
+                    native_thread_limit=options.thread_limit,
+                ),
                 **evidence_errors,
                 "objective_scale": data.objective_scale,
                 "primal_objective_scaled": primal_objective,

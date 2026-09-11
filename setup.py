@@ -25,6 +25,7 @@ CORE_SOURCES = (
     "optim/_core/dual_bounds.py",
     "optim/_core/engine.py",
     "optim/_core/factor_conic.py",
+    "optim/_core/thread_control.py",
     "optim/_core/backends/base.py",
     "optim/_core/backends/clarabel.py",
     "optim/_core/backends/highs.py",

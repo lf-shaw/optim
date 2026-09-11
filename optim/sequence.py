@@ -7,9 +7,11 @@
 
 from __future__ import annotations
 
+import gc
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterable, Mapping
+from functools import wraps
 from pathlib import Path
+from typing import Any, Iterable, Mapping
 
 import numpy as np
 import pandas as pd
@@ -181,8 +183,7 @@ class SequenceDataError(ValueError):
         return _dump_failure(self, Path(path))
 
 
-@_with_progress
-def solve_sequence(
+def _solve_sequence_impl(
     optimizer: Any,
     problems: Iterable[PortfolioProblem],
     *,
@@ -445,6 +446,39 @@ def solve_sequence(
         schedule_prepare_s=schedule_prepare_s,
         stopped_problem=stopped_problem,
     )
+
+
+@_with_progress
+@wraps(_solve_sequence_impl)
+def solve_sequence(
+    optimizer: Any,
+    problems: Iterable[PortfolioProblem],
+    *,
+    holding_period_returns: Mapping[Any, pd.Series | np.ndarray] | None = None,
+    sequence_policy: SequencePolicy | None = None,
+    show_progress: bool = False,
+    failure_dump_dir: str | Path | None = None,
+) -> PortfolioSequenceResult:
+    """在受控 GC 生命周期内执行多期状态机。"""
+
+    # canonical 编译会创建大量不形成引用环的短命审计记录。CPython 引用计数会立即释放
+    # 它们；自动循环 GC 反复扫描逐期保留的结果对象只会产生停顿。序列结束或异常时恢复调用方
+    # 原有状态，不主动 collect，也不改变单期入口及非 CPython 解释器的正确性语义。
+    was_enabled = gc.isenabled()
+    if was_enabled:
+        gc.disable()
+    try:
+        return _solve_sequence_impl(
+            optimizer,
+            problems,
+            holding_period_returns=holding_period_returns,
+            sequence_policy=sequence_policy,
+            show_progress=show_progress,
+            failure_dump_dir=failure_dump_dir,
+        )
+    finally:
+        if was_enabled:
+            gc.enable()
 
 
 def _recover_turnover(
