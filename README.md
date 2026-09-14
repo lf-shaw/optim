@@ -780,6 +780,22 @@ one_day = sequence.result_for_date(target_date)
 print(sequence.stopped_date, sequence.final_weight)
 ```
 
+需要交给回测、交易或持仓分析模块时，可直接导出标准长表 Series：
+
+```python
+weights = sequence.to_weight_series()
+
+# weights.index.names == ["dt", "sid"]
+# weights.name == "weight"
+# 默认逐日保留 abs(weight) >= 0.0001 的持仓，并将剩余权重归一化至 1。
+```
+
+该接口直接拼接已保存的逐期权重，不先构造宽表。输出 `(dt, sid)` 索引保证单调递增：
+正常单调输入不排序，只有手工无序的单日股票索引才执行当日稳定排序。可通过
+`weight_threshold` 修改过滤阈值；如需审计过滤后的原始数值，可设置 `normalize=False`。
+达到阈值的权重会被保留，显著空头持仓按绝对值判断。失败日期不会生成虚构权重；使用
+`SequencePolicy(output_weights="none")` 时没有逐期权重可导出，调用会明确报错。
+
 `output_weights="none"` 不保存每日目标、交易前和最终权重 payload；状态、路由、证书、
 违约和耗时仍会保留，适合长区间可靠性与性能测试。
 

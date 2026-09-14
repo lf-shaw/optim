@@ -128,6 +128,121 @@ class PortfolioSequenceResult:
                 return step.result
         raise KeyError(target)
 
+    def to_weight_series(
+        self,
+        weight_threshold: float = 1e-4,
+        *,
+        normalize: bool = True,
+    ) -> pd.Series:
+        """导出逐期目标权重为 ``(dt, sid)`` 索引的 Series。
+
+        本方法直接遍历已经保存的逐期权重，并使用 NumPy 分块拼接结果；不会先构造宽表或
+        调用 ``stack``。日期沿用序列层保证的严格递增顺序；每期股票已经单调时保持零排序
+        快速路径，仅对手工传入的无序股票索引执行当日稳定排序。
+
+        Parameters
+        ----------
+        weight_threshold : float, default 1e-4
+            保留绝对值大于或等于该阈值的权重。使用绝对值可保留达到阈值的空头持仓；设置为
+            ``0.0`` 时也会保留显式存储的零权重。
+        normalize : bool, default True
+            是否在过滤后按日期分别除以当日剩余权重之和，使每期导出权重之和为 ``1.0``。
+            关闭时返回过滤后的原始求解权重。
+
+        Returns
+        -------
+        pandas.Series
+            行索引名称严格为 ``("dt", "sid")``，Series 名称严格为 ``"weight"``。
+            ``(dt, sid)`` 索引保证单调递增。只包含具有可用解且保存了权重的日期；失败步骤
+            不会生成虚构权重。
+
+        Raises
+        ------
+        ValueError
+            阈值不是非负有限数、``normalize`` 不是布尔值、运行时使用了
+            ``output_weights="none"``，或某个有解日期在过滤后无法归一化。
+
+        Notes
+        -----
+        导出结果遵守运行时的 ``SequencePolicy.output_weights``。因此 ``"sparse"`` 只能导出
+        已保存的稀疏权重，不能恢复求解后被输出策略丢弃的数值零；``"none"`` 没有逐期权重
+        可供导出。
+        """
+
+        if (
+            isinstance(weight_threshold, bool)
+            or not isinstance(weight_threshold, (int, float, np.integer, np.floating))
+            or not np.isfinite(weight_threshold)
+            or weight_threshold < 0.0
+        ):
+            raise ValueError("weight_threshold must be finite and non-negative")
+        if not isinstance(normalize, (bool, np.bool_)):
+            raise ValueError("normalize must be bool")
+        if self.policy.output_weights == "none":
+            raise ValueError(
+                "daily weights were not retained because output_weights='none'"
+            )
+
+        date_chunks: list[np.ndarray] = []
+        sid_chunks: list[np.ndarray] = []
+        weight_chunks: list[np.ndarray] = []
+        threshold = float(weight_threshold)
+
+        for step in self.steps:
+            weights = step.result.weights
+            if not step.result.status.has_solution or weights is None:
+                continue
+
+            values = np.asarray(weights.to_numpy(copy=False), dtype=float)
+            mask = np.abs(values) >= threshold
+            retained = values[mask]
+            if retained.size == 0:
+                raise ValueError(
+                    f"no weights remain at {step.date.date()} after applying "
+                    f"weight_threshold={threshold:g}"
+                )
+            if normalize:
+                total = float(np.sum(retained))
+                if not np.isfinite(total) or abs(total) <= np.finfo(float).eps:
+                    raise ValueError(
+                        f"weights at {step.date.date()} cannot be normalized after "
+                        f"applying weight_threshold={threshold:g}"
+                    )
+                retained = retained / total
+
+            retained_sids = weights.index.to_numpy(copy=False)[mask]
+            if not weights.index.is_monotonic_increasing:
+                retained_index = pd.Index(retained_sids, copy=False)
+                if not retained_index.is_monotonic_increasing:
+                    order = retained_index.argsort(kind="stable")
+                    retained_sids = retained_sids[order]
+                    retained = retained[order]
+
+            count = retained.size
+            date_chunks.append(
+                np.full(count, step.date.to_datetime64(), dtype="datetime64[ns]")
+            )
+            sid_chunks.append(retained_sids)
+            weight_chunks.append(retained)
+
+        if not weight_chunks:
+            empty_index = pd.MultiIndex.from_arrays(
+                [pd.DatetimeIndex([]), pd.Index([], dtype=object)],
+                names=["dt", "sid"],
+            )
+            return pd.Series([], index=empty_index, dtype=float, name="weight")
+
+        index = pd.MultiIndex.from_arrays(
+            [np.concatenate(date_chunks), np.concatenate(sid_chunks)],
+            names=["dt", "sid"],
+        )
+        return pd.Series(
+            np.concatenate(weight_chunks),
+            index=index,
+            name="weight",
+            copy=False,
+        )
+
 
 class SequenceDataError(ValueError):
     """序列数据无法安全推进；漂移阶段失败时保留可审计上下文。

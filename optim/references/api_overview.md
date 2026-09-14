@@ -189,6 +189,11 @@ $$
 - `ignore_first_turnover=True`：仅链式首期豁免换手上限，结果换手为 None（不是零），不计入统计；
 - `output_weights="sparse"`，仅保留绝对值不小于默认 `1e-5` 的权重。
 
+`sequence.to_weight_series(weight_threshold=1e-4, normalize=True)` 将已保存的逐期目标权重
+直接拼接为名称为 `weight`、索引名称为 `(dt, sid)` 的 Series。默认逐日保留绝对值大于或
+等于 `1e-4` 的权重并将剩余权重归一化至 1；不构造宽表，保证索引单调递增，已单调的正常
+路径不排序。失败日期不生成权重，`output_weights="none"` 时明确报错。
+
 `optimizer.optimize_range(..., show_progress=True)` 和 `optimizer.solve_sequence(..., show_progress=True)`
 开启可选 tqdm.auto 进度条（安装 `optim[progress]`），默认关闭，不属于 SequencePolicy。
 取数/对齐只显示阶段信息；预检与求解按日期计数，显示当前日期、耗时和预计剩余时间。

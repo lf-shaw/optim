@@ -73,6 +73,12 @@ summary = "显式问题或准备清单的多期入口；show_progress=True 显�
 group = "optimizer"
 
 [[symbols]]
+name = "optim.PortfolioSequenceResult.to_weight_series"
+signature = "to_weight_series(weight_threshold=1e-4, *, normalize=True) -> pandas.Series"
+summary = "高效拼接已保存的逐期目标权重，返回名称 weight、单调 (dt,sid) 索引的长表 Series；默认保留绝对值不小于 1e-4 的权重并逐日归一化，不构造宽表，已单调的正常路径不排序"
+group = "optimizer"
+
+[[symbols]]
 name = "optim.SequenceDataError.dump"
 signature = "dump(path: str | Path) -> Path"
 summary = "显式导出序列漂移故障的日期、缺失股票、上一持仓、区间收益与已完成步骤摘要；.gz 压缩，不覆盖文件，不包含风险矩阵，不是 load_repro 模型包；异常同时保留 evidence 和 partial_result"

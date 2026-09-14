@@ -177,6 +177,69 @@ def test_factor_sequence_uses_clarabel_without_search_state(sample_lp_problem):
     assert all(step.pretrade_weight is None for step in result.steps)
 
 
+def test_sequence_exports_filtered_normalized_weight_series(sample_lp_problem):
+    base = PortfolioOptimizer().solve_sequence([sample_lp_problem])
+    first_step = base.steps[0]
+    assets = sample_lp_problem.data.assets
+    first_weights = pd.Series(
+        [0.6, 0.39985, 0.0001, 0.00005], index=assets, name="weight"
+    )
+    second_weights = pd.Series(
+        [0.5, 0.4997, -0.0002, 0.0005], index=assets, name="weight"
+    ).iloc[[2, 0, 3, 1]]
+    second_date = first_step.date + pd.Timedelta(days=1)
+    sequence = replace(
+        base,
+        steps=(
+            replace(
+                first_step,
+                result=replace(first_step.result, weights=first_weights),
+            ),
+            replace(
+                first_step,
+                date=second_date,
+                result=replace(first_step.result, weights=second_weights),
+            ),
+        ),
+    )
+
+    exported = sequence.to_weight_series()
+
+    assert exported.name == "weight"
+    assert exported.index.names == ["dt", "sid"]
+    assert exported.index.is_monotonic_increasing
+    assert len(exported) == 7
+    assert assets[2] in exported.xs(first_step.date, level="dt").index
+    assert assets[3] not in exported.xs(first_step.date, level="dt").index
+    assert exported.loc[(second_date, assets[2])] < 0.0
+    assert np.allclose(
+        exported.groupby(level="dt", sort=False).sum().to_numpy(),
+        1.0,
+    )
+
+    raw = sequence.to_weight_series(normalize=False)
+    assert raw.loc[(first_step.date, assets[2])] == pytest.approx(0.0001)
+    assert raw.loc[(first_step.date, assets[0])] == pytest.approx(0.6)
+
+
+def test_sequence_weight_export_rejects_unavailable_or_invalid_output(
+    sample_lp_problem,
+):
+    sequence = PortfolioOptimizer().solve_sequence([sample_lp_problem])
+
+    with pytest.raises(ValueError, match="weight_threshold"):
+        sequence.to_weight_series(weight_threshold=-1.0)
+    with pytest.raises(ValueError, match="no weights remain"):
+        sequence.to_weight_series(weight_threshold=2.0)
+
+    without_weights = replace(
+        sequence,
+        policy=replace(sequence.policy, output_weights="none"),
+    )
+    with pytest.raises(ValueError, match="output_weights='none'"):
+        without_weights.to_weight_series()
+
+
 def test_explicit_turnover_recovery_uses_exact_linear_minimum():
     data = PortfolioData(
         date=pd.Timestamp("2026-01-02"),
