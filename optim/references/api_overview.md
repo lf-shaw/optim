@@ -189,6 +189,12 @@ $$
 - `ignore_first_turnover=True`：仅链式首期豁免换手上限，结果换手为 None（不是零），不计入统计；
 - `output_weights="sparse"`，仅保留绝对值不小于默认 `1e-5` 的权重。
 
+`sequence.stop_reason` 在完整运行时为 None；停止时汇总日期、标准状态、后端、标准化原因、
+原生状态和已有消息，不额外运行诊断。`show_progress=True` 的结束行同时显示停止日期和标准
+状态。需要进一步解释不可行约束时，再对 `sequence.stopped_problem` 手工调用 `diagnose`。
+`sequence.export_stopped_repro(path, report=None)` 自动配对停止问题、停止日结果及原策略，
+无需手工从 steps 提取结果；不重新求解或诊断。
+
 `sequence.to_weight_series(weight_threshold=1e-4, normalize=True)` 将已保存的逐期目标权重
 直接拼接为名称为 `weight`、索引名称为 `(dt, sid)` 的 Series。默认逐日保留绝对值大于或
 等于 `1e-4` 的权重并将剩余权重归一化至 1；不构造宽表，保证索引单调递增，已单调的正常

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import gc
+import time
 from dataclasses import dataclass, field, replace
 from functools import wraps
 from pathlib import Path
@@ -48,7 +49,7 @@ class SequenceStep:
     recovered_turnover : bool
         是否通过显式放宽当前日期换手率得到可用解。
     recovery_report : InfeasibilityReport | None
-        支撑换手率恢复决策的深度诊断报告。
+        支撑换手率恢复决策的快速边界报告；不会自动运行完整 Phase-I 深度诊断。
     configured_turnover_limit : float | None
         原问题配置的换手率上限。
     minimum_feasible_turnover : float | None
@@ -59,6 +60,9 @@ class SequenceStep:
         原始不可行问题的 fingerprint，用于证明恢复问题的派生关系。
     turnover_excluded : bool
         本期换手是否因首期建仓约定排除；为真时 result.metrics.turnover_l1 为 None。
+    recovery_s : float
+        显式换手率恢复的端到端耗时，包含快速边界检查、恢复问题准备和全部后端求解；未进入
+        恢复路径时为 ``0.0``。完整深度诊断不会由恢复路径自动运行。
     """
 
     date: pd.Timestamp
@@ -71,6 +75,7 @@ class SequenceStep:
     effective_turnover_limit: float | None = None
     derived_from: ProblemFingerprint | None = None
     turnover_excluded: bool = False
+    recovery_s: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -92,6 +97,10 @@ class PortfolioSequenceResult:
     stopped_problem : PortfolioProblem | None
         ``on_failure='stop'`` 时导致序列停止的准确动态问题，可直接用于显式诊断。完整运行或
         ``hold`` 时为 ``None``。逐日结果不会保留问题，以免长回测持有全部风险模型。
+    stop_reason : str | None
+        序列停止时的可读原因，汇总停止日期、标准状态、最终后端、标准化失败类别、原生状态和
+        后端消息；完整运行时为 ``None``。此字段只整理主求解已经返回的信息，不自动运行深度
+        诊断。
     """
 
     steps: tuple[SequenceStep, ...]
@@ -102,6 +111,7 @@ class PortfolioSequenceResult:
     stopped_problem: PortfolioProblem | None = field(
         default=None, repr=False, compare=False
     )
+    stop_reason: str | None = None
 
     def result_for_date(self, date: Any) -> OptimizationResult:
         """返回指定已尝试日期的优化结果。
@@ -241,6 +251,65 @@ class PortfolioSequenceResult:
             index=index,
             name="weight",
             copy=False,
+        )
+
+    def export_stopped_repro(
+        self,
+        path: str | Path,
+        *,
+        report: InfeasibilityReport | None = None,
+        overwrite: bool = False,
+    ) -> Path:
+        """导出导致本序列停止的准确单期复现包。
+
+        本方法自动配对 ``stopped_problem``、停止日的 ``OptimizationResult`` 及其原始
+        ``SolverPolicy``，避免调用者手工提取结果时混入其他日期。只读取已有对象，不重新
+        求解或启动诊断。
+
+        Parameters
+        ----------
+        path : str | pathlib.Path
+            ZIP 文件路径，父目录必须存在。
+        report : InfeasibilityReport | None
+            已经手工生成的停止问题诊断报告；默认为 ``None``。传入报告不会触发重新诊断。
+        overwrite : bool, default False
+            是否允许覆盖已有文件。
+
+        Returns
+        -------
+        pathlib.Path
+            已写入的完整单期复现包路径。
+
+        Raises
+        ------
+        ValueError
+            序列未停止、没有保留停止问题，或停止日结果不存在。
+        FileExistsError
+            目标文件已存在且 ``overwrite=False``。
+
+        Notes
+        -----
+        复现包包含该期 alpha、持仓及风险模型等敏感数据，应限制传输范围。深度诊断仍需调用
+        :meth:`PortfolioOptimizer.diagnose` 显式执行。
+        """
+
+        if self.stopped_date is None:
+            raise ValueError("cannot export stopped repro from a completed sequence")
+        if self.stopped_problem is None:
+            raise ValueError("stopped sequence did not retain a stopped_problem")
+        try:
+            result = self.result_for_date(self.stopped_date)
+        except KeyError as exc:
+            raise ValueError("stopped sequence did not retain a stopped-date result") from exc
+
+        from .repro import export_repro
+
+        return export_repro(
+            path,
+            result=result,
+            problem=self.stopped_problem,
+            report=report,
+            overwrite=overwrite,
         )
 
 
@@ -455,11 +524,15 @@ def _solve_sequence_impl(
                     exc.date, exc.previous_date = date, dates[position - 1]
                     exc.previous_weight = actual_weight.copy()
                     exc.holding_return = normalized_returns[date].copy()
+                    stop_reason = (
+                        f"{dates[position - 1].date()} -> {date.date()}: {exc}"
+                    )
+                    exc.args = (stop_reason,)
                     exc.partial_result = PortfolioSequenceResult(
                         steps=tuple(steps), stopped_date=date, final_weight=actual_weight.copy(),
                         policy=policy, schedule_prepare_s=schedule_prepare_s,
+                        stop_reason=stop_reason,
                     )
-                    exc.args = (f"{dates[position - 1].date()} -> {date.date()}: {exc}",)
                     if failure_dump_dir is not None:
                         from uuid import uuid4
                         try:
@@ -496,12 +569,14 @@ def _solve_sequence_impl(
         minimum_feasible_turnover = None
         effective_turnover = None
         derived_from = None
+        recovery_s = 0.0
         if (
             result.status is SolveStatus.INFEASIBLE
             and policy.turnover_recovery is not None
             and problem.constraints.turnover is not None
         ):
             derived_from = result.fingerprint
+            recovery_started = time.perf_counter()
             (
                 result,
                 recovered,
@@ -515,6 +590,7 @@ def _solve_sequence_impl(
                 result,
                 policy,
             )
+            recovery_s = time.perf_counter() - recovery_started
 
         if result.status.has_solution:
             solved_weight = result.require_weights()
@@ -544,6 +620,7 @@ def _solve_sequence_impl(
                 effective_turnover_limit=effective_turnover,
                 derived_from=derived_from,
                 turnover_excluded=turnover_excluded,
+                recovery_s=recovery_s,
             )
         )
         if progress is not None:
@@ -551,16 +628,49 @@ def _solve_sequence_impl(
         if stopped_date is not None:
             break
 
+    stop_reason = (
+        None
+        if stopped_date is None
+        else _solver_stop_reason(stopped_date, steps[-1].result)
+    )
     if progress is not None:
-        progress.finish("求解完成" if stopped_date is None else "求解已停止")
+        progress.finish(
+            "求解完成"
+            if stopped_date is None
+            else f"求解已停止：{stopped_date.date()} {steps[-1].result.status.value}"
+        )
     return PortfolioSequenceResult(
         steps=tuple(steps),
         stopped_date=stopped_date,
         final_weight=None if actual_weight is None else actual_weight.copy(),
         policy=policy,
         schedule_prepare_s=schedule_prepare_s,
+        stop_reason=stop_reason,
         stopped_problem=stopped_problem,
     )
+
+
+def _solver_stop_reason(date: pd.Timestamp, result: OptimizationResult) -> str:
+    """将停止步骤已有的结构化求解状态整理为简短说明，不执行额外求解。"""
+
+    final_attempt = result.route[-1] if result.route else None
+    backend = result.backend or (
+        None if final_attempt is None else final_attempt.backend
+    )
+    parts = [str(date.date()), f"status={result.status.value}"]
+    if backend:
+        parts.append(f"backend={backend}")
+    if final_attempt is not None:
+        if final_attempt.reason is not None:
+            parts.append(f"reason={final_attempt.reason.value}")
+        if final_attempt.native_status:
+            parts.append(f"native_status={final_attempt.native_status}")
+    message = result.message or (
+        None if final_attempt is None else final_attempt.message
+    )
+    if message:
+        parts.append(str(message))
+    return "；".join(parts)
 
 
 @_with_progress
@@ -611,16 +721,27 @@ def _recover_turnover(
 ]:
     """仅在显式授权的换手率区间内尝试恢复。
 
-    深度诊断先计算其余线性域下的最小换手率。没有 TE 约束时该值精确；存在 TE 约束时它只是
-    下界，因此本函数会尝试用户授权上限，并对具有单调性的换手率上限放宽做二分。所有返回候选
-    仍须通过普通独立验收；本路径从不把基准自身换手率当作组合最小换手率。
+    快速边界检查先计算其余线性域下的最小换手率。没有 TE 约束时该值精确；存在 TE 约束时它
+    只是下界，因此本函数会尝试用户授权上限，并对具有单调性的换手率上限放宽做二分。所有返回
+    候选仍须通过普通独立验收；本路径从不把基准自身换手率当作组合最小换手率，也不自动运行
+    完整 Phase-I 深度诊断。
     """
 
     assert sequence_policy.turnover_recovery is not None
     assert problem.constraints.turnover is not None
     recovery = sequence_policy.turnover_recovery
     configured = problem.constraints.turnover.l1_limit
-    report = optimizer.diagnose(problem, prior_result=original_result, level="deep")
+    # 成功恢复不需要先构造包含全部可放宽边界的加权 Phase-I 大模型。先只求“保持其他
+    # 线性约束时的最小换手率”；恢复候选若通过完整独立验收，已经直接证明只放宽换手率
+    # 足以恢复。快速路径无法恢复时按序列策略停止或持有；完整 deep diagnosis 仍由调用方
+    # 针对停止问题手工触发，避免一次失败意外阻塞回测很长时间。
+    from ._impl.diagnostic_engine import diagnose_turnover_recovery
+
+    report = diagnose_turnover_recovery(
+        problem,
+        optimizer.policy,
+        prior_result=original_result,
+    )
     linear_lower = report.turnover_linear_lower_bound
     if (
         linear_lower is None

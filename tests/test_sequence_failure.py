@@ -39,6 +39,7 @@ def test_failure_preserves_partial_results_without_disk(sample_lp_problem):
     assert error.date == second.data.date
     assert len(error.partial_result.steps) == 1
     assert error.partial_result.steps[0].result.weights is None
+    assert error.partial_result.stop_reason == str(error)
     assert error.previous_weight is not None
     assert error.dump_path is None
 

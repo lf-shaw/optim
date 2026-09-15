@@ -115,7 +115,8 @@ class InfeasibilityReport:
     Attributes
     ----------
     stage : str
-        已执行的诊断阶段，当前深度诊断为 ``"deep"``。
+        报告来源阶段。手工深度诊断为 ``"deep"``；多期换手率快速恢复报告为
+        ``"turnover_recovery"``，表示未运行完整 Phase-I。
     linear_feasible : bool | None
         综合 Phase-I 和最小换手率证据：True 表示已验收线性候选；False 表示数值下界支持
         不可行；None 表示未确定或证据冲突。

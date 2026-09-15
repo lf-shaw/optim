@@ -294,7 +294,9 @@ sequence = optimizer.optimize_range(
 ```
 
 恢复只在原问题不可行、配置了 turnover 且诊断边界位于授权范围内时发生。通过
-`step.recovered_turnover`、`minimum_feasible_turnover` 和 `effective_turnover_limit` 审计。
+`step.recovered_turnover`、`minimum_feasible_turnover`、`effective_turnover_limit` 和
+`recovery_s` 审计。恢复只执行针对换手率的快速边界检查；若快速路径仍失败，可使用
+`sequence.stopped_problem` 手工运行完整诊断，不在多期循环内自动构造 Phase-I 大模型。
 
 ---
 

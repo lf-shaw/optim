@@ -51,6 +51,7 @@ def test_chained_sequence_marks_previous_target_to_market(sample_lp_problem):
         sequence_policy=SequencePolicy(output_weights="sparse"),
     )
     assert result.stopped_date is None
+    assert result.stop_reason is None
     assert len(result.steps) == 2
     first_target = (
         result.steps[0]
@@ -277,6 +278,13 @@ def test_explicit_turnover_recovery_uses_exact_linear_minimum():
     assert step.effective_turnover_limit == pytest.approx(2.0)
     assert step.derived_from is not None
     assert step.derived_from != step.result.fingerprint
+    assert step.recovery_s > 0.0
+    assert step.recovery_report is not None
+    assert step.recovery_report.stage == "turnover_recovery"
+    assert (
+        step.recovery_report.native_evidence["diagnostic_model"]
+        == "minimum_linear_turnover_only"
+    )
 
 
 def test_factor_turnover_recovery_searches_full_convex_feasibility_boundary(
@@ -299,6 +307,7 @@ def test_factor_turnover_recovery_searches_full_convex_feasibility_boundary(
 
         def __init__(self):
             self.limits = []
+            self.deep_diagnoses = 0
 
         def validate(self, candidate):
             return real_optimizer.validate(candidate)
@@ -321,6 +330,7 @@ def test_factor_turnover_recovery_searches_full_convex_feasibility_boundary(
             return self.solve(candidate)
 
         def diagnose(self, candidate, *, prior_result, level):
+            self.deep_diagnoses += 1
             return InfeasibilityReport(
                 stage="deep",
                 linear_feasible=False,
@@ -348,6 +358,8 @@ def test_factor_turnover_recovery_searches_full_convex_feasibility_boundary(
     assert step.effective_turnover_limit == pytest.approx(0.65, abs=2e-5)
     assert max(fake.limits) == pytest.approx(0.80)
     assert len(fake.limits) > 3
+    assert fake.deep_diagnoses == 0
+    assert step.recovery_s > 0.0
 
 
 def test_turnover_recovery_v1_always_resets_next_period():

@@ -371,7 +371,7 @@ x_pretrade(t) = normalize(x_target(t-1) * (1 + return(t-1, t)))
 期初持仓。冷启动/independent 模式则使用调用者提供的逐日初始权重。
 
 普通不可行默认 `stop`；显式 `on_failure="hold"` 才继续持有漂移后组合。换手恢复还需要显式
-`TurnoverRecoveryPolicy(max_turnover=...)`：先运行 deep diagnosis，只有线性最小换手处于授权
+`TurnoverRecoveryPolicy(max_turnover=...)`：先运行换手率快速边界检查，只有线性最小换手处于授权
 区间内才尝试放宽；含 TE 时可能进一步在授权区间内二分寻找可行上界。恢复只对当日生效，
 下一日恢复原配置。
 

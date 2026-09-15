@@ -79,6 +79,24 @@ summary = "高效拼接已保存的逐期目标权重，返回名称 weight、�
 group = "optimizer"
 
 [[symbols]]
+name = "optim.PortfolioSequenceResult.stop_reason"
+signature = "stop_reason: str | None"
+summary = "完整运行时为 None；停止时汇总日期、标准状态、最终后端、标准化失败类别、原生状态和已有消息，不自动启动深度诊断"
+group = "optimizer"
+
+[[symbols]]
+name = "optim.PortfolioSequenceResult.export_stopped_repro"
+signature = "export_stopped_repro(path, *, report=None, overwrite=False) -> pathlib.Path"
+summary = "自动配对停止问题、停止日结果和原 SolverPolicy 并导出完整单期复现包；不重新求解或诊断，完整运行时拒绝"
+group = "diagnostics"
+
+[[symbols]]
+name = "optim.SequenceStep.recovery_s"
+signature = "recovery_s: float"
+summary = "本期显式换手率恢复的端到端附加耗时；未触发恢复时为 0，不自动包含手工 deep diagnosis"
+group = "optimizer"
+
+[[symbols]]
 name = "optim.SequenceDataError.dump"
 signature = "dump(path: str | Path) -> Path"
 summary = "显式导出序列漂移故障的日期、缺失股票、上一持仓、区间收益与已完成步骤摘要；.gz 压缩，不覆盖文件，不包含风险矩阵，不是 load_repro 模型包；异常同时保留 evidence 和 partial_result"
@@ -213,7 +231,7 @@ group = "policy"
 [[symbols]]
 name = "optim.TurnoverRecoveryPolicy"
 signature = "TurnoverRecoveryPolicy(max_turnover: float, buffer=1e-5, require_turnover_only=True, reset_next_period=True)"
-summary = "显式授权结构性不可行日期可使用的最大换手率；默认不启用"
+summary = "显式授权结构性不可行日期可使用的最大换手率；默认不启用；恢复仅运行换手率快速边界检查，SequenceStep.recovery_s 记录完整附加耗时，不自动运行完整 Phase-I 诊断"
 group = "policy"
 
 [[symbols]]

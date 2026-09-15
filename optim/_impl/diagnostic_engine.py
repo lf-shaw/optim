@@ -9,6 +9,7 @@ registry 元数据，因此证据以业务约束名称报告，而不是匿名�
 from __future__ import annotations
 
 from dataclasses import replace
+import time
 import numpy as np
 import scipy.sparse as sp
 
@@ -93,7 +94,6 @@ def diagnose_problem(
     if problem.constraints.turnover is not None:
         turnover_result, turnover_lower = _minimum_linear_turnover(
             problem,
-            compiled,
             policy,
             domain,
         )
@@ -195,6 +195,101 @@ def diagnose_problem(
             () if prior_result is None else prior_result.native_infeasibility
         ),
         attempts=tuple(attempts),
+    )
+
+
+def diagnose_turnover_recovery(
+    problem: PortfolioProblem,
+    policy: SolverPolicy,
+    *,
+    prior_result: OptimizationResult,
+) -> InfeasibilityReport:
+    """为序列换手率恢复计算必要的线性边界，不运行完整 Phase-I。
+
+    本函数只供序列恢复状态机调用。它移除汇总换手率上限，在其余线性域上最小化双边
+    换手率，并保留原失败结果已经产生的证书。完整风险约束仍由随后恢复候选的普通求解和
+    独立验收确认；快速路径不能恢复时，完整深度诊断仍由调用方对停止问题手工触发。
+    """
+
+    started = time.perf_counter()
+    # 恢复辅助 LP 与公共诊断保持相同默认：独立使用 auto 路由，不继承原问题显式后端。
+    diagnostic_policy = replace(policy, backend="auto")
+    from .compiler import _diagnostic_domain
+
+    domain_started = time.perf_counter()
+    domain = _diagnostic_domain(problem)
+    domain_s = time.perf_counter() - domain_started
+    solve_started = time.perf_counter()
+    turnover_result, turnover_lower = _minimum_linear_turnover(
+        problem,
+        diagnostic_policy,
+        domain,
+    )
+    solve_wall_s = time.perf_counter() - solve_started
+    candidate_feasible = turnover_result.diagnostics.get(
+        "linear_candidate_feasible_without_turnover"
+    )
+    configured = problem.constraints.turnover
+    assert configured is not None
+    tracking_error = problem.constraints.tracking_error
+    tolerance = policy.tuning.feasibility_tolerance
+    if (
+        turnover_lower is not None
+        and turnover_lower > configured.l1_limit + tolerance
+    ):
+        linear_feasible = False
+    elif (
+        candidate_feasible is True
+        and turnover_result.objective_value is not None
+        and turnover_result.objective_value <= configured.l1_limit + tolerance
+    ):
+        linear_feasible = True
+    else:
+        linear_feasible = None
+
+    if turnover_lower is None:
+        summary = (
+            "换手率恢复快速检查未得到可用的最小换手率数值下界；尚未运行完整 Phase-I。"
+        )
+    else:
+        relation = (
+            "高于"
+            if turnover_lower
+            > configured.l1_limit + policy.tuning.feasibility_tolerance
+            else "不高于"
+        )
+        summary = (
+            "换手率恢复快速检查在保持其余线性约束时得到最小双边换手率数值下界 "
+            f"{turnover_lower:.4%}，{relation}原上限 {configured.l1_limit:.4%}。"
+            "该阶段未运行加权 Phase-I；若恢复候选失败，可对序列停止问题手工运行完整诊断。"
+        )
+
+    return InfeasibilityReport(
+        stage="turnover_recovery",
+        linear_feasible=linear_feasible,
+        summary_text=summary,
+        turnover_linear_lower_bound=turnover_lower,
+        turnover_convex_minimum=None,
+        turnover_limit=configured.l1_limit,
+        minimum_tracking_error=None,
+        tracking_error_limit=(
+            None if tracking_error is None else tracking_error.annualized
+        ),
+        relaxations=(),
+        native_evidence={
+            "diagnostic_model": "minimum_linear_turnover_only",
+            "minimum_turnover_status": turnover_result.native_status,
+            "minimum_turnover_candidate_feasible": candidate_feasible,
+            "minimum_turnover_candidate_value": turnover_result.objective_value,
+            "minimum_turnover_domain_s": domain_s,
+            "minimum_turnover_solve_wall_s": solve_wall_s,
+            "minimum_turnover_total_s": time.perf_counter() - started,
+            "minimum_turnover_backend_setup_s": turnover_result.setup_s,
+            "minimum_turnover_backend_solve_s": turnover_result.solve_s,
+            "certificate_availability": _certificate_availability(prior_result),
+        },
+        native_certificates=prior_result.native_infeasibility,
+        attempts=(_attempt(turnover_result, "diagnostic_minimum_turnover"),),
     )
 
 
@@ -457,7 +552,6 @@ def _record_sources(record: ConstraintRecord, side: str) -> tuple[str, ...]:
 
 def _minimum_linear_turnover(
     problem: PortfolioProblem,
-    compiled: CompiledProblem,
     policy: SolverPolicy,
     diagnostic_domain: LinearDomain | None = None,
 ) -> tuple[CoreBackendResult, float | None]:
@@ -493,6 +587,31 @@ def _minimum_linear_turnover(
     for item in turnover_aux:
         c[item.index] = 1.0
     result = _solve_core_lp(LinearProgram(CanonicalKind.LP, reduced, c), policy)
+    candidate_feasible = False
+    if result.status.has_solution and result.primal is not None:
+        candidate = np.asarray(result.primal[: reduced.n_variables], dtype=float)
+        activity = reduced.A @ candidate
+        violations = np.concatenate(
+            (
+                reduced.lower - activity,
+                activity - reduced.upper,
+                reduced.variable_lower - candidate,
+                candidate - reduced.variable_upper,
+            )
+        )
+        candidate_feasible = bool(
+            np.all(np.isfinite(candidate))
+            and np.all(np.isfinite(activity))
+            and np.max(violations, initial=0.0)
+            <= policy.tuning.feasibility_tolerance
+        )
+    result = replace(
+        result,
+        diagnostics={
+            **result.diagnostics,
+            "linear_candidate_feasible_without_turnover": candidate_feasible,
+        },
+    )
     # 可行候选目标是最小化问题的上界；不能作为后续恢复的不可行排除下界。
     value = (
         result.diagnostics.get("dual_lower_bound")

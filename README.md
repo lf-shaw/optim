@@ -777,8 +777,38 @@ for step in sequence.steps:
     )
 
 one_day = sequence.result_for_date(target_date)
-print(sequence.stopped_date, sequence.final_weight)
+print(sequence.stopped_date, sequence.stop_reason, sequence.final_weight)
 ```
+
+完整运行时 `sequence.stop_reason is None`。因求解状态停止时，该字段直接汇总停止日期、
+标准状态、最终后端、标准化失败类别、原生状态和已有消息，例如：
+
+```text
+2026-08-14；status=infeasible；backend=highs；reason=infeasible_reported；native_status=HighsModelStatus.kInfeasible；highs 报告 canonical 问题不可行
+```
+
+它不会自动启动耗时的深度诊断。需要约束冲突分析时：
+
+```python
+if sequence.stopped_date is not None and sequence.stopped_problem is not None:
+    failed = sequence.result_for_date(sequence.stopped_date)
+    report = optimizer.diagnose(sequence.stopped_problem, prior_result=failed)
+```
+
+开启进度条后，停止行也会至少显示停止日期和标准状态，不再只有“求解已停止”。
+
+需要把停止问题交给其他开发者复现时，无需手工从 ``steps`` 提取结果：
+
+```python
+path = sequence.export_stopped_repro("stopped-case.zip")
+
+# 如果已经手工诊断，也可一并保存完整报告：
+path = sequence.export_stopped_repro("stopped-full.zip", report=report)
+```
+
+该方法会自动配对停止日问题、失败结果和原求解策略，不重新求解或诊断。顶层
+`export_repro` 继续严格要求 `OptimizationResult`，避免仅凭问题对象生成缺少原状态和策略证据
+的“完整复现包”。
 
 需要交给回测、交易或持仓分析模块时，可直接导出标准长表 Series：
 
@@ -1053,7 +1083,13 @@ sequence_policy = SequencePolicy(
 - 不把基准自身换手率直接当作组合最小换手率；
 - 只对当前异常日期有效；
 - 下一日期自动恢复原配置；
-- 结果记录配置上限、诊断下界和实际有效上限。
+- 结果记录配置上限、诊断下界、实际有效上限和恢复端到端耗时。
+
+恢复首先运行仅针对换手率边界的快速检查；恢复候选通过普通独立验收后直接返回，不自动构造
+完整加权 Phase-I 诊断。快速路径仍无法恢复时按序列策略停止或持有，需要时再对停止问题手工
+调用 `optimizer.diagnose(...)`。因此异常日可用
+`step.recovery_s` 查看恢复全部附加成本，而不是只累加 `attempt.solve_s`：后者不包含模型构造、
+canonical 准备和多次恢复尝试之间的 Python 开销。
 
 简单设置 `on_failure="hold"` 可能把一次结构性冲突传播到后续很多日期，因此默认仍为 `stop`。
 

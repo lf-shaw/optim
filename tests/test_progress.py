@@ -116,8 +116,12 @@ def test_early_stop_keeps_actual_count(sample_lp_problem, bars, monkeypatch):
         holding_period_returns={later_date: np.zeros(len(second.data.assets))},
     )
     assert result.stopped_date == sample_lp_problem.data.date
+    assert result.stop_reason is not None
+    assert "2026-01-02" in result.stop_reason
+    assert "status=infeasible" in result.stop_reason
+    assert f"backend={native.backend}" in result.stop_reason
     assert (bars[0].n, bars[0].total, bars[0].closed) == (1, 2, 1)
-    assert bars[0].labels[-1] == "求解已停止"
+    assert bars[0].labels[-1] == "求解已停止：2026-01-02 infeasible"
 
 
 def test_range_preparation_reuses_one_progress_bar(sample_lp_problem, bars):

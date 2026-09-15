@@ -12,6 +12,7 @@ from optim import (
     AssetTradeConstraints,
     PortfolioOptimizer,
     SolverPolicy,
+    SequencePolicy,
     RiskAdjustedAlpha,
     TrackingErrorLimit,
     TurnoverLimit,
@@ -94,6 +95,29 @@ def test_failure_repro_and_manual_counterfactual(tmp_path, sample_lp_problem):
     assert optimizer.solve(
         case.problem.with_constraints(turnover=None)
     ).status.has_solution
+
+
+def test_stopped_sequence_exports_exact_repro_without_manual_result_lookup(
+    tmp_path, sample_lp_problem
+):
+    problem = sample_lp_problem.with_constraints(turnover=TurnoverLimit(0.0))
+    problem = problem.with_data(initial_weight=np.array([1.0, 0.0, 0.0, 0.0]))
+    sequence = PortfolioOptimizer().solve_sequence(
+        [problem],
+        sequence_policy=SequencePolicy(ignore_first_turnover=False),
+    )
+    assert sequence.stopped_problem is not None
+
+    case = load_repro(sequence.export_stopped_repro(tmp_path / "stopped.zip"))
+
+    assert compile_problem(case.problem).fingerprint == compile_problem(
+        sequence.stopped_problem
+    ).fingerprint
+    assert case.original_result["status"] == "infeasible"
+    with pytest.raises(ValueError, match="completed sequence"):
+        PortfolioOptimizer().solve_sequence(
+            [sample_lp_problem]
+        ).export_stopped_repro(tmp_path / "completed.zip")
 
 
 def test_repro_checksum(tmp_path, sample_lp_problem):
