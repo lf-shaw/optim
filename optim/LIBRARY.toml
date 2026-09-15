@@ -231,7 +231,7 @@ group = "policy"
 [[symbols]]
 name = "optim.TurnoverRecoveryPolicy"
 signature = "TurnoverRecoveryPolicy(max_turnover: float, buffer=1e-5, require_turnover_only=True, reset_next_period=True)"
-summary = "显式授权结构性不可行日期可使用的最大换手率；默认不启用；恢复仅运行换手率快速边界检查，SequenceStep.recovery_s 记录完整附加耗时，不自动运行完整 Phase-I 诊断"
+summary = "显式授权结构性不可行日期可使用的最大换手率；默认不启用；恢复仅运行换手率快速边界检查，SequenceStep.recovery_s 记录完整附加耗时，不自动运行完整 Phase-I；后端数值错误必须先取得原换手率上限冲突证据"
 group = "policy"
 
 [[symbols]]

@@ -103,3 +103,34 @@ def test_missing_mass_uses_absolute_holdings_and_ignores_zero_positions():
         )
     assert "40.000000%" in str(caught.value)
     assert set(caught.value.evidence.index) == {"long", "short"}
+
+
+def test_long_only_drift_discards_only_negative_numerical_dust():
+    held = pd.Series({"held": 1.0, "dust": -8e-12}, name="weight")
+    observed = _mark_to_market(
+        held,
+        pd.Series({"held": 0.0}),
+        held.index,
+        SequencePolicy(),
+        long_only=True,
+        numerical_zero_tolerance=1e-5,
+    )
+
+    assert observed.loc["held"] == pytest.approx(1.0)
+    assert observed.loc["dust"] == 0.0
+
+
+def test_long_only_drift_does_not_hide_positive_missing_holding():
+    held = pd.Series({"held": 1.0 - 1e-12, "positive": 1e-12}, name="weight")
+    with pytest.raises(SequenceDataError) as caught:
+        _mark_to_market(
+            held,
+            pd.Series({"held": 0.0}),
+            held.index,
+            SequencePolicy(),
+            long_only=True,
+            numerical_zero_tolerance=1e-5,
+        )
+
+    assert set(caught.value.evidence.index) == {"positive"}
+    assert caught.value.evidence.loc["positive", "weight"] == pytest.approx(1e-12)

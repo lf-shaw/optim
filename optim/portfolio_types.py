@@ -1256,7 +1256,9 @@ class TurnoverRecoveryPolicy:
     buffer : float
         在诊断得到的最小可行换手率之上增加的数值缓冲；默认为 ``1e-5``。
     require_turnover_only : bool
-        为真时，只有确认移除换手率后其余约束可行才允许恢复；默认为 ``True``。
+        为真时，只有确认移除换手率后其余约束可行才允许恢复；默认为 ``True``。主后端以
+        ``numerical_error`` 或 ``solver_error`` 退出时，还必须取得高于原上限的最小换手率
+        数值下界，不能把一般数值故障直接解释为换手率冲突。
     reset_next_period : bool
         是否在下一调仓期恢复原换手率；默认为且第一版要求为 ``True``，避免永久放宽约束。
     """
@@ -1296,6 +1298,8 @@ class SequencePolicy:
         显式换手率恢复授权；默认为 ``None``，表示绝不自动放宽。
     holding_missing_mass_tolerance : float
         当前风险资产域允许缺失的上一期实际持仓权重上限；默认为 ``0.0``。
+        长仓模型中绝对值不超过求解可行性容差的负权重属于不可执行数值残差，在计算缺失质量
+        前单独清零，不消耗此业务容差；正权重和卖空权重不适用该规则。
     renormalize_missing_holdings : bool
         是否在缺失质量未超限时删除缺失持仓并对剩余权重归一化；默认为 ``False``。
     output_weights : str

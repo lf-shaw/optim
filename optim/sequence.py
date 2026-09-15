@@ -492,6 +492,7 @@ def _solve_sequence_impl(
 
     steps: list[SequenceStep] = []
     actual_weight: pd.Series | None = None
+    actual_long_only = False
     stopped_date: pd.Timestamp | None = None
     stopped_problem: PortfolioProblem | None = None
 
@@ -519,6 +520,10 @@ def _solve_sequence_impl(
                         normalized_returns[date],
                         pd.Index(template.data.assets, name="sid"),
                         policy,
+                        long_only=actual_long_only,
+                        numerical_zero_tolerance=(
+                            optimizer.policy.tuning.feasibility_tolerance
+                        ),
                     )
                 except SequenceDataError as exc:
                     exc.date, exc.previous_date = date, dates[position - 1]
@@ -571,7 +576,12 @@ def _solve_sequence_impl(
         derived_from = None
         recovery_s = 0.0
         if (
-            result.status is SolveStatus.INFEASIBLE
+            result.status
+            in {
+                SolveStatus.INFEASIBLE,
+                SolveStatus.NUMERICAL_ERROR,
+                SolveStatus.SOLVER_ERROR,
+            }
             and policy.turnover_recovery is not None
             and problem.constraints.turnover is not None
         ):
@@ -595,6 +605,7 @@ def _solve_sequence_impl(
         if result.status.has_solution:
             solved_weight = result.require_weights()
             actual_weight = solved_weight.copy()
+            actual_long_only = problem.constraints.long_only
         elif policy.mode == "chained" and policy.on_failure == "hold" and not (position == 0 and synthetic_initial):
             actual_weight = pretrade.copy() if pretrade is not None else actual_weight
         else:
@@ -743,8 +754,17 @@ def _recover_turnover(
         prior_result=original_result,
     )
     linear_lower = report.turnover_linear_lower_bound
+    tolerance = optimizer.policy.tuning.feasibility_tolerance
+    ambiguous_failure = original_result.status in {
+        SolveStatus.NUMERICAL_ERROR,
+        SolveStatus.SOLVER_ERROR,
+    }
     if (
         linear_lower is None
+        or (
+            ambiguous_failure
+            and linear_lower <= configured + tolerance
+        )
         or linear_lower > recovery.max_turnover + recovery.buffer
         or recovery.max_turnover <= configured
     ):
@@ -844,12 +864,24 @@ def _mark_to_market(
     holding_return: pd.Series | np.ndarray,
     current_assets: pd.Index,
     policy: SequencePolicy,
+    *,
+    long_only: bool = False,
+    numerical_zero_tolerance: float = 0.0,
 ) -> pd.Series:
     """使用 C2C 收益漂移上期目标权重，并对齐当前资产域。
 
     缺失观测按实际持仓质量计量；除非配置容差明确允许，否则不会静默填补。新资产域删除持仓
     证券时还必须显式允许重新归一化。
     """
+
+    previous_values = previous_target.to_numpy(dtype=float, copy=True)
+    # 长仓模型的负权重只能是求解容差内的数值残差，不是可执行持仓。仅清除这一类负数；
+    # 正的小持仓仍按真实持仓处理，卖空模型的负权重也绝不自动删除。
+    if long_only and numerical_zero_tolerance > 0.0:
+        numerical_dust = (previous_values < 0.0) & (
+            previous_values >= -numerical_zero_tolerance
+        )
+        previous_values[numerical_dust] = 0.0
 
     if isinstance(holding_return, pd.Series):
         if holding_return.index.has_duplicates:
@@ -858,13 +890,13 @@ def _mark_to_market(
             )
         aligned_return = _reindex_rows(holding_return, previous_target.index)
         missing = aligned_return.isna().to_numpy()
-        missing_mass = float(np.abs(previous_target.to_numpy()[missing]).sum())
+        missing_mass = float(np.abs(previous_values[missing]).sum())
         if missing_mass > policy.holding_missing_mass_tolerance:
-            held_missing = missing & (previous_target.to_numpy() != 0.0)
+            held_missing = missing & (previous_values != 0.0)
             labels = previous_target.index[held_missing]
             evidence = pd.DataFrame({
-                "weight": previous_target.to_numpy()[held_missing],
-                "absolute_weight": np.abs(previous_target.to_numpy()[held_missing]),
+                "weight": previous_values[held_missing],
+                "absolute_weight": np.abs(previous_values[held_missing]),
                 "reason": np.where(labels.isin(holding_return.index), "missing_value", "missing_sid"),
             }, index=labels).sort_values("absolute_weight", ascending=False)
             top = ", ".join(f"{sid}={row.weight:.6%}" for sid, row in evidence.head(10).iterrows())
@@ -885,7 +917,7 @@ def _mark_to_market(
     gross = 1.0 + aligned_return
     if np.any(gross < 0.0):
         raise SequenceDataError("holding-period return below -100% is invalid")
-    drifted = previous_target.to_numpy(float) * gross
+    drifted = previous_values * gross
     total = float(drifted.sum())
     if total <= 0.0:
         raise SequenceDataError("mark-to-market holdings have no positive value")

@@ -287,8 +287,12 @@ def test_explicit_turnover_recovery_uses_exact_linear_minimum():
     )
 
 
-def test_factor_turnover_recovery_searches_full_convex_feasibility_boundary(
-    sample_lp_problem,
+@pytest.mark.parametrize(
+    "ambiguous_status",
+    [SolveStatus.NUMERICAL_ERROR, SolveStatus.SOLVER_ERROR],
+)
+def test_factor_turnover_recovery_certifies_ambiguous_failure_and_searches_boundary(
+    sample_lp_problem, monkeypatch, ambiguous_status
 ):
     problem = replace(
         sample_lp_problem,
@@ -319,7 +323,11 @@ def test_factor_turnover_recovery_searches_full_convex_feasibility_boundary(
             if limit < 0.65:
                 return replace(
                     solved_template,
-                    status=SolveStatus.INFEASIBLE,
+                    status=(
+                        ambiguous_status
+                        if limit == 0.50
+                        else SolveStatus.INFEASIBLE
+                    ),
                     weights=None,
                     backend=None,
                     fingerprint=fingerprint,
@@ -340,6 +348,16 @@ def test_factor_turnover_recovery_searches_full_convex_feasibility_boundary(
             )
 
     fake = FakeOptimizer()
+    monkeypatch.setattr(
+        "optim._impl.diagnostic_engine.diagnose_turnover_recovery",
+        lambda *args, **kwargs: InfeasibilityReport(
+            stage="turnover_recovery",
+            linear_feasible=False,
+            summary_text="certified linear turnover conflict",
+            turnover_linear_lower_bound=0.55,
+            turnover_limit=0.50,
+        ),
+    )
     sequence = PortfolioOptimizer.solve_sequence(
         fake,
         [problem],
@@ -360,6 +378,69 @@ def test_factor_turnover_recovery_searches_full_convex_feasibility_boundary(
     assert len(fake.limits) > 3
     assert fake.deep_diagnoses == 0
     assert step.recovery_s > 0.0
+
+
+def test_numerical_failure_is_not_relaxed_without_turnover_conflict_certificate(
+    sample_lp_problem, monkeypatch
+):
+    problem = replace(
+        sample_lp_problem,
+        constraints=replace(
+            sample_lp_problem.constraints,
+            turnover=TurnoverLimit(0.50),
+            tracking_error=TrackingErrorLimit(0.03),
+        ),
+    )
+    real_optimizer = PortfolioOptimizer()
+    solved = real_optimizer.solve(problem)
+    numerical = replace(
+        solved,
+        status=SolveStatus.NUMERICAL_ERROR,
+        weights=None,
+        backend=None,
+    )
+
+    class FakeOptimizer:
+        policy = real_optimizer.policy
+
+        def __init__(self):
+            self.relaxed_solves = 0
+
+        def validate(self, candidate):
+            return real_optimizer.validate(candidate)
+
+        def _solve_prevalidated(self, candidate):
+            return numerical
+
+        def solve(self, candidate):
+            self.relaxed_solves += 1
+            raise AssertionError("uncertified numerical failure must not be relaxed")
+
+    monkeypatch.setattr(
+        "optim._impl.diagnostic_engine.diagnose_turnover_recovery",
+        lambda *args, **kwargs: InfeasibilityReport(
+            stage="turnover_recovery",
+            linear_feasible=True,
+            summary_text="no certified turnover conflict",
+            turnover_linear_lower_bound=0.40,
+            turnover_limit=0.50,
+        ),
+    )
+    fake = FakeOptimizer()
+    sequence = PortfolioOptimizer.solve_sequence(
+        fake,
+        [problem],
+        sequence_policy=SequencePolicy(
+            ignore_first_turnover=False,
+            turnover_recovery=TurnoverRecoveryPolicy(max_turnover=0.80),
+            output_weights="none",
+        ),
+    )
+
+    assert sequence.stopped_date == problem.data.date
+    assert sequence.steps[0].result.status is SolveStatus.NUMERICAL_ERROR
+    assert not sequence.steps[0].recovered_turnover
+    assert fake.relaxed_solves == 0
 
 
 def test_turnover_recovery_v1_always_resets_next_period():

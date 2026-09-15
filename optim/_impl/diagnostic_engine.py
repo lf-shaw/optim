@@ -278,6 +278,18 @@ def diagnose_turnover_recovery(
         relaxations=(),
         native_evidence={
             "diagnostic_model": "minimum_linear_turnover_only",
+            "original_status": prior_result.status.value,
+            "original_message": prior_result.message,
+            "original_route": tuple(
+                {
+                    "backend": item.backend,
+                    "status": item.status.value,
+                    "reason": None if item.reason is None else item.reason.value,
+                    "native_status": item.native_status,
+                    "message": item.message,
+                }
+                for item in prior_result.route
+            ),
             "minimum_turnover_status": turnover_result.native_status,
             "minimum_turnover_candidate_feasible": candidate_feasible,
             "minimum_turnover_candidate_value": turnover_result.objective_value,
