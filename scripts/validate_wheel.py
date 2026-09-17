@@ -79,12 +79,22 @@ def validate(path: Path) -> None:
     wheel_version = (
         None if wheel_version_match is None else wheel_version_match.group(1)
     )
-    catalog_version = library.get("meta", {}).get("version")
-    if wheel_version != catalog_version:
-        raise SystemExit(
-            "wheel 元数据与 LIBRARY.toml 版本不一致: "
-            f"wheel={wheel_version!r}, catalog={catalog_version!r}"
-        )
+    if not wheel_version:
+        raise SystemExit("wheel METADATA 缺少版本")
+    if (
+        library.get("schema_version") != 2
+        or library.get("meta", {}).get("name") != "optim"
+    ):
+        raise SystemExit("LIBRARY.toml 不是 optim 的文档优先 v2 合同")
+    if "version" in library["meta"] or not library.get("api", {}).get("modules"):
+        raise SystemExit("版本必须取 METADATA，公开模块范围不能为空")
+    scopes = library["api"]["modules"] + [
+        item["name"] for item in library.get("symbols", [])
+    ]
+    if any(
+        any(part.startswith("_") for part in name.split(".")[1:]) for name in scopes
+    ):
+        raise SystemExit("AI 知识范围不得暴露私有 namespace（core/impl）")
 
     core_python = {
         name

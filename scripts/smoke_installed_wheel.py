@@ -122,12 +122,9 @@ def main() -> None:
         if not package_files.joinpath(relative).is_file():
             raise RuntimeError(f"installed wheel misses resource: {relative}")
     with package_files.joinpath("LIBRARY.toml").open("rb") as stream:
-        catalog_version = tomllib.load(stream)["meta"]["version"]
-    if catalog_version != distribution_version:
-        raise RuntimeError(
-            "catalog and distribution versions differ: "
-            f"catalog={catalog_version}, distribution={distribution_version}"
-        )
+        manifest = tomllib.load(stream)
+    if manifest.get("schema_version") != 2 or "version" in manifest["meta"]:
+        raise RuntimeError("installed knowledge manifest must use metadata-only v2")
 
     base = _problem()
     problems = {

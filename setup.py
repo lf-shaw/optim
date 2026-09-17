@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import atexit
-import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -49,7 +48,7 @@ def _extension_name(source: str) -> str:
 
 
 class PublicFacadeBuildPy(build_py_orig):
-    """复制公共 Python 模块、同步 catalog 版本并排除 core/impl 实现源码。"""
+    """复制公共 Python 模块并排除 core/impl 实现源码；版本仅取 SCM/METADATA。"""
 
     def find_package_modules(self, package, package_dir):
         modules = super().find_package_modules(package, package_dir)
@@ -58,24 +57,6 @@ class PublicFacadeBuildPy(build_py_orig):
         ):
             return [item for item in modules if item[1] == "__init__"]
         return modules
-
-    def run(self):
-        """复制公共文件后，将 SCM 版本写入 wheel 内的 AI catalog。"""
-
-        super().run()
-        catalog = Path(self.build_lib) / "optim" / "LIBRARY.toml"
-        text = catalog.read_text(encoding="utf-8")
-        updated, count = re.subn(
-            r'(?m)^version\s*=\s*"[^"]*"\s*$',
-            f'version = "{self.distribution.get_version()}"',
-            text,
-            count=1,
-        )
-        if count != 1:
-            raise RuntimeError(
-                "optim/LIBRARY.toml must contain exactly one meta version"
-            )
-        catalog.write_text(updated, encoding="utf-8")
 
 
 class BlockedSourceDistribution(sdist_orig):

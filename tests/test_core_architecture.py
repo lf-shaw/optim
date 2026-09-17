@@ -89,19 +89,20 @@ def test_every_core_implementation_module_is_an_explicit_extension() -> None:
 
 
 def test_distribution_version_is_generated_from_release_tags() -> None:
-    """发行版本只能由 vX.Y.Z tag 生成，catalog 源文件保留动态占位符。"""
+    """发行版本由 vX.Y.Z tag 生成，知识 manifest 不保存重复版本。"""
 
     with (_PACKAGE_ROOT.parent / "pyproject.toml").open("rb") as stream:
         configuration = tomllib.load(stream)
     with (_PACKAGE_ROOT / "LIBRARY.toml").open("rb") as stream:
-        catalog_version = tomllib.load(stream)["meta"]["version"]
+        catalog = tomllib.load(stream)
 
     assert configuration["project"]["dynamic"] == ["version"]
     scm = configuration["tool"]["setuptools_scm"]
     assert scm["version_file"] == "optim/_version.py"
     assert scm["tag_regex"] == r"^v(?P<version>\d+\.\d+\.\d+)$"
     assert scm["fallback_version"] == "3.0.0"
-    assert catalog_version == "dynamic"
+    assert catalog["schema_version"] == 2
+    assert "version" not in catalog["meta"]
 def test_shared_dual_math_is_independent_of_backend_adapters():
     """共享证据算法不得反向依赖任何具体适配器，base 只保留契约辅助职责。"""
     from pathlib import Path

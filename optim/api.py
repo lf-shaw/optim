@@ -91,6 +91,14 @@ class PortfolioOptimizer:
     ----------
     policy : SolverPolicy
         当前实例使用的不可变求解策略。
+
+    Notes
+    -----
+    公开入口包括 solve/optimize/optimize_range/solve_sequence/diagnose；实例只保存
+    求解策略，不保存用户持仓或实盘交易名单。输入错误抛 PortfolioValidationError，普通
+    不可行/数值失败返回 OptimizationResult；使用 require_weights() 显式选择失败抛异常。
+    风险值为年化 decimal，输入和因子/资产轴必须对齐；算法目标/约束由数据类描述，
+    不要从旧 opt/linopt/solver namespace 复制参数，当前版本不提供这些兼容入口。
     """
 
     def __init__(self, policy: SolverPolicy | None = None):

@@ -15,6 +15,48 @@
 
 ---
 
+## R0. 四标的合成数据验证单期优化
+
+可独立运行，不需要 tuda2、远程数据或 MOSEK 授权。该例使用 LP 默认路径；不是研究建议或真实可交易组合。
+所有资产轴一致，风险值为年化 decimal；结果普通失败返回状态，不保证每个输入都能求解成功。
+
+```python
+import numpy as np
+import pandas as pd
+from optim import (
+    AlphaSpec, FactorRiskModel, MaximizeAlpha, PortfolioConstraints,
+    PortfolioData, PortfolioOptimizer, PortfolioProblem, SolverPolicy,
+    SolverTuning, WeightBounds,
+)
+
+assets = pd.Index(["a", "b", "c", "d"], name="sid")
+date = pd.Timestamp("2026-01-02")
+risk = FactorRiskModel(
+    asof=date,
+    exposure=np.array([[1.0, 1.0], [-1.0, 1.0], [0.5, 0.0], [-0.5, 0.0]]),
+    covariance=np.diag([0.04, 0.02]),
+    specific_volatility=np.full(4, 0.10),
+    factor_names=("size", "industry_a"), factor_types=("style", "industry"),
+)
+data = PortfolioData(
+    date=date, assets=assets, alpha=np.array([1.0, 0.5, -0.2, 0.1]),
+    alpha_spec=AlphaSpec(units="standardized_score"),
+    benchmark=np.full(4, 0.25), initial_weight=np.full(4, 0.25),
+    tradable=np.ones(4, dtype=bool), risk_model=risk,
+)
+constraints = PortfolioConstraints(asset_weight=WeightBounds(0.0, 0.60))
+problem = PortfolioProblem(data, MaximizeAlpha(), constraints)
+optimizer = PortfolioOptimizer(SolverPolicy(tuning=SolverTuning(threads=1)))
+result = optimizer.solve(problem)
+weights = result.require_weights()
+```
+
+weights 为 sid 索引 Series，合计约为 1，单标的边界为 [0,0.60]；查看 result.status/backend/route 审核实际结果。
+更换为 RiskAdjustedAlpha 可验证 QP；增加 TrackingErrorLimit 可验证 Factor-QCQP，仍须相同风险单位和日期。
+显式诊断用 optimizer.diagnose(result)，不会因普通求解失败自动运行深度诊断或修改原约束。
+
+---
+
 ## R1. 手工表格或已对齐数组求解单期
 
 手工表格推荐以下入口；`universe.index` 是股票，列为 alpha/tradable，基准与期初持仓
