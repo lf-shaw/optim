@@ -623,10 +623,10 @@ sequence = optimizer.solve_sequence(
 )
 ```
 
-显示使用 `tqdm.auto`，适配终端和 Jupyter。数据读取/对齐阶段只显示阶段名称及计时，不虚构
-百分比；静态预检和逐期求解显示当前日期、阶段已完成期数、耗时及预计剩余时间。各阶段重新计数，
-求解计数包含已完成的失败尝试，不代表全部成功。提前停止时保留真实完成数，异常或中断时关闭
-进度条。不开启后端日志、不改变策略及结果；关闭时不导入 tqdm，也不构造逐日显示文本。
+显示使用 `tqdm.auto`，适配终端和 Jupyter。每个阶段保留一行及最终耗时，结束时另列从请求
+开始计算的总耗时。数据读取、对齐只显示阶段名称和耗时；按日预检和逐期求解还显示当前日期、
+已处理期数和预计剩余时间。求解计数包含已完成的失败尝试。提前停止或中断时保留实际计数和
+已有阶段记录。关闭进度显示时无需导入 tqdm。
 
 持仓漂移缺少收益时，`SequenceDataError` 会指出调仓区间、缺失持仓比例和最大的缺失股票。
 异常保留 `evidence`（股票明细 DataFrame）、`previous_weight`、`holding_return` 及
@@ -1128,10 +1128,10 @@ canonical 准备和多次恢复尝试之间的 Python 开销。
 绝对权重上限。设置 `None` 表示此项不设上限。整个调仓区间仍需有收益输入。
 多日复合收益只要有日度值缺失，区间收益即记为缺失。旧版复现包重放时沿用原先的收益容差。
 
-样本外持仓按漂移后的绝对权重合计，独立检查 `holding_missing_mass_tolerance`。
-只有同时设置 `renormalize_missing_holdings=True`，才会在阈值内剔除并归一化剩余持仓。
-例如 `SequencePolicy(holding_missing_mass_tolerance=0.001, renormalize_missing_holdings=True)`
-允许剔除至多 0.1% 的样本外绝对权重。两类缺口分别记录在
+样本外持仓按漂移后的绝对权重合计。`holding_missing_mass_tolerance` 默认为零，拒绝样本外
+持仓。设为正数时，阈值内会剔除样本外持仓并归一化剩余权重，超限时报告实际缺失比例和
+阈值。例如 `SequencePolicy(holding_missing_mass_tolerance=0.001)` 允许剔除至多 0.1% 的
+样本外绝对权重。两类缺口分别记录在
 `step.result.alignment.holding_missing_return_mass` 和 `holding_missing_mass`。
 收益漂移只用于构造优化期初权重；停牌标的若仍在样本内，是否冻结由交易状态和约束决定。
 

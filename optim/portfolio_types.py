@@ -1306,11 +1306,10 @@ class SequencePolicy:
     turnover_recovery : TurnoverRecoveryPolicy | None
         显式换手率恢复授权；默认为 ``None``，表示绝不自动放宽。
     holding_missing_mass_tolerance : float
-        漂移后允许位于当前样本之外的绝对持仓权重合计上限；默认为 ``0.0``。
+        漂移后允许位于当前样本之外的绝对持仓权重合计上限。默认 ``0.0``，拒绝样本外
+        持仓。设置正值后，阈值内的样本外持仓自动剔除，其余持仓重新归一化；超限时报错。
         长仓模型中绝对值不超过求解可行性容差的负权重属于不可执行数值残差，在计算缺失质量
         前单独清零，不消耗此业务容差；正权重和卖空权重不适用该规则。
-    renormalize_missing_holdings : bool
-        样本外持仓未超限时，是否允许剔除并对其余持仓归一化；默认为 ``False``。
     holding_missing_return_mass_tolerance : float | None
         样本内持仓缺区间收益时，允许按零收益估值的漂移前绝对权重上限。
         默认为 ``None``，表示没有这一上限；设为 ``0.0`` 可要求持仓收益完整。
@@ -1330,7 +1329,6 @@ class SequencePolicy:
     on_failure: str = "stop"
     turnover_recovery: TurnoverRecoveryPolicy | None = None
     holding_missing_mass_tolerance: float = 0.0
-    renormalize_missing_holdings: bool = False
     output_weights: str = "sparse"
     ignore_first_turnover: bool = True
     holding_missing_return_mass_tolerance: float | None = None

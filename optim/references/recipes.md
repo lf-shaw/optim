@@ -246,8 +246,8 @@ for step in sequence.steps:
 ```
 
 长区间可在 `optimize_range` 或 `solve_sequence` 调用中指定 `show_progress=True`。
-需要可选依赖 `optim[progress]`；默认关闭。显示数据准备阶段及按日期推进的预检/求解进度，
-提前停止保留已完成期数，异常退出自动关闭进度条，不改变求解结果或开启求解器日志。
+需要可选依赖 `optim[progress]`，默认关闭。数据准备、预检与求解分别显示并保留各自耗时，
+结束时另列总耗时。提前停止或异常退出时保留已经显示的阶段及实际处理期数。
 
 若希望生产机在缺失持仓收益时留下现场，两个多期入口均可传入
 `failure_dump_dir="tmp/sequence_failures"`（默认 None）。捕获 SequenceDataError 后，

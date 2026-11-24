@@ -148,7 +148,6 @@ sequence = optimizer.solve_sequence(
         on_failure="stop",
         theta_seed="auto",
         holding_missing_mass_tolerance=1e-5,
-        renormalize_missing_holdings=True,
         output_weights="sparse",
     ),
 )

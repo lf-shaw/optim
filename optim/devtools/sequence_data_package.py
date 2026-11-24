@@ -37,7 +37,7 @@ from optim.portfolio_types import PortfolioObjective
 from optim.repro import _decode, _encode, _environment
 
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
 _PARQUET_MEMBERS = (
     "schedule.parquet",
     "exposure.parquet",
@@ -363,7 +363,7 @@ def load_sequence_package(
         if "manifest.json" not in names:
             raise ValueError("sequence package has no manifest")
         manifest = json.loads(archive.read("manifest.json"))
-        if manifest.get("format_version") != FORMAT_VERSION:
+        if manifest.get("format_version") not in (1, FORMAT_VERSION):
             raise ValueError("unsupported sequence package format")
         expected = manifest.get("members", {})
         if set(names) != set(expected) | {"manifest.json"}:

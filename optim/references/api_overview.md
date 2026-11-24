@@ -191,7 +191,8 @@ $$
 
 链式长仓推进会清除求解可行性容差内的负权重数值残差。样本内缺区间收益默认按零估值；
 `holding_missing_return_mass_tolerance=0.0` 可要求收益完整。样本外持仓按漂移后的绝对权重
-检查 `holding_missing_mass_tolerance`，同时启用 `renormalize_missing_holdings` 才允许剔除后归一化。
+检查 `holding_missing_mass_tolerance`。默认零容忍，设置正阈值后自动剔除阈值内的样本外
+持仓并归一化剩余权重，超限时报错。
 两项统计分别见 `result.alignment.holding_missing_return_mass` 和 `holding_missing_mass`。
 显式启用换手恢复后，后端数值错误只有在
 最小换手率下界证明原上限冲突时才允许进入恢复。
@@ -209,8 +210,9 @@ $$
 
 `optimizer.optimize_range(..., show_progress=True)` 和 `optimizer.solve_sequence(..., show_progress=True)`
 开启可选 tqdm.auto 进度条（安装 `optim[progress]`），默认关闭，不属于 SequencePolicy。
-取数/对齐只显示阶段信息；预检与求解按日期计数，显示当前日期、耗时和预计剩余时间。
-计数包含已完成的失败尝试；提前停止不补齐总数，异常时关闭显示，不改变后端日志及求解行为。
+各阶段单独占一行并保留最终耗时，结束时另列总耗时。取数和对齐显示阶段名称及耗时；按日
+预检与求解显示当前日期、已处理期数和预计剩余时间。计数包含已完成的失败尝试；提前停止或
+异常退出仍保留已显示的行和实际计数。
 
 多期入口的 `failure_dump_dir=None` 默认不写文件。指定目录后，持仓漂移数据错误会导出
 压缩 JSON，上层仍抛出 SequenceDataError；异常的 date/previous_date、evidence DataFrame、

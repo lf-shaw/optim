@@ -15,12 +15,14 @@ from optim.data import FactorRiskFrames, InMemoryDataSource, PortfolioSchedule
 class RecordingBar:
     """记录 tqdm 稳定接口调用，不依赖终端输出格式。"""
 
-    def __init__(self):
-        self.total = None
+    def __init__(self, *, total, desc, leave, bar_format, **kwargs):
+        self.total = total
         self.n = 0
         self.closed = 0
-        self.labels = []
+        self.labels = [desc]
         self.dates = []
+        self.leave = leave
+        self.bar_format = bar_format
 
     def set_description_str(self, text, refresh=True):
         self.labels.append(text)
@@ -28,10 +30,6 @@ class RecordingBar:
     def set_postfix_str(self, text, refresh=True):
         if text:
             self.dates.append(text)
-
-    def reset(self, total=None):
-        self.total = total
-        self.n = 0
 
     def update(self, n):
         self.n += n
@@ -44,12 +42,14 @@ class RecordingBar:
 def bars(monkeypatch):
     created = []
 
-    def create():
-        bar = RecordingBar()
+    def create(**kwargs):
+        assert all(bar.closed == 1 for bar in created)
+        bar = RecordingBar(**kwargs)
         created.append(bar)
         return bar
 
-    monkeypatch.setattr(_progress, "_create_bar", create)
+    create.write = lambda text, *, file: print(text, file=file)
+    monkeypatch.setattr(_progress, "_load_tqdm", lambda: create)
     return created
 
 
@@ -58,12 +58,12 @@ def test_optional_progress_preserves_results_and_stays_lazy(sample_lp_problem, b
     plain = optimizer.solve_sequence([sample_lp_problem])
     assert bars == []
     shown = optimizer.solve_sequence([sample_lp_problem], show_progress=True)
-    assert len(bars) == 1
-    bar = bars[0]
+    assert [bar.labels[0] for bar in bars] == ["序列预检", "静态预检", "逐期求解"]
+    assert all(bar.closed == 1 and bar.leave for bar in bars)
+    assert (bars[1].n, bars[1].total) == (1, 1)
+    bar = bars[-1]
     assert (bar.n, bar.total, bar.closed) == (1, 1, 1)
-    assert "静态预检" in bar.labels
-    assert "逐期求解" in bar.labels
-    assert bar.labels[-1] == "求解完成"
+    assert bar.labels[-1] == "逐期求解（求解完成）"
     assert bar.dates[-1] == "2026-01-02"
     pd.testing.assert_series_equal(plain.final_weight, shown.final_weight)
     assert plain.steps[0].result.metrics == shown.steps[0].result.metrics
@@ -72,7 +72,7 @@ def test_optional_progress_preserves_results_and_stays_lazy(sample_lp_problem, b
 
 @pytest.mark.parametrize("error", [RuntimeError, KeyboardInterrupt])
 def test_progress_closes_on_solver_exception(
-    sample_lp_problem, bars, monkeypatch, error
+    sample_lp_problem, bars, monkeypatch, error, capsys
 ):
     optimizer = PortfolioOptimizer()
 
@@ -82,9 +82,10 @@ def test_progress_closes_on_solver_exception(
     monkeypatch.setattr(optimizer, "_solve_prevalidated", fail)
     with pytest.raises(error):
         optimizer.solve_sequence([sample_lp_problem], show_progress=True)
-    assert bars[0].closed == 1
-    assert bars[0].n == 0
-    assert bars[0].labels[-1] == "已中断"
+    assert all(bar.closed == 1 for bar in bars)
+    assert bars[-1].n == 0
+    assert bars[-1].labels[-1] == "逐期求解（已中断）"
+    assert capsys.readouterr().err.count("总耗时") == 1
     assert _progress._current_progress() is None
 
 
@@ -120,11 +121,11 @@ def test_early_stop_keeps_actual_count(sample_lp_problem, bars, monkeypatch):
     assert "2026-01-02" in result.stop_reason
     assert "status=infeasible" in result.stop_reason
     assert f"backend={native.backend}" in result.stop_reason
-    assert (bars[0].n, bars[0].total, bars[0].closed) == (1, 2, 1)
-    assert bars[0].labels[-1] == "求解已停止：2026-01-02 infeasible"
+    assert (bars[-1].n, bars[-1].total, bars[-1].closed) == (1, 2, 1)
+    assert bars[-1].labels[-1] == "逐期求解（求解已停止：2026-01-02 infeasible）"
 
 
-def test_range_preparation_reuses_one_progress_bar(sample_lp_problem, bars):
+def test_range_keeps_each_progress_stage_and_prints_one_total(sample_lp_problem, bars, capsys):
     data = sample_lp_problem.data
     risk = data.risk_model
     index = pd.MultiIndex.from_product([[data.date], data.assets], names=["dt", "sid"])
@@ -152,12 +153,9 @@ def test_range_preparation_reuses_one_progress_bar(sample_lp_problem, bars):
         show_progress=True,
     )
     assert result.steps[0].result.status.has_solution
-    assert len(bars) == 1
-    assert all(
-        label in bars[0].labels
-        for label in ("取数与对齐", "数据对齐", "静态预检", "逐期求解")
-    )
-    assert bars[0].closed == 1
+    assert [bar.labels[0] for bar in bars] == ["数据对齐", "静态预检", "序列预检", "逐期求解"]
+    assert all(bar.closed == 1 for bar in bars)
+    assert capsys.readouterr().err.count("总耗时") == 1
 
 
 def test_missing_optional_dependency_is_actionable(sample_lp_problem, monkeypatch):
@@ -186,7 +184,11 @@ def test_real_tqdm_smoke(sample_lp_problem, capsys):
         [sample_lp_problem], show_progress=True
     )
     assert result.steps[0].result.status.has_solution
-    assert "求解完成" in capsys.readouterr().err
+    final_lines = [line.rsplit("\r", 1)[-1] for line in capsys.readouterr().err.split("\n")]
+    for label in ("序列预检", "静态预检", "逐期求解（求解完成）"):
+        line, = [line for line in final_lines if line.startswith(label)]
+        assert "s" in line
+    assert final_lines[-2].startswith("总耗时 ")
 
 
 def test_progress_closes_on_precheck_failure(sample_lp_problem, bars):
@@ -198,6 +200,7 @@ def test_progress_closes_on_precheck_failure(sample_lp_problem, bars):
     )
     with pytest.raises(PortfolioValidationError):
         PortfolioOptimizer().solve_sequence([bad], show_progress=True)
-    assert bars[0].closed == 1
-    assert "逐期求解" not in bars[0].labels
+    assert all(bar.closed == 1 for bar in bars)
+    assert [bar.labels[0] for bar in bars] == ["序列预检", "静态预检"]
+    assert bars[-1].labels[-1] == "静态预检（已中断）"
     assert _progress._current_progress() is None

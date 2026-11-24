@@ -1,4 +1,5 @@
 from dataclasses import replace
+import json
 from types import SimpleNamespace
 from zipfile import ZipFile
 
@@ -23,6 +24,7 @@ from optim.devtools.sequence_data_package import (
     load_sequence_package,
     performance_frame,
 )
+from optim.repro import _decode
 
 
 def _inputs():
@@ -77,14 +79,15 @@ def test_sequence_package_round_trip_and_solve(tmp_path):
         constraints=PortfolioConstraints(asset_weight=WeightBounds(0.0, 1.0)),
         alpha_spec=AlphaSpec(),
         solver_policy=SolverPolicy(backend="auto"),
-        sequence_policy=SequencePolicy(output_weights="none"),
+        sequence_policy=SequencePolicy(output_weights="none", holding_missing_mass_tolerance=0.005),
     )
     with ZipFile(path) as archive:
-        assert "manifest.json" in archive.namelist()
+        assert json.loads(archive.read("manifest.json"))["format_version"] == 2
         assert not any(
             "result" in name or "weights/" in name for name in archive.namelist()
         )
     case = load_sequence_package(path)
+    assert case.sequence_policy.holding_missing_mass_tolerance == 0.005
     pd.testing.assert_frame_equal(case.schedule.universe, schedule.universe)
     assert (
         case.holding_period_returns[dates[1]].to_dict() == returns[dates[1]].to_dict()
@@ -120,3 +123,17 @@ def test_sequence_package_preserves_accepted_coverage_gap(tmp_path):
     assert first.alignment.risk_missing_asset_count == 1
     assert first.alignment.risk_missing_asset_fraction == 0.5
     assert first.alignment.benchmark_missing_mass == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize(("authorized", "expected"), [(True, 0.005), (False, 0.0)])
+def test_old_sequence_package_policy_retains_omitted_holdings_authorization(authorized, expected):
+    config = {
+        "type": "SequencePolicy",
+        "fields": {
+            "holding_missing_mass_tolerance": 0.005,
+            "renormalize_missing_holdings": authorized,
+        },
+    }
+    policy = _decode(config, {})
+    assert policy.holding_missing_mass_tolerance == expected
+    assert policy.holding_missing_return_mass_tolerance == 0.005

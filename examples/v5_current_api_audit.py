@@ -432,7 +432,6 @@ def main() -> None:
             on_failure=args.on_failure,
             theta_seed="auto",
             holding_missing_mass_tolerance=args.holding_missing_mass_tolerance,
-            renormalize_missing_holdings=True,
             turnover_recovery=(
                 None
                 if args.turnover_recovery_max is None

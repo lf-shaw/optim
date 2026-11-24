@@ -144,9 +144,7 @@ def test_missing_returns_and_omitted_holdings_use_separate_limits():
     held = pd.Series({"stopped": 0.004, "outside": 0.002, "other": 0.994})
     current = pd.Index(["other", "stopped", "new"], name="sid")
     returns = pd.Series({"other": 0.01})
-    policy = SequencePolicy(
-        holding_missing_mass_tolerance=0.003, renormalize_missing_holdings=True,
-    )
+    policy = SequencePolicy(holding_missing_mass_tolerance=0.003)
     weight, omitted_mass, missing_return_mass = _mark_to_market(held, returns, current, policy)
     assert weight.index.equals(current)
     assert weight["stopped"] == pytest.approx(0.004 / (0.994 * 1.01 + 0.004))
@@ -157,8 +155,8 @@ def test_missing_returns_and_omitted_holdings_use_separate_limits():
 
     with pytest.raises(SequenceDataError, match="drifted holdings"):
         _mark_to_market(held, returns, current, SequencePolicy())
-    with pytest.raises(SequenceDataError, match="renormalize_missing_holdings is disabled"):
-        _mark_to_market(held, returns, current, replace(policy, renormalize_missing_holdings=False))
+    with pytest.raises(SequenceDataError, match=r"of drifted holdings; tolerance=0\.100000%"):
+        _mark_to_market(held, returns, current, replace(policy, holding_missing_mass_tolerance=0.001))
     with pytest.raises(SequenceDataError, match="in-universe holdings") as caught:
         _mark_to_market(
             held, returns, current, replace(policy, holding_missing_return_mass_tolerance=0.003),

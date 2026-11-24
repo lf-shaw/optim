@@ -441,15 +441,15 @@ class Tuda2DataSource:
 
         if initial_weight is None and constraints.asset_trade is not None:
             raise ValueError("asset_trade must be None when initial_weight is omitted")
+        progress = _current_progress()
+        if progress is not None:
+            progress.phase("取数")
         effective_schedule = (
             schedule
             if tradable_universe is None
             else self._attach_tradability(schedule, tradable_universe)
         )
         dates = effective_schedule.dates
-        progress = _current_progress()
-        if progress is not None:
-            progress.phase("取数")
         loaded = self._load(dates=dates, benchmark=benchmark, expand_risk=False)
         memory_source = InMemoryDataSource(
             risk_data=loaded.risk_data,
@@ -472,7 +472,6 @@ class Tuda2DataSource:
 
         returns = holding_period_returns
         if require_holding_returns and returns is None:
-            progress = _current_progress()
             if progress is not None:
                 progress.phase("读取持仓收益")
             sids = prepared.schedule.universe.index.unique(level="sid").astype(str).tolist()

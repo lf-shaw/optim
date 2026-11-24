@@ -948,20 +948,18 @@ def _mark_to_market(
         raise SequenceDataError("mark-to-market holdings have no positive value")
     drifted /= total
     missing_mass = float(np.abs(drifted[outside]).sum())
-    if missing_mass > policy.holding_missing_mass_tolerance:
+    limit = policy.holding_missing_mass_tolerance
+    if missing_mass > limit:
         raise SequenceDataError(
-            f"current optimization assets omit {missing_mass:.6%} of drifted holdings"
+            f"current optimization assets omit {missing_mass:.6%} of drifted holdings; "
+            f"tolerance={limit:.6%}"
         )
     aligned = np.zeros(len(current_assets), dtype=float)
     aligned[positions[~outside]] = drifted[~outside]
     retained = float(aligned.sum())
     if retained <= 0.0:
         raise SequenceDataError("retained mark-to-market holdings have no positive value")
-    if missing_mass > 1e-12 or not np.isclose(retained, 1.0, rtol=0.0, atol=1e-12):
-        if not policy.renormalize_missing_holdings:
-            raise SequenceDataError(
-                "current assets omit holdings; explicit renormalize_missing_holdings is disabled"
-            )
+    if missing_mass > 0.0 or not np.isclose(retained, 1.0, rtol=0.0, atol=1e-12):
         aligned /= retained
     return pd.Series(aligned, index=current_assets, name="weight"), missing_mass, missing_return_mass
 

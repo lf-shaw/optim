@@ -41,6 +41,9 @@ holding_period_returns=holding_period_returns,
 需要 `pyarrow`，可安装 `optim[devtools]`；Parquet 使用 zstd 压缩，ZIP 不会再次压缩
 Parquet。大于 4 GiB 时支持 ZIP64。
 
+新导出的数据包使用格式 v2。读取 v1 包时，旧策略中明确禁止剔除样本外持仓的设置会映射为
+零阈值；已授权剔除时沿用原阈值。
+
 包中包含以下敏感输入，应只在授权的内部环境传输：
 
 - schedule 中实际消费的 alpha、tradable 及显式额外属性；

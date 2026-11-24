@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping
 import pandas as pd
 
 from .model import compile_problem
-from ._progress import _current_progress, _with_progress
+from ._progress import _with_progress
 from ._impl.solver_adapter import SolverAdapter
 from ._core import NumericalThreadScope, numerical_thread_scope
 from .portfolio_types import (
@@ -449,9 +449,9 @@ class PortfolioOptimizer:
         sequence_policy : SequencePolicy | None
             持仓漂移、失败和输出策略；``None`` 使用默认策略。
         show_progress : bool
-            默认 False。True 使用 tqdm.auto 显示取数、预检和逐期求解进度，需安装
-            optim[progress]。已知期数的阶段显示计数和预计剩余时间；I/O 只标识阶段。
-            该选项不启用求解器日志，不改变求解策略；异常或提前停止时关闭显示。
+            默认 False。True 使用 tqdm.auto 分行显示取数、对齐、预检和逐期求解，需安装
+            optim[progress]。各阶段保留耗时，结束时另列总耗时。已知期数的阶段显示计数和预计
+            剩余时间。异常或提前停止仍保留已经显示的各行。
         failure_dump_dir : str | pathlib.Path | None
             默认 None；指定后在持仓漂移数据异常时自动导出压缩上下文，异常仍抛出。
             不导出风险矩阵，不自动诊断或修改缺失收益。路径见异常 dump_path。
@@ -492,10 +492,6 @@ class PortfolioOptimizer:
             )
 
         from .data import InMemoryDataSource
-
-        progress = _current_progress()
-        if progress is not None:
-            progress.phase("取数与对齐")
 
         if not isinstance(data_source, InMemoryDataSource):
             if benchmark is None:
@@ -549,6 +545,7 @@ class PortfolioOptimizer:
             failure_dump_dir=failure_dump_dir,
         )
 
+    @_with_progress
     @numerical_thread_scope
     def solve_sequence(
         self,
@@ -574,8 +571,8 @@ class PortfolioOptimizer:
             多期状态推进策略；``None`` 使用默认值。
         show_progress : bool
             默认 False；True 使用 tqdm.auto 显示预检及逐期求解进度，需安装
-            optim[progress]。显示当前日期、已完成期数、耗时及预计剩余时间，
-            不启用后端日志；异常或提前停止时自动关闭进度条。
+            optim[progress]。各阶段独占一行，保留当前日期、已完成期数及耗时；
+            运行结束后显示总耗时，异常或提前停止仍保留已显示各行。
         failure_dump_dir : str | pathlib.Path | None
             默认 None，不写文件。指定目录后，仅漂移数据异常自动导出关键上下文；异常
             保留 partial_result、previous_weight、holding_return，支持手动 dump(path)。
