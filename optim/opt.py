@@ -455,7 +455,7 @@ def multioptimize(
     # 合并数据
     universe = reindex(*to_concats, index=universe.index)
     # 基准权重用0补齐
-    universe["weight"] = universe["weight"].fillna(0)
+    universe = universe.assign(weight=universe["weight"].fillna(0))
 
 
     # 3、初始持仓,只有第一期
