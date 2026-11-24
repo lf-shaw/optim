@@ -340,7 +340,8 @@ sequence = optimizer.optimize_range(
 `recovery_s` 审计。恢复只执行针对换手率的快速边界检查；若快速路径仍失败，可使用
 `sequence.stopped_problem` 手工运行完整诊断，不在多期循环内自动构造 Phase-I 大模型。
 主后端数值失败时，只有快速检查证明最低换手率高于原上限才允许恢复；否则保持原失败状态。
-长仓求解容差内的负权重数值残差不会触发收益缺失，但真实正持仓和卖空持仓仍严格检查。
+样本内缺区间收益默认按零收益估值，并与样本外持仓分开计量。可用
+`SequencePolicy(holding_missing_return_mass_tolerance=0.0)` 严格检查持仓收益覆盖。
 
 ---
 

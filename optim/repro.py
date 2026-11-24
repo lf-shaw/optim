@@ -154,9 +154,11 @@ def _decode(value: Any, members: dict[str, bytes]) -> Any:
     if kind == "float":
         return float(value["value"])
     if kind in _TYPES:
-        return _TYPES[kind](
-            **{k: _decode(v, members) for k, v in value["fields"].items()}
-        )
+        fields = {k: _decode(v, members) for k, v in value["fields"].items()}
+        if kind == "SequencePolicy" and "holding_missing_return_mass_tolerance" not in fields:
+            # 旧数据包的单一阈值同时约束收益缺失与样本外持仓。
+            fields["holding_missing_return_mass_tolerance"] = fields.get("holding_missing_mass_tolerance", 0.0)
+        return _TYPES[kind](**fields)
     raise ValueError(f"unsupported repro type: {kind}")
 
 

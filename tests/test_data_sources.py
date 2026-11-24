@@ -851,6 +851,37 @@ def test_tuda2_risk_coverage_policy_through_public_entrypoints(multi):
     assert result.alignment.benchmark_missing_mass == 0
 
 
+def test_tuda2_prepares_only_retained_exposure_rows_before_expansion(monkeypatch):
+    import optim.integrations.tuda2 as integration
+
+    schedule = _schedule()
+    universe = schedule.universe.drop("b", level="sid")
+    expand = integration._expand_exposure
+    seen = []
+
+    def observed(exposure, *args):
+        seen.append(exposure.index)
+        return expand(exposure, *args)
+
+    monkeypatch.setattr(integration, "_expand_exposure", observed)
+    source = Tuda2DataSource(module=_FakeTuda2())
+    prepared = source.prepare_sequence(
+        schedule=replace(schedule, universe=universe),
+        benchmark=pd.Series(1.0, index=universe.index),
+        initial_weight=pd.Series({"a": 1.0}),
+        objective=MaximizeAlpha(), constraints=PortfolioConstraints(), alpha_spec=AlphaSpec(),
+        require_holding_returns=False,
+    )
+    assert len(seen) == 1 and seen[0] is universe.index
+    full = source.load(dates=schedule.dates, benchmark="000852.SH")
+    assert len(full.risk_data.exposure) == len(schedule.universe)
+    for date in schedule.dates:
+        expected = full.risk_data.materialize(date, universe.loc[date].index)
+        actual = prepared.run.problem_at(date).data.risk_model
+        np.testing.assert_array_equal(actual.exposure, expected.exposure)
+        np.testing.assert_array_equal(actual.specific_volatility, expected.specific_volatility)
+
+
 def test_single_period_all_dated_inputs():
     fake = _FakeTuda2()
     date = pd.Timestamp("2026-01-02")

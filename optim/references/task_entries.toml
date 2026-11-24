@@ -77,7 +77,7 @@ when = "业务允许阈值内的基准缺口时选择。阈值基于原始基准
 
 [[domains.data.tasks.coverage_policy.routes]]
 symbol = "optim.SequencePolicy"
-when = "缺失涉及链式实际持仓或其持有期收益时，查看持仓与收益的覆盖规则。"
+when = "链式持仓缺区间收益时配置估值规则，或在允许阈值内剔除样本外持仓并归一化时选择。"
 
 [[domains.data.tasks.coverage_policy.routes]]
 symbol = "optim.InMemoryDataSource.prepare_run"

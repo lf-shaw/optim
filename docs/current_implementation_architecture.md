@@ -180,14 +180,15 @@ benchmark 在 universe 外存在任何非容差内的质量缺口时默认报错
 
 `Tuda2DataSource.load()` 先调用一次 `get_risk_model_schema()` 获取完整因子顺序、因子类型、
 常数敞口和物理存储协议，再对一个区间分别调用一次 exposure、covariance、specific risk 和
-benchmark 接口。行业标签只展开一次。链式序列若没有手工提供持有期收益，则再一次性读取
+benchmark 接口。多期优化先裁剪到通过风险覆盖检查的样本，再展开行业标签。链式序列若没有手工提供持有期收益，则再一次性读取
 日度 close-to-close return，并对相邻调仓日之间的区间复合：
 
 ```text
 R(t-1, t) = product(1 + r_daily) - 1
 ```
 
-缺失收益保持 NaN，由序列层按实际持仓质量判断是否可接受；不会在复合时静默跳过。
+复合区间的缺失收益保留 NaN，序列层默认按零收益构造下一期优化权重，也支持单独限制
+样本内缺收益的绝对持仓权重。样本外持仓另按漂移后绝对权重检查，须显式授权剔除和归一化。
 
 country 按 schema 声明的常数因子处理：批量 exposure 不必存储全 1 列，
 `FactorRiskFrames.constant_exposures` 保存其名称和值，按日物化时再严格按 covariance

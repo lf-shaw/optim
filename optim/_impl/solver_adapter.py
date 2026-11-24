@@ -409,6 +409,9 @@ class SolverAdapter:
                 holding_missing_mass=_metadata_float(
                     metadata, "holding_missing_mass", 0.0
                 ),
+                holding_missing_return_mass=_metadata_float(
+                    metadata, "holding_missing_return_mass", 0.0
+                ),
                 source_dates=source_dates,
             ),
             diagnostics=None,

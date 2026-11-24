@@ -31,6 +31,7 @@ from ..portfolio_types import (
     SequencePolicy,
 )
 from ..data.contracts import _single_date_values
+from ..data._date_slices import _DateSlices
 from ..data._reindex import _reindex_rows
 from ..data._tradable import _as_tradable
 from ..data.manual import _check_risk
@@ -157,11 +158,17 @@ class Tuda2DataSource:
             当前环境未安装 tuda2 且没有注入兼容模块。
         """
 
+        return self._load(dates=dates, benchmark=benchmark, expand_risk=True)
+
+    def _load(self, *, dates, benchmark, expand_risk):
+        """取数与敞口展开分开，供区间路径先裁剪再展开。"""
         requested = pd.DatetimeIndex(pd.to_datetime(dates)).sort_values().unique()
         if len(requested) == 0:
             raise ValueError("dates must not be empty")
         _validate_benchmark_input(benchmark, requested)
-        risk_data = self._load_risk_frames(requested)
+        risk_data = self._read_risk_frames(requested)
+        if expand_risk:
+            risk_data = self._expand_risk_frames(risk_data)
         if isinstance(benchmark, str):
             benchmark = self._module().get_index_weight(
                 benchmark, dts=requested, type=self.benchmark_weight_type,
@@ -202,7 +209,7 @@ class Tuda2DataSource:
         day = pd.Timestamp(date)
         if pd.isna(day):
             raise DataAlignmentError("date must not be missing")
-        frames = self._load_risk_frames(pd.DatetimeIndex([day]))
+        frames = self._expand_risk_frames(self._read_risk_frames(pd.DatetimeIndex([day])))
         assets = frames._exposure_slices._day(day).index
         if not len(assets):
             raise DataAlignmentError("risk model assets must not be empty")
@@ -211,22 +218,16 @@ class Tuda2DataSource:
         assert isinstance(checked, FactorRiskModel)
         return checked
 
-    def _load_risk_frames(self, requested: pd.DatetimeIndex) -> FactorRiskFrames:
-        """共享原有批量风险 I/O 和 schema 处理，不筛选优化样本或读取基准。"""
+    def _read_risk_frames(self, requested: pd.DatetimeIndex) -> FactorRiskFrames:
+        """按日期读取三张风险表，保留原始行业分类列。"""
         module = self._module()
 
         # schema 只读取一次并被 cached_property 缓存；先验证接口契约，再进行较昂贵的
         # 批量风险数据和基准 I/O。
         schema = self._risk_schema
-        style = tuple(str(name) for name in schema["style"])
-        industry = tuple(str(name) for name in schema["industry"])
         factor_order = tuple(str(name) for name in schema["factor_order"])
         factor_types = {
             str(name): str(kind) for name, kind in schema["factor_types"].items()
-        }
-        schema_constants = {
-            str(name): float(value)
-            for name, value in schema["constant_exposures"].items()
         }
 
         # TODO 根据 dts 的稠密程度（跟完整交易日比）决定是读取时直接过滤（传入 dts）还是读取完了之后再过滤
@@ -240,13 +241,6 @@ class Tuda2DataSource:
             "spec_risk", dts=requested, model=self.risk_model
         )
         _validate_covariance_schema(covariance, factor_order)
-        exposure, virtual_constants = _expand_exposure(
-            exposure_raw,
-            style,
-            industry,
-            factor_order,
-            schema_constants,
-        )
         provenance = DataProvenance(
             source="tuda2",
             version=_module_version(module),
@@ -256,13 +250,24 @@ class Tuda2DataSource:
             },
         )
         return FactorRiskFrames(
-            exposure=exposure,
+            exposure=exposure_raw,
             covariance=covariance,
             specific_volatility=specific,
             factor_types=factor_types,
-            constant_exposures=virtual_constants,
             provenance=provenance,
         )
+
+    def _expand_risk_frames(self, frames: FactorRiskFrames) -> FactorRiskFrames:
+        """展开有效敞口表上的行业分类，公开风险快照则使用全样本。"""
+        schema = self._risk_schema
+        exposure, virtual_constants = _expand_exposure(
+            frames.exposure,
+            tuple(str(name) for name in schema["style"]),
+            tuple(str(name) for name in schema["industry"]),
+            tuple(str(name) for name in schema["factor_order"]),
+            schema["constant_exposures"],
+        )
+        return replace(frames, exposure=exposure, constant_exposures=virtual_constants)
 
     def load_close_to_close_returns(
         self,
@@ -329,27 +334,42 @@ class Tuda2DataSource:
             raise ValueError(
                 "tuda2 daily close returns do not contain one unambiguous value column"
             )
-        daily = daily_returns[value_column].unstack("sid").sort_index()
-        if sids is not None:
-            daily = daily.reindex(columns=pd.Index(sids, name="sid"))
-        finite_values = daily.to_numpy(float)
-        if np.any(finite_values[np.isfinite(finite_values)] < -1.0):
-            raise ValueError("tuda2 daily return below -100% is invalid")
-        result: dict[pd.Timestamp, pd.Series] = {}
-        for position in range(1, len(requested)):
-            previous_date = requested[position - 1]
-            current_date = requested[position]
-            interval = daily.loc[
-                (daily.index > previous_date) & (daily.index <= current_date)
-            ]
-            if interval.empty or current_date not in interval.index:
-                raise ValueError(
-                    f"tuda2 daily close returns do not reach rebalance date {current_date.date()}"
+        values = daily_returns[value_column]
+        day_slices = _DateSlices(values, "sid", "tuda2 returns")
+        days = day_slices._dates
+        ends = days.get_indexer(requested[1:])
+        starts = days.searchsorted(requested[:-1], side="right")
+        if np.any(ends < starts):
+            bad = requested[1:][ends < starts][0]
+            raise ValueError(f"tuda2 daily close returns do not reach rebalance date {bad.date()}")
+        assets = (
+            pd.Index(sids, name="sid") if sids is not None
+            else values.index.unique(level="sid").sort_values()
+        )
+        # 校验原始日度数据；缺失按区间保留给持仓漂移策略处理。
+        observations = values.to_numpy(float, na_value=np.nan)
+        invalid = np.isfinite(observations) & (observations < -1.0)
+        if invalid.any():
+            invalid_assets = values.index[invalid].get_level_values("sid")
+            if sids is None or invalid_assets.isin(assets).any():
+                raise ValueError("tuda2 daily return below -100% is invalid")
+        if np.array_equal(starts, ends):
+            # 每个区间只含一个收益日时直接切片，避免构造日期 × 股票宽表。
+            return {
+                date: pd.Series(
+                    (1.0 + day_slices._day(date).reindex(assets).to_numpy(float, na_value=np.nan)) - 1.0,
+                    index=assets, name="close_to_close_return",
                 )
-            compounded = (1.0 + interval).prod(axis=0, skipna=False) - 1.0
-            compounded.name = "close_to_close_return"
-            result[pd.Timestamp(current_date)] = compounded
-        return result
+                for date in requested[1:]
+            }
+        daily = values.unstack("sid").reindex(index=days, columns=assets).to_numpy(float, na_value=np.nan)
+        return {
+            date: pd.Series(
+                np.prod(1.0 + daily[start:end + 1], axis=0) - 1.0,
+                index=assets, name="close_to_close_return",
+            )
+            for date, start, end in zip(requested[1:], starts, ends)
+        }
 
     def prepare_sequence(
         self,
@@ -427,13 +447,16 @@ class Tuda2DataSource:
             else self._attach_tradability(schedule, tradable_universe)
         )
         dates = effective_schedule.dates
-        loaded = self.load(dates=dates, benchmark=benchmark)
+        progress = _current_progress()
+        if progress is not None:
+            progress.phase("取数")
+        loaded = self._load(dates=dates, benchmark=benchmark, expand_risk=False)
         memory_source = InMemoryDataSource(
             risk_data=loaded.risk_data,
             benchmark=loaded.benchmark,
             benchmark_policy=benchmark_policy,
         )
-        prepared = memory_source.prepare_run(
+        prepared = memory_source._prepare_run(
             effective_schedule,
             objective=objective,
             constraints=constraints,
@@ -443,6 +466,7 @@ class Tuda2DataSource:
             extra_attribute_columns=extra_attribute_columns,
             sequence_policy=sequence_policy,
             risk_coverage_policy=risk_coverage_policy,
+            expand_risk=self._expand_risk_frames,
         )
         prepared.validation.raise_for_errors()
 
@@ -451,12 +475,7 @@ class Tuda2DataSource:
             progress = _current_progress()
             if progress is not None:
                 progress.phase("读取持仓收益")
-            sids = (
-                prepared.schedule.universe.index.get_level_values("sid")
-                .unique()
-                .astype(str)
-                .tolist()
-            )
+            sids = prepared.schedule.universe.index.unique(level="sid").astype(str).tolist()
             returns = self.load_close_to_close_returns(dates=dates, sids=sids)
         return Tuda2PreparedSequence(
             run=prepared,

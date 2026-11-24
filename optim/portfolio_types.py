@@ -1038,13 +1038,15 @@ class AlignmentReport:
     benchmark_renormalization_factor : float
         应用于保留基准权重的归一化乘数；默认为 ``1.0``，即不缩放。
     holding_missing_mass : float
-        当前资产域中缺失的期初或承接持仓权重；默认为 ``0.0``。
+        漂移后、对齐当期样本前，样本外持仓的绝对权重合计；默认为 ``0.0``。
     source_dates : Mapping[str, pandas.Timestamp]
         每类输入实际使用的数据日期；默认为空映射。
     risk_missing_asset_count : int
         因缺少同日风险敞口或特异风险而剔除的样本股票数，默认为零。
     risk_missing_asset_fraction : float
         上述股票数占裁剪前当日样本数量的比例，默认为零。
+    holding_missing_return_mass : float
+        因区间收益缺失而按零收益估值的样本内持仓，在漂移前的绝对权重合计；默认为零。
     """
 
     benchmark_missing_mass: float = 0.0
@@ -1053,6 +1055,7 @@ class AlignmentReport:
     source_dates: Mapping[str, pd.Timestamp] = field(default_factory=dict)
     risk_missing_asset_count: int = 0
     risk_missing_asset_fraction: float = 0.0
+    holding_missing_return_mass: float = 0.0
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -1303,11 +1306,15 @@ class SequencePolicy:
     turnover_recovery : TurnoverRecoveryPolicy | None
         显式换手率恢复授权；默认为 ``None``，表示绝不自动放宽。
     holding_missing_mass_tolerance : float
-        当前风险资产域允许缺失的上一期实际持仓权重上限；默认为 ``0.0``。
+        漂移后允许位于当前样本之外的绝对持仓权重合计上限；默认为 ``0.0``。
         长仓模型中绝对值不超过求解可行性容差的负权重属于不可执行数值残差，在计算缺失质量
         前单独清零，不消耗此业务容差；正权重和卖空权重不适用该规则。
     renormalize_missing_holdings : bool
-        是否在缺失质量未超限时删除缺失持仓并对剩余权重归一化；默认为 ``False``。
+        样本外持仓未超限时，是否允许剔除并对其余持仓归一化；默认为 ``False``。
+    holding_missing_return_mass_tolerance : float | None
+        样本内持仓缺区间收益时，允许按零收益估值的漂移前绝对权重上限。
+        默认为 ``None``，表示没有这一上限；设为 ``0.0`` 可要求持仓收益完整。
+        这项统计独立于样本外持仓权重，仍要求提供各期的收益输入。
     output_weights : str
         ``"none"`` 不保存逐日权重，``"sparse"`` 仅保存清理后的非零权重，``"all"`` 保存
         完整权重；默认为 ``"sparse"``。
@@ -1326,6 +1333,7 @@ class SequencePolicy:
     renormalize_missing_holdings: bool = False
     output_weights: str = "sparse"
     ignore_first_turnover: bool = True
+    holding_missing_return_mass_tolerance: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.ignore_first_turnover, bool):
@@ -1347,3 +1355,6 @@ class SequencePolicy:
             )
         if self.output_weights not in {"none", "sparse", "all"}:
             raise ValueError("output_weights must be 'none', 'sparse', or 'all'")
+        limit = self.holding_missing_return_mass_tolerance
+        if limit is not None and (not np.isfinite(limit) or limit < 0.0):
+            raise ValueError("holding missing-return mass tolerance must be finite and non-negative or None")

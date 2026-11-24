@@ -94,7 +94,7 @@ class InMemoryDataSource:
     def _benchmark_slices(self):
         return _DateSlices(self.benchmark, "sid", "benchmark")
 
-    def _risk_coverage(self, schedule, policy):
+    def _risk_coverage(self, schedule, policy, *, map_rows=False):
         """以批量坐标检查风险缺口，仅为有缺口的日期组装审计。"""
         target = schedule.universe.index
         risk = self.risk_data
@@ -103,11 +103,22 @@ class InMemoryDataSource:
         _ = schedule._date_slices
         exposure_index = risk.exposure.index
         specific_index = risk.specific_volatility.index
-        no_exposure = ~target.isin(exposure_index)
-        no_specific = no_exposure if specific_index is exposure_index else ~target.isin(specific_index)
+        # 原始带行业分类的敞口表按位置裁剪；共享索引时复用映射。
+        if map_rows:
+            exposure_rows = exposure_index.get_indexer(target)
+            specific_rows = (
+                exposure_rows if exposure_index.equals(specific_index)
+                else specific_index.get_indexer(target)
+            )
+            row_maps = exposure_rows, specific_rows
+            no_exposure, no_specific = exposure_rows < 0, specific_rows < 0
+        else:
+            row_maps = None
+            no_exposure = ~target.isin(exposure_index)
+            no_specific = no_exposure if specific_index is exposure_index else ~target.isin(specific_index)
         missing = no_exposure | no_specific
         if not missing.any():
-            return schedule, ()
+            return schedule, (), row_maps
 
         date_codes = target.codes[0]
         totals = np.bincount(date_codes, minlength=len(target.levels[0]))
@@ -148,31 +159,43 @@ class InMemoryDataSource:
             ))
         errors = tuple(issue for issue in issues if issue.severity is ValidationSeverity.ERROR)
         if errors:
-            return schedule, errors
-        return replace(schedule, universe=schedule.universe.iloc[~missing]), tuple(issues)
+            return schedule, errors, None
+        keep = ~missing
+        if row_maps is not None:
+            exposure_rows, specific_rows = row_maps
+            kept_exposure = exposure_rows[keep]
+            row_maps = kept_exposure, kept_exposure if exposure_rows is specific_rows else specific_rows[keep]
+        return replace(schedule, universe=schedule.universe.iloc[keep]), tuple(issues), row_maps
 
-    def _batch_for_schedule(self, schedule):
+    def _batch_for_schedule(self, schedule, *, row_maps=None, expand_risk=None):
         """按实际调仓坐标一次裁剪风险与权重；保留裁剪前的逐日覆盖审计。"""
         target = schedule.universe.index
         risk = self.risk_data
-        # 调用方已完成风险坐标检查。carry2 可用时负责批量搬运数值。
-        exposure = _reindex_rows(risk.exposure, target)
-        specific = _reindex_rows(risk.specific_volatility, target)
+        if row_maps is None:
+            # 已展开的数值表继续走通用的 carry2/pandas 对齐。
+            exposure = _reindex_rows(risk.exposure, target)
+            specific = _reindex_rows(risk.specific_volatility, target)
+        else:
+            # 同一映射已给出缺失坐标，校验通过后仅搬运保留行。
+            exposure = risk.exposure.take(row_maps[0])
+            specific = risk.specific_volatility.take(row_maps[1])
+            exposure.index = specific.index = target
         aligned_risk = replace(risk, exposure=exposure, specific_volatility=specific)
+        if expand_risk is not None:
+            aligned_risk = expand_risk(aligned_risk)
         raw_benchmark = self.benchmark
         if isinstance(raw_benchmark, pd.DataFrame):
             raw_benchmark = raw_benchmark.iloc[:, 0]
         numeric = pd.to_numeric(raw_benchmark, errors="coerce").astype(float)
-        aligned_weights = _reindex_rows(numeric, target, fill_value=0.0)
         result = InMemoryDataSource(
             risk_data=aligned_risk, benchmark=self.benchmark,
             benchmark_policy=self.benchmark_policy,
         )
         result._prepared_schedule = schedule
-        result._benchmark_cache = self._batch_benchmark(schedule, numeric, aligned_weights)
+        result._benchmark_cache = self._batch_benchmark(schedule, numeric)
         return result
 
-    def _batch_benchmark(self, schedule, numeric, aligned_weights):
+    def _batch_benchmark(self, schedule, numeric):
         """一次标记所有样本外基准，按日期代码归约原始权重及缺口。"""
         _ = self._benchmark_slices
         index = numeric.index
@@ -180,7 +203,12 @@ class InMemoryDataSource:
         n_dates = len(index.levels[0])
         values = numeric.to_numpy(copy=False)
         date_codes = index.levels[0].get_indexer(schedule.dates)
-        outside = ~index.isin(schedule.universe.index)
+        target = schedule.universe.index
+        positions = target.get_indexer(index)
+        inside = positions >= 0
+        aligned = np.zeros(len(target), dtype=float)
+        aligned[positions[inside]] = values[inside]
+        outside = ~inside
         requested = np.zeros(n_dates, dtype=bool)
         requested[date_codes[date_codes >= 0]] = True
         outside &= requested[codes]
@@ -197,7 +225,6 @@ class InMemoryDataSource:
                 labels.setdefault(date, []).append(str(sid))
         raw_positions = self._benchmark_slices._positions
         target_positions = schedule._date_slices._positions
-        aligned = aligned_weights.to_numpy(float, copy=False)
         policy = self.benchmark_policy
         normalized = np.isclose(totals, 1.0, rtol=0.0, atol=policy.weight_sum_tolerance)
         cache = {}
@@ -328,7 +355,7 @@ class InMemoryDataSource:
             raise DataAlignmentError(
                 f"build_problem requires exactly one schedule date; observed {len(dates)}"
             )
-        schedule, issues = self._risk_coverage(schedule, risk_coverage_policy or RiskCoveragePolicy())
+        schedule, issues, _ = self._risk_coverage(schedule, risk_coverage_policy or RiskCoveragePolicy())
         if issues and not ValidationReport(issues).is_valid:
             raise DataAlignmentError(issues[0].message)
         if issues:
@@ -440,6 +467,20 @@ class InMemoryDataSource:
             轻量惰性物化清单及全区间聚合校验报告。
         """
 
+        return self._prepare_run(
+            schedule, objective=objective, constraints=constraints, alpha_spec=alpha_spec,
+            initial_weight=initial_weight, independent_initial_weights=independent_initial_weights,
+            extra_attribute_columns=extra_attribute_columns, sequence_policy=sequence_policy,
+            risk_coverage_policy=risk_coverage_policy,
+        )
+
+    def _prepare_run(
+        self, schedule, *, objective, constraints, alpha_spec, initial_weight,
+        independent_initial_weights, extra_attribute_columns, sequence_policy,
+        risk_coverage_policy, expand_risk=None,
+    ) -> "PreparedPortfolioRun":
+        """共用预检流程，允许数据适配层在风险坐标裁剪后展开敞口。"""
+
         started = time.perf_counter()
         progress = _current_progress()
         if progress is not None:
@@ -450,15 +491,15 @@ class InMemoryDataSource:
                 pd.Timestamp(date): value
                 for date, value in independent_initial_weights.items()
             }
-        schedule, coverage_issues = self._risk_coverage(
-            schedule, risk_coverage_policy or RiskCoveragePolicy()
+        schedule, coverage_issues, row_maps = self._risk_coverage(
+            schedule, risk_coverage_policy or RiskCoveragePolicy(), map_rows=expand_risk is not None,
         )
         coverage_report = ValidationReport(coverage_issues)
         prepared_source = self
         if coverage_report.is_valid:
             if coverage_issues:
                 _check_filtered_bounds(constraints)
-            prepared_source = self._batch_for_schedule(schedule)
+            prepared_source = self._batch_for_schedule(schedule, row_maps=row_maps, expand_risk=expand_risk)
             prepared_source._risk_gaps = {
                 **self._risk_gaps,
                 **{issue.date: _risk_gap_metadata(issue) for issue in coverage_issues},

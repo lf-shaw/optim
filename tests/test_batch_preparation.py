@@ -89,7 +89,7 @@ def test_batch_matches_individual_and_reuses_alignment(monkeypatch, native):
     monkeypatch.setattr(memory, "_reindex_rows", tracked)
     run = source.prepare_run(schedule, **args)
     run.validation.raise_for_errors()
-    assert len(calls) == 3
+    assert len(calls) == 2  # 基准通过独立的一次位置映射完成。
     assert run.data_source is not source
     assert run.data_source.risk_data.exposure.index.equals(schedule.universe.index)
     assert len(source.risk_data.exposure) == 12
@@ -113,7 +113,7 @@ def test_batch_matches_individual_and_reuses_alignment(monkeypatch, native):
             assert (
                 observed.data.provenance.metadata == expected.data.provenance.metadata
             )
-    assert len(calls) == 3
+    assert len(calls) == 2
 
 
 def test_batch_keeps_per_date_coverage_evidence():
@@ -294,7 +294,10 @@ def test_date_slices_match_xs_even_with_interleaved_dates():
 def test_batch_carry_rejects_nonmonotonic_input():
     pytest.importorskip("carry2")
     source, schedule, args = _case()
-    source = InMemoryDataSource(risk_data=source.risk_data, benchmark=source.benchmark.iloc[::-1])
+    source = InMemoryDataSource(
+        risk_data=replace(source.risk_data, exposure=source.risk_data.exposure.iloc[::-1]),
+        benchmark=source.benchmark,
+    )
     with pytest.raises(ValueError, match="monotonic"):
         source.prepare_run(schedule, **args)
 

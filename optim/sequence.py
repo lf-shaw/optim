@@ -512,6 +512,7 @@ def _solve_sequence_impl(
         template = first_template if position == 0 else problem_at(position)
         date = dates[position]
         if policy.mode == "chained":
+            provenance = template.data.provenance
             if position == 0:
                 initial = np.asarray(template.data.initial_weight, dtype=float)
                 pretrade = pd.Series(
@@ -522,7 +523,7 @@ def _solve_sequence_impl(
             else:
                 assert actual_weight is not None
                 try:
-                    pretrade = _mark_to_market(
+                    pretrade, omitted_mass, missing_return_mass = _mark_to_market(
                         actual_weight,
                         normalized_returns[date],
                         pd.Index(template.data.assets, name="sid"),
@@ -554,10 +555,17 @@ def _solve_sequence_impl(
                         except Exception as dump_exc:
                             exc.dump_error = f"{type(dump_exc).__name__}: {dump_exc}"
                     raise
+                if omitted_mass or missing_return_mass:
+                    provenance = replace(provenance, metadata={
+                        **provenance.metadata,
+                        "holding_missing_mass": omitted_mass,
+                        "holding_missing_return_mass": missing_return_mass,
+                    })
             problem = replace(
                 template,
                 data=replace(
-                    template.data, initial_weight=pretrade.to_numpy(copy=False)
+                    template.data, initial_weight=pretrade.to_numpy(copy=False),
+                    provenance=provenance,
                 ),
             )
         else:
@@ -874,11 +882,10 @@ def _mark_to_market(
     *,
     long_only: bool = False,
     numerical_zero_tolerance: float = 0.0,
-) -> pd.Series:
+) -> tuple[pd.Series, float, float]:
     """使用 C2C 收益漂移上期目标权重，并对齐当前资产域。
 
-    缺失观测按实际持仓质量计量；除非配置容差明确允许，否则不会静默填补。新资产域删除持仓
-    证券时还必须显式允许重新归一化。
+    返回期初权重、样本外漂移权重以及样本内缺收益的漂移前权重，后二者按绝对权重计量。
     """
 
     previous_values = previous_target.to_numpy(dtype=float, copy=True)
@@ -890,38 +897,49 @@ def _mark_to_market(
         )
         previous_values[numerical_dust] = 0.0
 
+    previous_assets = previous_target.index
+    # 同一当日位置映射同时服务于持仓覆盖、缺收益审计和权重写入。
+    positions = current_assets.get_indexer(previous_assets)
+    outside = positions < 0
     if isinstance(holding_return, pd.Series):
         if holding_return.index.has_duplicates:
             raise SequenceDataError(
                 "holding-period return Series contains duplicate assets"
             )
-        aligned_return = _reindex_rows(holding_return, previous_target.index)
-        missing = aligned_return.isna().to_numpy()
-        missing_mass = float(np.abs(previous_values[missing]).sum())
-        if missing_mass > policy.holding_missing_mass_tolerance:
-            held_missing = missing & (previous_values != 0.0)
-            labels = previous_target.index[held_missing]
-            evidence = pd.DataFrame({
-                "weight": previous_values[held_missing],
-                "absolute_weight": np.abs(previous_values[held_missing]),
-                "reason": np.where(labels.isin(holding_return.index), "missing_value", "missing_sid"),
-            }, index=labels).sort_values("absolute_weight", ascending=False)
-            top = ", ".join(f"{sid}={row.weight:.6%}" for sid, row in evidence.head(10).iterrows())
-            raise SequenceDataError(
-                f"missing close-to-close returns cover {missing_mass:.6%} of holdings; "
-                f"tolerance={policy.holding_missing_mass_tolerance:.6%}; "
-                f"{len(evidence)} held assets; largest: {top}", evidence=evidence,
-            )
-        aligned_return = aligned_return.fillna(0.0).to_numpy(float)
+        aligned_return = _reindex_rows(holding_return, previous_assets).to_numpy(float, na_value=np.nan)
     else:
         aligned_return = np.asarray(holding_return, dtype=float)
         if aligned_return.shape != (len(previous_target),):
             raise SequenceDataError(
                 "array holding-period returns must follow the previous holding coordinate"
             )
-    if not np.all(np.isfinite(aligned_return)):
-        raise SequenceDataError("holding-period returns contain NaN or infinity")
+    missing = np.isnan(aligned_return)
+    missing_return_mass = 0.0
+    if missing.any():
+        held_missing = missing & ~outside & (previous_values != 0.0)
+        weights = previous_values[held_missing]
+        missing_return_mass = float(np.abs(weights).sum())
+        limit = policy.holding_missing_return_mass_tolerance
+        if limit is not None and missing_return_mass > limit:
+            labels = previous_assets[held_missing]
+            present = (
+                _sid_isin(labels, holding_return.index)
+                if isinstance(holding_return, pd.Series) else np.ones(len(labels), dtype=bool)
+            )
+            evidence = pd.DataFrame({
+                "weight": weights,
+                "absolute_weight": np.abs(weights),
+                "reason": np.where(present, "missing_value", "missing_sid"),
+            }, index=labels).sort_values("absolute_weight", ascending=False)
+            top = ", ".join(f"{sid}={row.weight:.6%}" for sid, row in evidence.head(10).iterrows())
+            raise SequenceDataError(
+                f"missing close-to-close returns cover {missing_return_mass:.6%} of in-universe holdings; "
+                f"tolerance={limit:.6%}; {len(evidence)} held assets; largest: {top}", evidence=evidence,
+            )
     gross = 1.0 + aligned_return
+    gross[missing] = 1.0
+    if not np.all(np.isfinite(gross)):
+        raise SequenceDataError("holding-period returns contain infinity")
     if np.any(gross < 0.0):
         raise SequenceDataError("holding-period return below -100% is invalid")
     drifted = previous_values * gross
@@ -929,22 +947,23 @@ def _mark_to_market(
     if total <= 0.0:
         raise SequenceDataError("mark-to-market holdings have no positive value")
     drifted /= total
-    drifted_series = pd.Series(drifted, index=previous_target.index, name="weight")
-    aligned = _reindex_rows(drifted_series, current_assets)
-    missing_mass = float(np.abs(drifted[~_sid_isin(previous_target.index, current_assets)]).sum())
+    missing_mass = float(np.abs(drifted[outside]).sum())
     if missing_mass > policy.holding_missing_mass_tolerance:
         raise SequenceDataError(
             f"current optimization assets omit {missing_mass:.6%} of drifted holdings"
         )
-    aligned = aligned.fillna(0.0)
+    aligned = np.zeros(len(current_assets), dtype=float)
+    aligned[positions[~outside]] = drifted[~outside]
     retained = float(aligned.sum())
-    if not np.isclose(retained, 1.0, rtol=0.0, atol=1e-12):
+    if retained <= 0.0:
+        raise SequenceDataError("retained mark-to-market holdings have no positive value")
+    if missing_mass > 1e-12 or not np.isclose(retained, 1.0, rtol=0.0, atol=1e-12):
         if not policy.renormalize_missing_holdings:
             raise SequenceDataError(
                 "current assets omit holdings; explicit renormalize_missing_holdings is disabled"
             )
         aligned /= retained
-    return aligned.rename("weight")
+    return pd.Series(aligned, index=current_assets, name="weight"), missing_mass, missing_return_mass
 
 
 def _apply_output_policy(

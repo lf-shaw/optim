@@ -327,6 +327,8 @@ $$
 或运行错误不会被静默回退掩盖。任何路径均不前填，也不将原数据中的 NaN 当作新增行填零。
 
 多期准备会将风险暴露、特异风险和基准一次对齐到实际调仓计划，预检与求解复用该结果。
+使用 tuda2 时先按有效样本裁剪原始敞口，再展开所需的行业列。基准的同一份位置映射用于写入
+权重和计算样本外覆盖缺口。
 基准按原始逐日权重审计后才允许使用裁剪结果，不以跨日均值代替单日覆盖检查。日期位置只
 建立一次，日循环不重复扫描完整索引；不依赖 carry 的私有 `_generate_index`。仍按需构造
 逐日问题，不保留全部逐日风险矩阵副本。链式漂移持仓继续逐期检查收益缺失和样本外持仓。
@@ -628,7 +630,7 @@ sequence = optimizer.solve_sequence(
 
 持仓漂移缺少收益时，`SequenceDataError` 会指出调仓区间、缺失持仓比例和最大的缺失股票。
 异常保留 `evidence`（股票明细 DataFrame）、`previous_weight`、`holding_return` 及
-`partial_result`（已完成的步骤，不会丢失已经求解的结果）。默认不写文件、不把缺失收益填零。
+`partial_result`（已完成的步骤，不会丢失已经求解的结果）。默认不写文件。
 如需把生产机故障发给开发者，可在两个多期入口指定 `failure_dump_dir="tmp/sequence_failures"`：
 
 ```python
@@ -1121,9 +1123,17 @@ sequence_policy = SequencePolicy(
 `step.recovery_s` 查看恢复全部附加成本，而不是只累加 `attempt.solve_s`：后者不包含模型构造、
 canonical 准备和多次恢复尝试之间的 Python 开销。
 
-链式长仓状态会在收益覆盖检查前清除求解可行性容差内的极小负权重，因为它们不是可执行
-持仓。正的小权重和允许卖空时的负权重仍被视为真实持仓；它们缺少收益时继续按
-`holding_missing_mass_tolerance` 报错。`tradable=0` 也不会被直接解释为零收益。
+链式持仓漂移区分两种缺口。样本内持仓缺区间收益时，默认按零收益估值并保留持仓。
+如需检查收益覆盖，可用 `holding_missing_return_mass_tolerance=0.0` 要求完整，或设置独立的
+绝对权重上限。设置 `None` 表示此项不设上限。整个调仓区间仍需有收益输入。
+多日复合收益只要有日度值缺失，区间收益即记为缺失。旧版复现包重放时沿用原先的收益容差。
+
+样本外持仓按漂移后的绝对权重合计，独立检查 `holding_missing_mass_tolerance`。
+只有同时设置 `renormalize_missing_holdings=True`，才会在阈值内剔除并归一化剩余持仓。
+例如 `SequencePolicy(holding_missing_mass_tolerance=0.001, renormalize_missing_holdings=True)`
+允许剔除至多 0.1% 的样本外绝对权重。两类缺口分别记录在
+`step.result.alignment.holding_missing_return_mass` 和 `holding_missing_mass`。
+收益漂移只用于构造优化期初权重；停牌标的若仍在样本内，是否冻结由交易状态和约束决定。
 
 简单设置 `on_failure="hold"` 可能把一次结构性冲突传播到后续很多日期，因此默认仍为 `stop`。
 

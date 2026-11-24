@@ -28,7 +28,7 @@ def test_failure_preserves_partial_results_without_disk(sample_lp_problem):
         PortfolioOptimizer().solve_sequence(
             [first, second],
             holding_period_returns={second.data.date: pd.Series({"b": np.nan})},
-            sequence_policy=SequencePolicy(output_weights="none"),
+            sequence_policy=SequencePolicy(output_weights="none", holding_missing_return_mass_tolerance=0.0),
         )
     error = caught.value
     assert "2026-01-02 -> 2026-01-05" in str(error)
@@ -51,6 +51,7 @@ def test_auto_dump_and_manual_dump(sample_lp_problem, tmp_path):
         PortfolioOptimizer().solve_sequence(
             [sample_lp_problem, second],
             holding_period_returns={second.data.date: pd.Series(dtype=float)},
+            sequence_policy=SequencePolicy(holding_missing_return_mass_tolerance=0.0),
             failure_dump_dir=directory,
         )
     error = caught.value
@@ -89,6 +90,7 @@ def test_dump_failure_does_not_mask_original_error(
         PortfolioOptimizer().solve_sequence(
             [sample_lp_problem, second],
             holding_period_returns={second.data.date: pd.Series(dtype=float)},
+            sequence_policy=SequencePolicy(holding_missing_return_mass_tolerance=0.0),
             failure_dump_dir=tmp_path / "failures",
         )
     assert caught.value.dump_error is not None
@@ -99,7 +101,8 @@ def test_missing_mass_uses_absolute_holdings_and_ignores_zero_positions():
     held = pd.Series({"long": 0.2, "short": -0.2, "cashlike": 1.0, "zero": 0.0})
     with pytest.raises(SequenceDataError) as caught:
         _mark_to_market(
-            held, pd.Series({"cashlike": 0.0}), held.index, SequencePolicy()
+            held, pd.Series({"cashlike": 0.0}), held.index,
+            SequencePolicy(holding_missing_return_mass_tolerance=0.0),
         )
     assert "40.000000%" in str(caught.value)
     assert set(caught.value.evidence.index) == {"long", "short"}
@@ -107,17 +110,18 @@ def test_missing_mass_uses_absolute_holdings_and_ignores_zero_positions():
 
 def test_long_only_drift_discards_only_negative_numerical_dust():
     held = pd.Series({"held": 1.0, "dust": -8e-12}, name="weight")
-    observed = _mark_to_market(
+    observed, outside, missing_return = _mark_to_market(
         held,
         pd.Series({"held": 0.0}),
         held.index,
-        SequencePolicy(),
+        SequencePolicy(holding_missing_return_mass_tolerance=0.0),
         long_only=True,
         numerical_zero_tolerance=1e-5,
     )
 
     assert observed.loc["held"] == pytest.approx(1.0)
     assert observed.loc["dust"] == 0.0
+    assert outside == missing_return == 0.0
 
 
 def test_long_only_drift_does_not_hide_positive_missing_holding():
@@ -127,10 +131,51 @@ def test_long_only_drift_does_not_hide_positive_missing_holding():
             held,
             pd.Series({"held": 0.0}),
             held.index,
-            SequencePolicy(),
+            SequencePolicy(holding_missing_return_mass_tolerance=0.0),
             long_only=True,
             numerical_zero_tolerance=1e-5,
         )
 
     assert set(caught.value.evidence.index) == {"positive"}
     assert caught.value.evidence.loc["positive", "weight"] == pytest.approx(1e-12)
+
+
+def test_missing_returns_and_omitted_holdings_use_separate_limits():
+    held = pd.Series({"stopped": 0.004, "outside": 0.002, "other": 0.994})
+    current = pd.Index(["other", "stopped", "new"], name="sid")
+    returns = pd.Series({"other": 0.01})
+    policy = SequencePolicy(
+        holding_missing_mass_tolerance=0.003, renormalize_missing_holdings=True,
+    )
+    weight, omitted_mass, missing_return_mass = _mark_to_market(held, returns, current, policy)
+    assert weight.index.equals(current)
+    assert weight["stopped"] == pytest.approx(0.004 / (0.994 * 1.01 + 0.004))
+    assert weight["new"] == 0.0
+    assert weight.sum() == pytest.approx(1.0)
+    assert omitted_mass == pytest.approx(0.002 / (0.994 * 1.01 + 0.006))
+    assert missing_return_mass == pytest.approx(0.004)
+
+    with pytest.raises(SequenceDataError, match="drifted holdings"):
+        _mark_to_market(held, returns, current, SequencePolicy())
+    with pytest.raises(SequenceDataError, match="renormalize_missing_holdings is disabled"):
+        _mark_to_market(held, returns, current, replace(policy, renormalize_missing_holdings=False))
+    with pytest.raises(SequenceDataError, match="in-universe holdings") as caught:
+        _mark_to_market(
+            held, returns, current, replace(policy, holding_missing_return_mass_tolerance=0.003),
+        )
+    assert list(caught.value.evidence.index) == ["stopped"]
+
+
+def test_default_missing_return_uses_zero_and_audits_pretrade(sample_lp_problem):
+    optimizer = PortfolioOptimizer()
+    first, second = sample_lp_problem, _second(sample_lp_problem)
+    prior = optimizer.solve_sequence([first]).final_weight
+    held_sid = prior.idxmax()
+    daily = pd.Series(0.01, index=prior.index)
+    daily.loc[held_sid] = np.nan
+    sequence = optimizer.solve_sequence([first, second], holding_period_returns={second.data.date: daily})
+    step = sequence.steps[1]
+    mass = prior[held_sid]
+    assert step.pretrade_weight[held_sid] == pytest.approx(mass / (mass + (1.0 - mass) * 1.01))
+    assert step.result.alignment.holding_missing_return_mass == pytest.approx(mass)
+    assert step.result.alignment.holding_missing_mass == 0.0

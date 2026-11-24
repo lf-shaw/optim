@@ -50,7 +50,8 @@ def _dump_failure(error, path: Path) -> Path:
             "holdings.interval_return": "上一调仓日到当前调仓日的复合收益，小数；缺失或非有限数在 JSON 中为 null",
             "holdings.return_sid_present": "收益输入是否包含该股票标签；False 表示标签缺口，True 不保证值有效",
             "duplicate_return_input": "仅收益输入存在重复股票标签时保留原始行，避免重排失败掩盖证据",
-            "holding_missing_mass_tolerance": "允许缺失的绝对持仓质量上限，小数权重单位",
+            "holding_missing_mass_tolerance": "允许剔除的样本外绝对持仓权重上限，小数单位",
+            "holding_missing_return_mass_tolerance": "样本内缺收益的绝对持仓权重上限，小数单位。JSON null 对应 Python None，表示按零估值且不设此上限",
         },
         "message": str(error),
         "date": str(error.date) if error.date is not None else None,
@@ -79,6 +80,9 @@ def _dump_failure(error, path: Path) -> Path:
         "holding_missing_mass_tolerance": None
         if partial is None
         else partial.policy.holding_missing_mass_tolerance,
+        "holding_missing_return_mass_tolerance": None
+        if partial is None
+        else partial.policy.holding_missing_return_mass_tolerance,
     }
     opener = gzip.open if path.suffix == ".gz" else open
     with opener(path, "xt", encoding="utf-8") as stream:

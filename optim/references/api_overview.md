@@ -189,8 +189,11 @@ $$
 - `ignore_first_turnover=True`：仅链式首期豁免换手上限，结果换手为 None（不是零），不计入统计；
 - `output_weights="sparse"`，仅保留绝对值不小于默认 `1e-5` 的权重。
 
-链式长仓推进会清除求解可行性容差内的负权重数值残差；不会清除正的小持仓或卖空持仓，
-也不会因为 `tradable=0` 自动把缺失收益填成零。显式启用换手恢复后，后端数值错误只有在
+链式长仓推进会清除求解可行性容差内的负权重数值残差。样本内缺区间收益默认按零估值；
+`holding_missing_return_mass_tolerance=0.0` 可要求收益完整。样本外持仓按漂移后的绝对权重
+检查 `holding_missing_mass_tolerance`，同时启用 `renormalize_missing_holdings` 才允许剔除后归一化。
+两项统计分别见 `result.alignment.holding_missing_return_mass` 和 `holding_missing_mass`。
+显式启用换手恢复后，后端数值错误只有在
 最小换手率下界证明原上限冲突时才允许进入恢复。
 
 `sequence.stop_reason` 在完整运行时为 None；停止时汇总日期、标准状态、后端、标准化原因、

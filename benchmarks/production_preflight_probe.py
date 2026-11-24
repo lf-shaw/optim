@@ -40,7 +40,7 @@ def _pool_info():
     return [{key: pool.get(key) for key in fields} for pool in threadpool_info()]
 
 
-def _benchmark_prepare(source, schedule, request, mode):
+def _benchmark_prepare(source, schedule, request, mode, *, expand_risk=None):
     if mode == "blas1":
         try:
             from threadpoolctl import threadpool_limits
@@ -67,7 +67,17 @@ def _benchmark_prepare(source, schedule, request, mode):
 
     @_with_progress
     def prepare(*, show_progress=False):
-        return source.prepare_run(schedule, **request)
+        if expand_risk is None:
+            return source.prepare_run(schedule, **request)
+
+        def timed_expand(frames):
+            start = perf_counter()
+            try:
+                return expand_risk(frames)
+            finally:
+                samples["expand_cropped_exposure"].append(perf_counter() - start)
+
+        return source._prepare_run(schedule, **request, expand_risk=timed_expand)
 
     with scope, ExitStack() as stack:
         if hasattr(InMemoryDataSource, "_risk_coverage"):
@@ -213,6 +223,7 @@ def run_probe(
 
     loaded_s = None
     tradability_s = None
+    expand_risk = None
     if isinstance(data_source, InMemoryDataSource):
         if any(
             item is not None
@@ -225,9 +236,13 @@ def run_probe(
             started = perf_counter()
             schedule = data_source._attach_tradability(schedule, tradable_universe)
             tradability_s = perf_counter() - started
-        print("取数并展开风险敞口", flush=True)
+        expand_risk = getattr(data_source, "_expand_risk_frames", None)
+        print("取数" if expand_risk is not None else "取数并展开风险敞口", flush=True)
         started = perf_counter()
-        loaded = data_source.load(dates=schedule.dates, benchmark=benchmark)
+        if expand_risk is not None:
+            loaded = data_source._load(dates=schedule.dates, benchmark=benchmark, expand_risk=False)
+        else:
+            loaded = data_source.load(dates=schedule.dates, benchmark=benchmark)
         loaded_s = perf_counter() - started
         source = InMemoryDataSource(
             risk_data=loaded.risk_data,
@@ -246,7 +261,7 @@ def run_probe(
         else sequence_policy,
         extra_attribute_columns=extra_attribute_columns,
     )
-    if risk_coverage_policy is not None:
+    if risk_coverage_policy is not None or expand_risk is not None:
         request["risk_coverage_policy"] = risk_coverage_policy
     effective_cpus, cpu_source = effective_cpu_count()
     report = {
@@ -270,11 +285,12 @@ def run_probe(
         "last_date": schedule.dates[-1].isoformat(),
         "universe_rows": len(schedule.universe),
         "load_and_expand_s": loaded_s,
+        "load_includes_exposure_expansion": loaded_s is not None and expand_risk is None,
         "attach_tradability_s": tradability_s,
         "runs": [],
         "timing_notes": (
             "after_batch_align_s subtracts batch_align and batch_risk_coverage from prepare_s. "
-            "batch_benchmark_audit is included in batch_align. "
+            "batch_benchmark_audit and expand_cropped_exposure are included in batch_align. "
             "materialize_risk is inside materialize_problem; eigvalsh and bounds are inside validate_problem. "
             "Runs reuse source inputs; later runs may benefit from warmed index and data caches."
         ),
@@ -282,7 +298,9 @@ def run_probe(
     reference_issues = None
     for mode in modes:
         print(f"运行静态预检 {mode}", flush=True)
-        result, report_for_run = _benchmark_prepare(source, schedule, request, mode)
+        result, report_for_run = _benchmark_prepare(
+            source, schedule, request, mode, expand_risk=expand_risk,
+        )
         report["runs"].append(result)
         if report_for_run is not None:
             if reference_issues is None:
