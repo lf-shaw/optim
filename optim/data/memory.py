@@ -30,9 +30,11 @@ from ..validation import (
     ValidationIssue,
     ValidationReport,
     ValidationSeverity,
-    validate_problem,
+    _AlignedFactorInputs,
+    _validate_inputs,
 )
 from .alignment import (
+    AlignedBenchmark,
     BenchmarkCoveragePolicy,
     DataAlignmentError,
     RiskCoveragePolicy,
@@ -41,9 +43,9 @@ from .alignment import (
 )
 from ._reindex import _reindex_rows, _sid_isin
 from ._tradable import _as_tradable
-from ._sequence_initial import _first_period_problem
+from ._sequence_initial import _first_period_inputs, _first_period_problem
 from ._date_slices import _DateSlices
-from .contracts import FactorRiskFrames, PortfolioSchedule, _require_dt_sid
+from .contracts import FactorRiskFrames, PortfolioSchedule, _FactorColumns, _require_dt_sid
 
 
 class InMemoryDataSource:
@@ -89,6 +91,8 @@ class InMemoryDataSource:
         self._prepared_schedule = None
         self._benchmark_cache = {}
         self._risk_gaps = {}
+        self._aligned_risk: _AlignedRiskRows | None = None
+        self._prepared_columns: _ScheduleColumns | None = None
 
     @cached_property
     def _benchmark_slices(self):
@@ -193,6 +197,7 @@ class InMemoryDataSource:
         )
         result._prepared_schedule = schedule
         result._benchmark_cache = self._batch_benchmark(schedule, numeric)
+        result._aligned_risk = _AlignedRiskRows(aligned_risk)
         return result
 
     def _batch_benchmark(self, schedule, numeric):
@@ -444,8 +449,8 @@ class InMemoryDataSource:
     ) -> "PreparedPortfolioRun":
         """准备全区间静态输入并预检全部日期，不保存逐日求解模型。
 
-        静态输入按实际调仓计划准备一次，并保留逐日基准覆盖审计。预检与后续求解复用准备
-        结果；逐日问题按需构造，不保存整段求解器模型。数据错误在首个后端工作前聚合。
+        静态输入按实际调仓计划准备一次，并保留逐日基准覆盖审计。预检直接检查已对齐的
+        数组切片，单期问题按需构造。数据错误在首个后端工作前聚合。
         准备后的输入不得原地修改；修改输入应重新创建日程和准备清单。
 
         Parameters
@@ -520,13 +525,14 @@ class InMemoryDataSource:
         if not coverage_report.is_valid:
             return replace(run, prepare_s=time.perf_counter() - started)
         issues = list(coverage_issues)
+        prepared_source._prepared_columns = _ScheduleColumns(schedule, extra_attribute_columns)
         if progress is not None:
             progress.phase("静态预检", len(run.dates))
-        for date in run.dates:
+        for position, date in enumerate(run.dates):
             if progress is not None:
                 progress.date(date)
             try:
-                problem = run.problem_at(date)
+                inputs, effective_constraints = run._inputs(date, position, ordered_risk=False)
             except (DataAlignmentError, TypeError, ValueError) as exc:
                 issues.append(
                     ValidationIssue(
@@ -539,7 +545,13 @@ class InMemoryDataSource:
                     )
                 )
             else:
-                issues.extend(validate_problem(problem).issues)
+                issues.extend(_validate_inputs(
+                    date, inputs.assets,
+                    alpha_values=inputs.alpha, alpha_spec=alpha_spec,
+                    benchmark_values=inputs.benchmark.values, initial_values=inputs.initial,
+                    tradable_values=inputs.tradable, extra_attributes=inputs.extra,
+                    risk_model=inputs.risk, objective=objective, constraints=effective_constraints,
+                ).issues)
             if progress is not None:
                 progress.advance()
         return replace(
@@ -547,6 +559,21 @@ class InMemoryDataSource:
             validation=ValidationReport(tuple(issues)),
             prepare_s=time.perf_counter() - started,
         )
+
+    def _prepared_inputs(
+        self, schedule, date, position, config, initial, independent, attributes, *, ordered_risk=True,
+    ):
+        """用已确认的行坐标读取业务数组和当日风险，无需再次按标签对齐。"""
+        rows = schedule._date_slices._positions[date]
+        assets = schedule._date_slices._index(date)
+        benchmark = self._benchmark_cache[date]
+        if isinstance(benchmark, Exception):
+            raise benchmark
+        initial = _daily_initial(initial, independent, date, position, assets, benchmark.values, config.budget)
+        assert self._prepared_columns is not None and self._aligned_risk is not None
+        alpha, tradable, extra = self._prepared_columns.day(date, rows, attributes)
+        layout, risk = self._aligned_risk.day(date, rows, ordered=ordered_risk)
+        return _AlignedDay(assets, benchmark, initial, alpha, tradable, extra, layout, risk)
 
     def _materialize_problem(
         self,
@@ -561,6 +588,13 @@ class InMemoryDataSource:
         independent_initial_weights: Mapping[pd.Timestamp, pd.Series] | None,
         extra_attribute_columns: tuple[str, ...],
     ) -> PortfolioProblem:
+        if self._prepared_schedule is schedule:
+            inputs = self._prepared_inputs(
+                schedule, date, position, constraints, initial_weight, independent_initial_weights,
+                extra_attribute_columns,
+            )
+            return self._prepared_problem(date, inputs, objective, constraints, alpha_spec)
+
         day = schedule.day(date)
         assets = pd.Index(day.index, name="sid")
         if assets.has_duplicates:
@@ -568,31 +602,14 @@ class InMemoryDataSource:
         if len(assets) == 0:
             raise DataAlignmentError(f"universe is empty on {date.date()}")
 
-        if self._prepared_schedule is schedule:
-            aligned_benchmark = self._benchmark_cache[date]
-            if isinstance(aligned_benchmark, Exception):
-                raise aligned_benchmark
-        else:
-            benchmark_day = self._benchmark_slices._day(date)
-            if isinstance(benchmark_day, pd.DataFrame):
-                benchmark_day = benchmark_day.iloc[:, 0]
-            aligned_benchmark = align_benchmark(benchmark_day, assets, self.benchmark_policy)
-
-        selected_initial = initial_weight
-        if independent_initial_weights is not None:
-            if date not in independent_initial_weights:
-                raise DataAlignmentError(
-                    f"independent initial weights have no exact data for {date.date()}"
-                )
-            selected_initial = independent_initial_weights[date]
-        if independent_initial_weights is None and position > 0:
-            # 已按同一资产坐标对齐；链式引擎会用实际漂移持仓替换此占位值。
-            aligned_initial = _check_initial_values(aligned_benchmark.values, constraints.budget)
-        else:
-            aligned_initial = (
-                None if selected_initial is None
-                else _align_initial(selected_initial, assets, constraints.budget, date)
-            )
+        benchmark_day = self._benchmark_slices._day(date)
+        if isinstance(benchmark_day, pd.DataFrame):
+            benchmark_day = benchmark_day.iloc[:, 0]
+        aligned_benchmark = align_benchmark(benchmark_day, assets, self.benchmark_policy)
+        aligned_initial = _daily_initial(
+            initial_weight, independent_initial_weights, date, position, assets,
+            aligned_benchmark.values, constraints.budget,
+        )
 
         alpha = None
         if schedule.alpha_column in day:
@@ -611,6 +628,25 @@ class InMemoryDataSource:
             extra[column] = pd.to_numeric(day[column], errors="coerce").to_numpy(float)
 
         risk_model = self.risk_data.materialize(date, assets)
+        return self._make_problem(
+            date, assets, aligned_benchmark, aligned_initial, alpha, tradable, extra,
+            risk_model, objective, constraints, alpha_spec,
+        )
+
+    def _prepared_problem(self, date, inputs, objective, constraints, alpha_spec):
+        risk = inputs.risk
+        risk_model = self.risk_data._make_risk_model(
+            date, inputs.layout, risk.physical_exposure, risk.covariance, risk.specific_volatility,
+        )
+        return self._make_problem(
+            date, inputs.assets, inputs.benchmark, inputs.initial, inputs.alpha,
+            inputs.tradable, inputs.extra, risk_model, objective, constraints, alpha_spec,
+        )
+
+    def _make_problem(
+        self, date, assets, aligned_benchmark, aligned_initial, alpha, tradable, extra,
+        risk_model, objective, constraints, alpha_spec,
+    ):
         metadata = {
             "benchmark_missing_mass": aligned_benchmark.missing_mass,
             "benchmark_missing_assets": aligned_benchmark.missing_assets,
@@ -716,6 +752,11 @@ class PreparedPortfolioRun:
             location = int(self.dates.get_loc(date))
         except KeyError as exc:
             raise KeyError(f"date {date.date()} is not in the prepared schedule") from exc
+        if self.data_source._prepared_schedule is self.schedule:
+            inputs, constraints = self._inputs(date, location)
+            return self.data_source._prepared_problem(
+                date, inputs, self.objective, constraints, self.alpha_spec,
+            )
         problem = self.data_source.materialize_problem(
             self.schedule,
             date,
@@ -730,6 +771,137 @@ class PreparedPortfolioRun:
         if location == 0 and self.sequence_policy is not None:
             return _first_period_problem(problem, self.sequence_policy)
         return problem
+
+    def _inputs(self, date, position, *, ordered_risk=True):
+        """读取已对齐的数值切片；预检不物化单期对象及来源信息。"""
+        config = self.constraints
+        inputs = self.data_source._prepared_inputs(
+            self.schedule, date, position, config, self.initial_weight, self.independent_initial_weights,
+            self.extra_attribute_columns, ordered_risk=ordered_risk,
+        )
+        if position == 0 and self.sequence_policy is not None:
+            initial, config = _first_period_inputs(
+                len(inputs.assets), inputs.initial, inputs.benchmark.values, inputs.tradable,
+                config, self.sequence_policy,
+            )
+            if initial is not inputs.initial:
+                inputs = replace(inputs, initial=initial)
+        return inputs, config
+
+
+@dataclass(frozen=True)
+class _AlignedDay:
+    """单日期的数组切片和小型坐标描述，不保留到 PreparedPortfolioRun 中。
+
+    `assets` 定义当天的股票顺序。`benchmark` 含基准权重和覆盖审计，`initial` 是期初权重或
+    后续链式调仓的占位权重。`alpha`、`tradable`、`extra` 分别为得分、交易掩码和额外属性。
+    `layout` 描述当日因子坐标，`risk` 持有对应的数值切片。
+    """
+
+    assets: pd.Index
+    benchmark: AlignedBenchmark
+    initial: np.ndarray | None
+    alpha: np.ndarray | None
+    tradable: np.ndarray
+    extra: dict[str, np.ndarray]
+    layout: _FactorColumns
+    risk: _AlignedFactorInputs
+
+
+class _ScheduleColumns:
+    """复用整段常规数值列；异常或对象列在当日转换以保留报错位置。"""
+
+    def __init__(self, schedule, attributes):
+        self._universe = schedule.universe
+        self._alpha = schedule.alpha_column
+        self._numeric = {}
+        for name in dict.fromkeys((self._alpha, *attributes)):
+            if name in self._universe:
+                column = self._universe[name]
+                if isinstance(column, pd.Series) and isinstance(column.dtype, np.dtype) and column.dtype.kind in "biuf":
+                    self._numeric[name] = column.to_numpy(float)
+        self._tradable = None
+        name = schedule.tradable_column
+        self._flag = self._universe[name] if name in self._universe else None
+        if isinstance(self._flag, pd.Series):
+            try:
+                self._tradable = _as_tradable(self._flag.to_numpy())
+            except TypeError:
+                # 回到按日校验，以便报告全部异常日期。
+                pass
+
+    def day(self, date, rows, attributes):
+        def numeric(name):
+            cached = self._numeric.get(name)
+            if cached is not None:
+                return cached[rows]
+            return pd.to_numeric(self._universe[name].iloc[rows], errors="coerce").to_numpy(float)
+
+        alpha = numeric(self._alpha) if self._alpha in self._universe else None
+        if self._tradable is not None:
+            tradable = self._tradable[rows]
+        elif self._flag is None:
+            length = rows.stop - rows.start if isinstance(rows, slice) else len(rows)
+            tradable = np.ones(length, dtype=bool)
+        else:
+            tradable = _as_tradable(self._flag.iloc[rows].to_numpy())
+        extra = {}
+        for name in attributes:
+            if name not in self._universe:
+                raise DataAlignmentError(f"universe has no requested attribute {name!r} on {date.date()}")
+            extra[name] = numeric(name)
+        return alpha, tradable, extra
+
+
+class _AlignedRiskRows:
+    """风险行已按日程对齐，仅缓存小型协方差矩阵和共享因子坐标。"""
+
+    def __init__(self, risk):
+        self._frames = risk
+        self._layouts = {}
+        self._covariances = {}
+        self._specific = risk.specific_volatility
+
+    def day(self, date, rows, *, ordered):
+        risk = self._frames
+        cached = self._covariances.get(date)
+        if cached is None:
+            covariances = risk._covariance_slices
+            if date not in covariances._positions:
+                raise DataAlignmentError(f"factor covariance has no exact data for {date.date()}")
+            index = covariances._index(date)
+            key = tuple(index)
+            layout = self._layouts.get(key)
+            if layout is None:
+                layout = risk._factor_columns(date, index)
+                self._layouts[key] = layout
+            covariance = layout.covariance_values(risk.covariance.iloc[covariances._positions[date]])
+            self._covariances[date] = layout, covariance
+        else:
+            layout, covariance = cached
+        return layout, _AlignedFactorInputs(
+            layout.physical_values(risk.exposure.iloc[rows], ordered=ordered), covariance,
+            self._specific_values(rows), layout.names, layout.types,
+        )
+
+    def _specific_values(self, rows):
+        specific = self._specific
+        if isinstance(specific, pd.DataFrame):
+            if specific.shape[1] != 1:
+                raise DataAlignmentError("specific volatility must have exactly one value column")
+            specific = specific.iloc[:, 0]
+        return specific.iloc[rows].to_numpy(float)
+
+
+def _daily_initial(initial, independent, date, position, assets, benchmark, budget):
+    """独立或首期持仓按标签对齐；后续链式模板保持原有占位语义。"""
+    if independent is not None:
+        if date not in independent:
+            raise DataAlignmentError(f"independent initial weights have no exact data for {date.date()}")
+        initial = independent[date]
+    elif position > 0:
+        return _check_initial_values(benchmark, budget)
+    return None if initial is None else _align_initial(initial, assets, budget, date)
 
 
 def _risk_gap_metadata(issue: ValidationIssue) -> dict:

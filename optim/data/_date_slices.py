@@ -59,7 +59,11 @@ class _DateSlices:
                 f"{self._field} has no exact data for {date.date()}"
             )
         result = self._frame.iloc[self._positions[date]].copy(deep=False)
-        if date not in self._indexes:
-            self._indexes[date] = result.index.droplevel("dt")
-        result.index = self._indexes[date]
+        result.index = self._index(date)
         return result
+
+    def _index(self, date):
+        """按位置提取单日标签，避免为了读取坐标创建 DataFrame。"""
+        if date not in self._indexes:
+            self._indexes[date] = self._frame.index[self._positions[date]].droplevel("dt")
+        return self._indexes[date]

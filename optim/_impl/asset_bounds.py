@@ -6,8 +6,9 @@ from dataclasses import dataclass
 from typing import Any, Mapping, cast
 
 import numpy as np
+import pandas as pd
 
-from ..portfolio_types import PortfolioProblem
+from ..portfolio_types import PortfolioConstraints, PortfolioProblem
 
 
 class AssetBoundsError(ValueError):
@@ -69,6 +70,49 @@ def _override_pair(value: Any) -> tuple[float, float]:
     return float(lower), float(upper)
 
 
+def _active_bounds(benchmark: np.ndarray, absolute: float) -> tuple[np.ndarray, np.ndarray]:
+    weights = np.asarray(benchmark, dtype=float)
+    return weights - absolute, weights + absolute
+
+
+def _check_combined_bounds(assets: pd.Index, lower: np.ndarray, upper: np.ndarray) -> None:
+    conflict = lower > upper + 1e-14
+    if np.any(conflict):
+        labels = [str(assets[index]) for index in np.flatnonzero(conflict)[:10]]
+        raise AssetBoundsError(
+            "combined asset bounds are infeasible for assets " + ", ".join(labels)
+        )
+
+
+def _asset_capacity(
+    assets: pd.Index,
+    lower: np.ndarray,
+    upper: np.ndarray,
+    benchmark: np.ndarray | None,
+    initial_weight: np.ndarray | None,
+    tradable: np.ndarray,
+    config: PortfolioConstraints,
+) -> tuple[float, float]:
+    """检查预算容量。普通边界无需生成逐股约束来源，交易指令复用完整合并。"""
+    if config.asset_trade is not None and not config.asset_trade.is_empty:
+        resolved = _resolve_asset_bounds(assets, benchmark, initial_weight, tradable, config)
+        return float(resolved.lower.sum()), float(resolved.upper.sum())
+    if config.active_weight is not None:
+        assert benchmark is not None
+        active_lower, active_upper = _active_bounds(benchmark, float(config.active_weight.absolute))
+        lower = np.maximum(lower, active_lower)
+        upper = np.minimum(upper, active_upper)
+    if config.freeze_nontradable:
+        frozen = ~np.asarray(tradable, dtype=bool)
+        if np.any(frozen):
+            assert initial_weight is not None
+            initial_weight = np.asarray(initial_weight, dtype=float)
+            lower = np.where(frozen, initial_weight, lower)
+            upper = np.where(frozen, initial_weight, upper)
+    _check_combined_bounds(assets, lower, upper)
+    return float(lower.sum()), float(upper.sum())
+
+
 def resolve_asset_bounds(problem: PortfolioProblem) -> ResolvedAssetBounds:
     """应用操作指令并返回逐资产最终边界。
 
@@ -93,8 +137,20 @@ def resolve_asset_bounds(problem: PortfolioProblem) -> ResolvedAssetBounds:
     """
 
     data = problem.data
-    config = problem.constraints
-    assets = data.assets
+    return _resolve_asset_bounds(
+        data.assets, data.benchmark, data.initial_weight, data.tradable, problem.constraints,
+    )
+
+
+def _resolve_asset_bounds(
+    assets: pd.Index,
+    benchmark: np.ndarray | None,
+    initial_weight: np.ndarray | None,
+    tradable_values: np.ndarray,
+    config: PortfolioConstraints,
+) -> ResolvedAssetBounds:
+    """从位置数组合并边界，供静态校验和求解编译共用。"""
+
     n_assets = len(assets)
     raw_lower = _bound_array(config.asset_weight.lower, n_assets)
     base_lower = raw_lower.copy()
@@ -115,13 +171,10 @@ def resolve_asset_bounds(problem: PortfolioProblem) -> ResolvedAssetBounds:
             position = int(index)
             lower_sources[position] += ("long_only",)
 
-    benchmark = data.benchmark
     if config.active_weight is not None:
         if benchmark is None:
             raise AssetBoundsError("active bounds require a benchmark")
-        active = float(config.active_weight.absolute)
-        active_lower = np.asarray(benchmark, dtype=float) - active
-        active_upper = np.asarray(benchmark, dtype=float) + active
+        active_lower, active_upper = _active_bounds(benchmark, float(config.active_weight.absolute))
         changed_lower = active_lower > lower
         changed_upper = active_upper < upper
         lower = np.maximum(lower, active_lower)
@@ -166,8 +219,8 @@ def resolve_asset_bounds(problem: PortfolioProblem) -> ResolvedAssetBounds:
 
         initial = (
             None
-            if data.initial_weight is None
-            else np.asarray(data.initial_weight, dtype=float)
+            if initial_weight is None
+            else np.asarray(initial_weight, dtype=float)
         )
         for asset in instructions.frozen:
             index = locate(asset)
@@ -269,14 +322,14 @@ def resolve_asset_bounds(problem: PortfolioProblem) -> ResolvedAssetBounds:
             )
 
     if config.freeze_nontradable:
-        tradable = np.asarray(data.tradable, dtype=bool)
+        tradable = np.asarray(tradable_values, dtype=bool)
         frozen_positions = np.flatnonzero(~tradable)
         if frozen_positions.size:
-            if data.initial_weight is None:
+            if initial_weight is None:
                 raise AssetBoundsError(
                     "freeze_nontradable requires initial weights when an asset is non-tradable"
                 )
-            initial = np.asarray(data.initial_weight, dtype=float)
+            initial = np.asarray(initial_weight, dtype=float)
             for raw_index in frozen_positions:
                 index = int(raw_index)
                 target = float(initial[index])
@@ -307,12 +360,7 @@ def resolve_asset_bounds(problem: PortfolioProblem) -> ResolvedAssetBounds:
                 lower_sources[index] = ("freeze_nontradable",)
                 upper_sources[index] = ("freeze_nontradable",)
 
-    conflict = lower > upper + 1e-14
-    if np.any(conflict):
-        labels = [str(assets[index]) for index in np.flatnonzero(conflict)[:10]]
-        raise AssetBoundsError(
-            "combined asset bounds are infeasible for assets " + ", ".join(labels)
-        )
+    _check_combined_bounds(assets, lower, upper)
     return ResolvedAssetBounds(
         lower=lower,
         upper=upper,

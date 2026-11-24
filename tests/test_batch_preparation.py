@@ -335,3 +335,63 @@ def test_prepared_chained_results_match_explicit_problems():
             left.result.require_weights(), right.result.require_weights()
         )
         pd.testing.assert_series_equal(left.pretrade_weight, right.pretrade_weight)
+
+
+def test_preflight_validates_arrays_without_constructing_daily_problems(monkeypatch):
+    source, schedule, args = _case()
+    first, second, third = schedule.dates
+    risk = source.risk_data
+    exposure = risk.exposure.copy()
+    exposure.loc[(second, "b"), exposure.columns[0]] = np.nan
+    specific = risk.specific_volatility.copy()
+    specific.loc[(third, "a")] = -0.2
+    source.risk_data = replace(risk, exposure=exposure, specific_volatility=specific)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("静态预检不应物化单日问题或风险模型")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(memory, "PortfolioData", forbidden)
+        patch.setattr(memory, "PortfolioProblem", forbidden)
+        patch.setattr(FactorRiskFrames, "_make_risk_model", forbidden)
+        run = source.prepare_run(schedule, **args)
+
+    assert {(issue.date, issue.field, issue.code) for issue in run.validation.errors} == {
+        (second, "data.risk_model.exposure", "non_finite"),
+        (third, "data.risk_model.specific_volatility", "negative"),
+    }
+    assert run.problem_at(first).data.risk_model.asof == first
+
+
+def test_prepared_factor_layout_ignores_inactive_columns_and_preserves_row_order():
+    source, schedule, args = _case()
+    risk = source.risk_data
+    first, second, third = schedule.dates
+    exposure = pd.DataFrame({"size": 2.0, "new": 3.0, "old": 4.0}, index=risk.exposure.index)
+    exposure.loc[(slice(second, third), slice(None)), "old"] = np.nan
+    exposure.loc[(first, slice(None)), "new"] = np.nan
+    covariance = pd.DataFrame(
+        [[0.0, 0.0, 0.0, 0.03], [0.0, 0.0, 0.02, 0.0], [0.01, 0.0, 0.0, 0.0]]
+        + [[0.0, 0.02, 0.0, 0.0], [0.0, 0.0, 0.02, 0.0]] * 2,
+        index=pd.MultiIndex.from_tuples(
+            [(first, "old"), (first, "country"), (first, "size")]
+            + [(date, factor) for date in (second, third) for factor in ("new", "country")],
+            names=["dt", "factor"],
+        ),
+        columns=["size", "new", "country", "old"],
+    )
+    source.risk_data = replace(
+        risk, exposure=exposure, covariance=covariance,
+        factor_types={"size": "style", "old": "industry", "new": "industry", "country": "country"},
+        constant_exposures={"country": 1.0},
+    )
+    run = source.prepare_run(schedule, **args)
+    run.validation.raise_for_errors()
+    for date, expected_names, expected_exposure, expected_variances in (
+        (first, ("old", "country", "size"), [4.0, 1.0, 2.0], [0.03, 0.02, 0.01]),
+        (second, ("new", "country"), [3.0, 1.0], [0.02, 0.02]),
+    ):
+        actual = run.problem_at(date).data.risk_model
+        assert actual.factor_names == expected_names
+        np.testing.assert_array_equal(actual.exposure, np.tile(expected_exposure, (3, 1)))
+        np.testing.assert_array_equal(actual.covariance, np.diag(expected_variances))

@@ -222,51 +222,7 @@ class FactorRiskFrames:
                 f"specific_missing={missing_specific.astype(str).tolist()[:10]}"
             )
 
-        # DataYes 在 2019-12-03 调整过行业分类。批量读取跨越该日期时，columns 是
-        # 全历史因子并集，而每个日期的行索引才声明当日有效因子。因此严格以行顺序
-        # 选择同名列构造当日方阵；额外列不能进入当日风险计算。
-        factors = pd.Index(covariance.index.astype(str), name="factor")
-        covariance_columns = pd.Index(covariance.columns.astype(str), name="factor")
-        if covariance.index.has_duplicates or covariance.columns.has_duplicates:
-            raise DataAlignmentError(f"factor covariance contains duplicate factors on {date.date()}")
-        if factors.has_duplicates or covariance_columns.has_duplicates:
-            raise DataAlignmentError(
-                f"factor covariance contains labels that collide after string conversion "
-                f"on {date.date()}"
-            )
-        missing_covariance_columns = factors.difference(covariance_columns)
-        if len(missing_covariance_columns):
-            raise DataAlignmentError(
-                f"factor covariance columns do not cover row factors on {date.date()}: "
-                f"missing={missing_covariance_columns.tolist()[:10]}"
-            )
-        if not covariance_columns.equals(factors) or not covariance.index.equals(factors):
-            covariance = covariance.copy()
-            covariance.index = factors
-            covariance.columns = covariance_columns
-            covariance = covariance.loc[:, factors]
-        exposure_columns = pd.Index(exposure.columns.astype(str))
-        if exposure_columns.has_duplicates:
-            raise DataAlignmentError(
-                f"exposure contains duplicate factors after string conversion on {date.date()}"
-            )
-        constant_names = pd.Index(tuple(self.constant_exposures), dtype=object)
-        overlap = exposure_columns.intersection(constant_names)
-        if len(overlap):
-            raise DataAlignmentError(
-                f"physical and constant exposures overlap on {overlap.tolist()[:10]}"
-            )
-        available_factors = exposure_columns.append(constant_names)
-        missing_factors = factors.difference(available_factors)
-        if len(missing_factors):
-            raise DataAlignmentError(
-                f"exposure does not cover covariance factors on {date.date()}: "
-                f"missing={missing_factors.tolist()[:10]}"
-            )
-
-        # tuda2 应保证 exposure/spec risk 共用完全相同的 (dt, sid) 顺序。
-        # 两者同序时只计算一次 indexer；若调用方的 universe 本身也同序，则完全
-        # 跳过资产行重排。不同序数据仍按标签分别对齐，不会将默认顺序当作正确性前提。
+        layout = self._factor_columns(date, covariance.index)
         if exposure.index.equals(specific.index):
             if not exposure.index.equals(assets):
                 indexer = exposure.index.get_indexer(assets)
@@ -275,43 +231,133 @@ class FactorRiskFrames:
         else:
             exposure = _reindex_rows(exposure, assets)
             specific = _reindex_rows(specific, assets)
+        return self._make_risk_model(
+            date, layout, layout.physical_values(exposure), layout.covariance_values(covariance),
+            specific.to_numpy(float),
+        )
 
-        if not exposure_columns.equals(pd.Index(exposure.columns)):
-            exposure = exposure.copy()
-            exposure.columns = exposure_columns
-        physical_names = [name for name in factors if name in exposure_columns]
-        if not self.constant_exposures and tuple(exposure_columns) == tuple(factors):
-            exposure_values = exposure.to_numpy(float)
-        else:
-            exposure_values = np.empty((len(assets), len(factors)), dtype=float)
-            if physical_names:
-                physical_positions = factors.get_indexer(physical_names)
-                exposure_values[:, physical_positions] = exposure.loc[
-                    :, physical_names
-                ].to_numpy(float)
-            for name, value in self.constant_exposures.items():
-                exposure_values[:, factors.get_loc(name)] = value
-        factor_types = tuple(self.factor_types.get(str(name), "unknown") for name in factors)
-        unknown = [str(name) for name, kind in zip(factors, factor_types) if kind == "unknown"]
+    @cached_property
+    def _factor_axes(self):
+        """批量表共享的列坐标只转换一次；日期仍以协方差行因子为准。"""
+        exposure = pd.Index(self.exposure.columns.astype(str))
+        covariance = pd.Index(self.covariance.columns.astype(str))
+        constant = pd.Index(tuple(self.constant_exposures), dtype=object)
+        return exposure, covariance, constant
+
+    def _factor_columns(self, date: pd.Timestamp, rows: pd.Index) -> _FactorColumns:
+        """解析一个因子版本的列位置；保留历史行业切换时的行顺序。"""
+        exposure, covariance, constant = self._factor_axes
+        factors = pd.Index(rows.astype(str))
+        if rows.has_duplicates or self.covariance.columns.has_duplicates:
+            raise DataAlignmentError(f"factor covariance contains duplicate factors on {date.date()}")
+        if factors.has_duplicates or covariance.has_duplicates:
+            raise DataAlignmentError(
+                f"factor covariance contains labels that collide after string conversion "
+                f"on {date.date()}"
+            )
+        missing = factors.difference(covariance)
+        if len(missing):
+            raise DataAlignmentError(
+                f"factor covariance columns do not cover row factors on {date.date()}: "
+                f"missing={missing.tolist()[:10]}"
+            )
+        if exposure.has_duplicates:
+            raise DataAlignmentError(
+                f"exposure contains duplicate factors after string conversion on {date.date()}"
+            )
+        overlap = exposure.intersection(constant)
+        if len(overlap):
+            raise DataAlignmentError(
+                f"physical and constant exposures overlap on {overlap.tolist()[:10]}"
+            )
+        missing = factors.difference(exposure.append(constant))
+        if len(missing):
+            raise DataAlignmentError(
+                f"exposure does not cover covariance factors on {date.date()}: "
+                f"missing={missing.tolist()[:10]}"
+            )
+        physical = exposure.get_indexer(factors)
+        positions = np.flatnonzero(physical >= 0)
+        names = tuple(factors)
+        types = tuple(self.factor_types.get(name, "unknown") for name in names)
+        unknown = [name for name, kind in zip(names, types) if kind == "unknown"]
         if unknown:
             raise DataAlignmentError(f"factor types are missing for {unknown[:10]}")
+        physical_columns = physical[positions]
+        return _FactorColumns(
+            names=names,
+            types=types,
+            covariance_columns=None if covariance.equals(factors) else covariance.get_indexer(factors),
+            physical_columns=(
+                None if np.array_equal(physical_columns, np.arange(len(exposure))) else physical_columns
+            ),
+            all_physical_columns_used=len(physical_columns) == len(exposure),
+            physical_positions=positions,
+            constants=tuple(
+                (factors.get_loc(name), value)
+                for name, value in self.constant_exposures.items() if name in factors
+            ),
+        )
 
-        source_date = self.provenance.source_date or date
+    def _make_risk_model(self, date, layout, physical_exposure, covariance, specific):
+        """仅在需要单期模型时展开常数敞口并附加来源。"""
+        exposure = physical_exposure
+        if layout.constants:
+            exposure = np.empty((len(specific), len(layout.names)), dtype=float)
+            exposure[:, layout.physical_positions] = physical_exposure
+            for position, value in layout.constants:
+                exposure[:, position] = value
         provenance = DataProvenance(
             source=self.provenance.source,
-            source_date=pd.Timestamp(source_date),
+            source_date=pd.Timestamp(self.provenance.source_date or date),
             version=self.provenance.version,
             metadata=self.provenance.metadata,
         )
         return FactorRiskModel(
             asof=date,
-            exposure=exposure_values,
-            covariance=covariance.to_numpy(float),
-            specific_volatility=specific.to_numpy(float),
-            factor_names=tuple(str(name) for name in factors),
-            factor_types=factor_types,
+            exposure=exposure,
+            covariance=covariance,
+            specific_volatility=specific,
+            factor_names=layout.names,
+            factor_types=layout.types,
             provenance=provenance,
         )
+
+
+@dataclass(frozen=True)
+class _FactorColumns:
+    """同一有效因子序列共享的列映射。
+
+    `names` 与 `types` 按当日协方差的行顺序对应因子名和类型。
+    `covariance_columns` 和 `physical_columns` 分别是原协方差表和原敞口表的取列位置。
+    None 表示可以沿用原列顺序。`all_physical_columns_used` 指示预检能否直接扫描原敞口表。
+    `physical_positions` 是物理敞口在最终矩阵中的目标列位置，`constants` 保存当日常数因子的
+    目标列位置和值。
+    """
+
+    names: tuple[str, ...]
+    types: tuple[str, ...]
+    covariance_columns: np.ndarray | None
+    physical_columns: np.ndarray | None
+    all_physical_columns_used: bool
+    physical_positions: np.ndarray
+    constants: tuple[tuple[int, float], ...]
+
+    def covariance_values(self, frame: pd.DataFrame) -> np.ndarray:
+        if self.covariance_columns is not None:
+            frame = frame.iloc[:, self.covariance_columns]
+        return frame.to_numpy(float)
+
+    def physical_values(self, frame: pd.DataFrame, *, ordered: bool = True) -> np.ndarray:
+        # 预检只需扫描实际使用的列，全部有效时可以直接扫描原顺序。
+        if self.physical_columns is not None and (ordered or not self.all_physical_columns_used):
+            frame = frame.iloc[:, self.physical_columns]
+        if ordered:
+            return frame.to_numpy(float)
+        values = frame.to_numpy(copy=False)
+        # 保留常见浮点表的存储精度，由物化负责转成求解器使用的 float64。
+        # 扩展类型与对象表仍按正常浮点转换校验，保留原有可接受的数值格式。
+        return values if values.dtype.kind in "biuf" and values.dtype.itemsize <= 8 else frame.to_numpy(float)
 
 
 def _exact_covariance(frame: pd.DataFrame, date: pd.Timestamp) -> pd.DataFrame:

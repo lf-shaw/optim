@@ -14,13 +14,17 @@ from typing import Any, Iterable, Mapping, cast
 import numpy as np
 import pandas as pd
 
-from ._impl.asset_bounds import AssetBoundsError, resolve_asset_bounds
+from ._impl.asset_bounds import AssetBoundsError, _asset_capacity
 from .portfolio_types import (
+    AlphaSpec,
     AssetTradeConstraints,
     FactorRiskModel,
     MaximizeAlpha,
     MinimizeTrackingError,
+    PortfolioConstraints,
+    PortfolioObjective,
     PortfolioProblem,
+    RiskModel,
     RiskAdjustedAlpha,
 )
 
@@ -211,10 +215,9 @@ def _bound_array(
 
 def _check_bounds(
     collector: _Collector,
-    problem: PortfolioProblem,
+    constraints: PortfolioConstraints,
     n_assets: int,
 ) -> tuple[np.ndarray | None, np.ndarray | None]:
-    constraints = problem.constraints
     lower = _bound_array(
         collector,
         "constraints.asset_weight.lower",
@@ -272,7 +275,7 @@ def _check_exposure_bounds(
     collector: _Collector,
     field_name: str,
     bounds: Any,
-    risk_model: FactorRiskModel | None,
+    risk_model: FactorRiskModel | _AlignedFactorInputs | None,
     expected_type: str,
 ) -> None:
     if bounds is None:
@@ -428,9 +431,47 @@ def validate_problem(problem: PortfolioProblem) -> ValidationReport:
     """
 
     data = problem.data
-    date = pd.Timestamp(data.date)
+    return _validate_inputs(
+        pd.Timestamp(data.date), pd.Index(data.assets, copy=False),
+        alpha_values=data.alpha, alpha_spec=data.alpha_spec,
+        benchmark_values=data.benchmark, initial_values=data.initial_weight,
+        tradable_values=data.tradable, extra_attributes=data.extra_attributes,
+        risk_model=data.risk_model, objective=problem.objective, constraints=problem.constraints,
+    )
+
+
+@dataclass(frozen=True)
+class _AlignedFactorInputs:
+    """批量对齐后的风险数值，用于校验和物化。
+
+    `physical_exposure` 只含当天启用的物理因子，预检可保留原列顺序；常数敞口已检查有限性。
+    `covariance` 的两个轴遵循 `factor_names`，`factor_types` 按相同顺序描述因子类别。
+    `specific_volatility` 与当天股票顺序一致。
+    """
+
+    physical_exposure: np.ndarray
+    covariance: np.ndarray
+    specific_volatility: np.ndarray
+    factor_names: tuple[str, ...]
+    factor_types: tuple[str, ...]
+
+
+def _validate_inputs(
+    date: pd.Timestamp,
+    assets: pd.Index,
+    *,
+    alpha_values: np.ndarray | None,
+    alpha_spec: AlphaSpec | None,
+    benchmark_values: np.ndarray | None,
+    initial_values: np.ndarray | None,
+    tradable_values: np.ndarray,
+    extra_attributes: Mapping[str, np.ndarray],
+    risk_model: RiskModel | _AlignedFactorInputs | None,
+    objective: PortfolioObjective,
+    constraints: PortfolioConstraints,
+) -> ValidationReport:
+    """以相同规则校验单期问题和已对齐的批量数值切片。"""
     collector = _Collector(date)
-    assets = pd.Index(data.assets, copy=False)
     n_assets = len(assets)
 
     if n_assets == 0:
@@ -441,22 +482,22 @@ def validate_problem(problem: PortfolioProblem) -> ValidationReport:
     if assets.hasnans:
         collector.error("data.assets", "missing", "asset coordinate contains missing identifiers")
 
-    alpha = None if data.alpha is None else _array(collector, "data.alpha", data.alpha, (n_assets,))
-    benchmark = None if data.benchmark is None else _array(
-        collector, "data.benchmark", data.benchmark, (n_assets,)
+    alpha = None if alpha_values is None else _array(collector, "data.alpha", alpha_values, (n_assets,))
+    benchmark = None if benchmark_values is None else _array(
+        collector, "data.benchmark", benchmark_values, (n_assets,)
     )
-    initial = None if data.initial_weight is None else _array(
-        collector, "data.initial_weight", data.initial_weight, (n_assets,)
+    initial = None if initial_values is None else _array(
+        collector, "data.initial_weight", initial_values, (n_assets,)
     )
-    tradable = _array(collector, "data.tradable", data.tradable, (n_assets,), finite=False)
+    tradable = _array(collector, "data.tradable", tradable_values, (n_assets,), finite=False)
 
-    objective_needs_alpha = isinstance(problem.objective, (MaximizeAlpha, RiskAdjustedAlpha)) or (
-        isinstance(problem.objective, MinimizeTrackingError)
-        and problem.objective.alpha_floor is not None
+    objective_needs_alpha = isinstance(objective, (MaximizeAlpha, RiskAdjustedAlpha)) or (
+        isinstance(objective, MinimizeTrackingError)
+        and objective.alpha_floor is not None
     )
     if objective_needs_alpha and alpha is None:
         collector.error("data.alpha", "required", "the selected objective requires alpha")
-    if objective_needs_alpha and data.alpha_spec is None:
+    if objective_needs_alpha and alpha_spec is None:
         collector.error(
             "data.alpha_spec",
             "required",
@@ -475,32 +516,31 @@ def validate_problem(problem: PortfolioProblem) -> ValidationReport:
                 observed=benchmark_sum,
             )
     if initial is not None:
-        if problem.constraints.long_only and np.any(initial < -1e-12):
+        if constraints.long_only and np.any(initial < -1e-12):
             collector.error("data.initial_weight", "negative_weight", "long-only initial weights must be non-negative")
         initial_sum = float(np.sum(initial))
         if np.isfinite(initial_sum) and not np.isclose(
-            initial_sum, problem.constraints.budget, rtol=0.0, atol=1e-8
+            initial_sum, constraints.budget, rtol=0.0, atol=1e-8
         ):
             collector.error(
                 "data.initial_weight",
                 "budget_mismatch",
                 "initial weights must match the configured budget",
                 observed=initial_sum,
-                expected=problem.constraints.budget,
+                expected=constraints.budget,
             )
-    if tradable is not None and not np.all(np.isin(tradable, (False, True, 0, 1))):
+    if tradable is not None and tradable.dtype.kind != "b" and not np.all(np.isin(tradable, (False, True, 0, 1))):
         collector.error("data.tradable", "invalid_boolean", "tradable values must be boolean/0/1")
 
-    risk_model = data.risk_model
-    factor_risk: FactorRiskModel | None = None
-    if isinstance(risk_model, FactorRiskModel):
+    factor_risk: FactorRiskModel | _AlignedFactorInputs | None = None
+    if isinstance(risk_model, (FactorRiskModel, _AlignedFactorInputs)):
         factor_risk = risk_model
-        if risk_model.assets is not None and not risk_model.assets.equals(data.assets):
+        if isinstance(risk_model, FactorRiskModel) and risk_model.assets is not None and not risk_model.assets.equals(assets):
             collector.error(
                 "data.risk_model.assets", "asset_order_mismatch",
                 "risk model assets must match PortfolioData.assets; use make_portfolio_data to align labels",
             )
-        if pd.Timestamp(risk_model.asof) != date:
+        if isinstance(risk_model, FactorRiskModel) and pd.Timestamp(risk_model.asof) != date:
             collector.error(
                 "data.risk_model.asof",
                 "date_mismatch",
@@ -509,12 +549,17 @@ def validate_problem(problem: PortfolioProblem) -> ValidationReport:
                 expected=str(date),
             )
         n_factors = len(risk_model.factor_names)
-        _array(
-            collector,
-            "data.risk_model.exposure",
-            risk_model.exposure,
-            (n_assets, n_factors),
-        )
+        if isinstance(risk_model, FactorRiskModel):
+            _array(
+                collector,
+                "data.risk_model.exposure",
+                risk_model.exposure,
+                (n_assets, n_factors),
+            )
+        elif not np.isfinite(risk_model.physical_exposure).all():
+            collector.error(
+                "data.risk_model.exposure", "non_finite", "contains NaN, infinity, or non-numeric values"
+            )
         covariance = _array(
             collector,
             "data.risk_model.covariance",
@@ -563,7 +608,7 @@ def validate_problem(problem: PortfolioProblem) -> ValidationReport:
                         "factor covariance must be positive semidefinite",
                         min_eigenvalue=min_eigenvalue,
                     )
-        if risk_model.annualization != "annualized_decimal":
+        if isinstance(risk_model, FactorRiskModel) and risk_model.annualization != "annualized_decimal":
             collector.error(
                 "data.risk_model.annualization",
                 "unsupported_unit",
@@ -580,13 +625,12 @@ def validate_problem(problem: PortfolioProblem) -> ValidationReport:
             (n_assets, n_assets),
         )
 
-    for name, values in data.extra_attributes.items():
+    for name, values in extra_attributes.items():
         _array(collector, f"data.extra_attributes.{name}", values, (n_assets,))
 
-    constraints = problem.constraints
     if not np.isfinite(constraints.budget) or constraints.budget <= 0.0:
         collector.error("constraints.budget", "invalid", "budget must be positive and finite")
-    effective_lower, effective_upper = _check_bounds(collector, problem, n_assets)
+    effective_lower, effective_upper = _check_bounds(collector, constraints, n_assets)
     if constraints.active_weight is not None and benchmark is None:
         collector.error("constraints.active_weight", "benchmark_required", "active bounds require a benchmark")
     if constraints.total_active is not None:
@@ -623,9 +667,9 @@ def validate_problem(problem: PortfolioProblem) -> ValidationReport:
         collector.error("constraints.tracking_error", "risk_model_required", "tracking error requires a risk model")
     if constraints.tracking_error is not None and benchmark is None:
         collector.error("constraints.tracking_error", "benchmark_required", "tracking error requires a benchmark")
-    if isinstance(problem.objective, (RiskAdjustedAlpha, MinimizeTrackingError)) and risk_model is None:
+    if isinstance(objective, (RiskAdjustedAlpha, MinimizeTrackingError)) and risk_model is None:
         collector.error("objective", "risk_model_required", "the selected objective requires a risk model")
-    if isinstance(problem.objective, (RiskAdjustedAlpha, MinimizeTrackingError)) and benchmark is None:
+    if isinstance(objective, (RiskAdjustedAlpha, MinimizeTrackingError)) and benchmark is None:
         collector.error("objective", "benchmark_required", "tracking-risk objectives require a benchmark")
 
     _check_exposure_bounds(collector, "constraints.style", constraints.style, factor_risk, "style")
@@ -636,23 +680,24 @@ def validate_problem(problem: PortfolioProblem) -> ValidationReport:
         ("constraints.extra_absolute", constraints.extra_absolute),
     ):
         for key, pair in mapping.items():
-            if key not in data.extra_attributes:
+            if key not in extra_attributes:
                 collector.error(field_name, "unknown_attribute", f"unknown extra attribute {key!r}")
             _check_pair(collector, f"{field_name}.{key}", pair)
 
     # 仅在基础数组和交易指令均已确认可用后解析最终逐资产边界，以便在 canonical 编译和
     # 后端建立前发现预算容量及不可交易资产冲突。
-    can_resolve_asset_bounds = bool(
+    if (
         effective_lower is not None
         and effective_upper is not None
         and tradable is not None
         and asset_trade_valid
         and not (nontradable_requires_initial and initial is None)
         and (constraints.active_weight is None or benchmark is not None)
-    )
-    if can_resolve_asset_bounds:
+    ):
         try:
-            resolved = resolve_asset_bounds(problem)
+            lower_sum, upper_sum = _asset_capacity(
+                assets, effective_lower, effective_upper, benchmark, initial, tradable, constraints,
+            )
         except AssetBoundsError as exc:
             collector.error(
                 "constraints.asset_trade",
@@ -660,8 +705,6 @@ def validate_problem(problem: PortfolioProblem) -> ValidationReport:
                 str(exc),
             )
         else:
-            lower_sum = float(resolved.lower.sum())
-            upper_sum = float(resolved.upper.sum())
             if (
                 constraints.budget < lower_sum - 1e-12
                 or constraints.budget > upper_sum + 1e-12
