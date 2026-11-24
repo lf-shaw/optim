@@ -86,6 +86,9 @@ class CustomBuildExt(build_ext_orig):
 setup(
     name="optim",
     version="2.0.3",
+    description="MOSEK portfolio optimization with tuda2 data",
+    long_description=Path(__file__).with_name("README.md").read_text(encoding="utf-8"),
+    long_description_content_type="text/markdown",
     ext_modules=cythonize(
         "optim/*.py",
         exclude=["optim/__init__.py"],
