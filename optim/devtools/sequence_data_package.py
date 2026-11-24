@@ -23,6 +23,7 @@ import pandas as pd
 from optim import (
     AlphaSpec,
     BenchmarkCoveragePolicy,
+    RiskCoveragePolicy,
     InMemoryDataSource,
     PortfolioConstraints,
     PortfolioOptimizer,
@@ -142,6 +143,7 @@ def export_tuda2_sequence(
     initial_weight: pd.Series | None = None,
     sequence_policy: SequencePolicy | None = None,
     benchmark_policy: BenchmarkCoveragePolicy | None = None,
+    risk_coverage_policy: RiskCoveragePolicy | None = None,
     holding_period_returns: Mapping[pd.Timestamp, pd.Series] | None = None,
     independent_initial_weights: Mapping[pd.Timestamp, pd.Series] | None = None,
     tradable_universe: str | None = None,
@@ -153,6 +155,7 @@ def export_tuda2_sequence(
     本函数执行 tuda2 区间取数和优化器同级预检，但不调用任何求解器。导出的是对齐后的
     schedule、风险表、基准、区间收益、初始持仓及业务配置；不包含逐日结果权重、license、
     环境变量、数据库地址或求解器 workspace。
+    ``risk_coverage_policy`` 与多期入口相同；数据包保存裁剪后的有效样本和原始基准。
 
     ``path`` 必须是新文件，除非显式 ``overwrite=True``。包中含 alpha、持仓与风险模型等
     敏感数据，应按内部数据权限传输。需要 export/replay 两端安装 pyarrow。
@@ -172,6 +175,7 @@ def export_tuda2_sequence(
         constraints=constraints,
         alpha_spec=alpha_spec,
         benchmark_policy=benchmark_policy,
+        risk_coverage_policy=risk_coverage_policy,
         independent_initial_weights=independent_initial_weights,
         holding_period_returns=holding_period_returns,
         require_holding_returns=resolved_sequence.mode == "chained",
@@ -204,6 +208,10 @@ def export_tuda2_sequence(
             "risk_provenance": risk.provenance,
             "factor_types": dict(risk.factor_types),
             "constant_exposures": dict(risk.constant_exposures),
+            "risk_coverage_by_date": {
+                date.isoformat(): metadata
+                for date, metadata in run.data_source._risk_gaps.items()
+            },
         },
         config_members,
     )
@@ -416,6 +424,10 @@ def load_sequence_package(
         benchmark=frames["benchmark.parquet"].iloc[:, 0],
         benchmark_policy=coverage,
     )
+    data_source._risk_gaps = {
+        pd.Timestamp(date): metadata
+        for date, metadata in config.get("risk_coverage_by_date", {}).items()
+    }
     initial = optional.get("initial_weight.parquet")
     initial_weight = None if initial is None else initial.iloc[:, 0]
     independent_frame = optional.get("independent_initial_weights.parquet")

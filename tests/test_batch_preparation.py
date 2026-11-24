@@ -15,6 +15,9 @@ from optim import (
     PortfolioConstraints,
     PortfolioOptimizer,
     PortfolioSchedule,
+    RiskCoveragePolicy,
+    SequenceDataError,
+    SequencePolicy,
 )
 from optim.data._date_slices import _DateSlices
 from optim.data import memory, _reindex
@@ -164,6 +167,119 @@ def test_missing_data_still_reports_the_date(kind):
         )
     run = source.prepare_run(schedule, **args)
     assert any(issue.date == date for issue in run.validation.issues)
+
+
+def test_risk_coverage_checks_both_tables_and_stops_before_materialization(monkeypatch):
+    source, schedule, args = _case()
+    first, second, _ = schedule.dates
+    source.risk_data = replace(
+        source.risk_data,
+        exposure=source.risk_data.exposure.drop([(first, "a"), (second, "b")]),
+        specific_volatility=source.risk_data.specific_volatility.drop((first, "a")),
+    )
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("风险覆盖超限不应逐日物化")
+
+    monkeypatch.setattr(source, "materialize_problem", forbidden)
+    run = source.prepare_run(schedule, **args)
+    assert run.data_source is source
+    first_error, second_error = run.validation.errors
+    assert (first_error.date, second_error.date) == (first, second)
+    assert first_error.context["missing_count"] == 1
+    assert first_error.context["exposure_missing_count"] == 1
+    assert first_error.context["specific_missing_count"] == 1
+    assert second_error.context["specific_missing_count"] == 0
+
+
+def test_risk_coverage_crop_checks_benchmark_and_audits_solved_result():
+    source, schedule, args = _case()
+    date = schedule.dates[1]
+    index = source.risk_data.exposure.index
+    benchmark = pd.Series(0.0, index=index)
+    benchmark.loc[(slice(None), "a")] = 1.0
+    benchmark.loc[(date, "a")] = 0.99
+    benchmark.loc[(date, "b")] = 0.01
+    risk = replace(
+        source.risk_data,
+        specific_volatility=source.risk_data.specific_volatility.drop((date, "b")),
+    )
+    policy = RiskCoveragePolicy(missing_asset_fraction_tolerance=1 / 3)
+    strict = InMemoryDataSource(risk_data=risk, benchmark=benchmark)
+    report = strict.prepare_run(schedule, risk_coverage_policy=policy, **args).validation
+    assert any("omits 1.000000% benchmark mass" in error.message for error in report.errors)
+
+    tolerant = InMemoryDataSource(
+        risk_data=risk, benchmark=benchmark,
+        benchmark_policy=BenchmarkCoveragePolicy(
+            action="renormalize_within_tolerance", missing_mass_tolerance=0.01,
+        ),
+    )
+    state = SequencePolicy(mode="independent")
+    result = PortfolioOptimizer().optimize_range(
+        data_source=tolerant,
+        schedule=schedule,
+        sequence_policy=state,
+        risk_coverage_policy=policy,
+        **args,
+    ).result_for_date(date)
+    assert result.status.has_solution
+    assert "b" not in result.require_weights().index
+    assert result.alignment.risk_missing_asset_count == 1
+    assert result.alignment.risk_missing_asset_fraction == 1 / 3
+    assert result.alignment.benchmark_missing_mass == pytest.approx(0.01)
+    assert (date, "b") in schedule.universe.index
+
+
+def test_risk_coverage_does_not_tolerate_entire_day_or_invalid_values():
+    source, schedule, args = _case()
+    date = schedule.dates[1]
+    original = source.risk_data
+    source.risk_data = replace(original, exposure=original.exposure.drop(date, level="dt"))
+    permissive = RiskCoveragePolicy(missing_asset_fraction_tolerance=1.0)
+    run = source.prepare_run(schedule, risk_coverage_policy=permissive, **args)
+    assert "no exact data" in run.validation.errors[0].message
+
+    bad = original.specific_volatility.copy()
+    bad.loc[(date, "b")] = np.nan
+    source.risk_data = replace(original, specific_volatility=bad)
+    run = source.prepare_run(schedule, risk_coverage_policy=permissive, **args)
+    assert run.validation.errors[0].field == "data.risk_model.specific_volatility"
+    assert not run.validation.warnings
+
+
+def test_risk_coverage_crop_never_drops_explicit_initial_weight():
+    source, schedule, args = _case()
+    date = schedule.dates[0]
+    source.risk_data = replace(
+        source.risk_data, exposure=source.risk_data.exposure.drop((date, "b")),
+    )
+    args["initial_weight"] = pd.Series({"a": 0.9, "b": 0.1})
+    run = source.prepare_run(
+        schedule, risk_coverage_policy=RiskCoveragePolicy(1 / 3), **args,
+    )
+    assert "omits 10.000000% initial holding mass" in run.validation.errors[0].message
+
+
+def test_risk_coverage_crop_does_not_waive_drifted_holdings():
+    source, schedule, args = _case()
+    first, second, last = schedule.dates
+    universe = schedule.universe.copy()
+    universe.loc[(first, "b"), "alpha"] = 100.0
+    source.risk_data = replace(
+        source.risk_data, exposure=source.risk_data.exposure.drop((second, "b")),
+    )
+    with pytest.raises(SequenceDataError, match="omit 100.000000% of drifted holdings"):
+        PortfolioOptimizer().optimize_range(
+            data_source=source,
+            schedule=replace(schedule, universe=universe),
+            holding_period_returns={
+                second: pd.Series(0.0, index=["a", "b", "c"]),
+                last: pd.Series(0.0, index=["a", "d"]),
+            },
+            risk_coverage_policy=RiskCoveragePolicy(1 / 3),
+            **args,
+        )
 
 
 def test_date_slices_match_xs_even_with_interleaved_dates():

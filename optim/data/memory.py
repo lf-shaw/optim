@@ -32,8 +32,14 @@ from ..validation import (
     ValidationSeverity,
     validate_problem,
 )
-from .alignment import BenchmarkCoveragePolicy, DataAlignmentError, align_benchmark, _align_benchmark
-from ._reindex import _reindex_rows
+from .alignment import (
+    BenchmarkCoveragePolicy,
+    DataAlignmentError,
+    RiskCoveragePolicy,
+    _finish_benchmark,
+    align_benchmark,
+)
+from ._reindex import _reindex_rows, _sid_isin
 from ._tradable import _as_tradable
 from ._sequence_initial import _first_period_problem
 from ._date_slices import _DateSlices
@@ -82,20 +88,74 @@ class InMemoryDataSource:
         )
         self._prepared_schedule = None
         self._benchmark_cache = {}
+        self._risk_gaps = {}
 
     @cached_property
     def _benchmark_slices(self):
         return _DateSlices(self.benchmark, "sid", "benchmark")
 
+    def _risk_coverage(self, schedule, policy):
+        """以批量坐标检查风险缺口，仅为有缺口的日期组装审计。"""
+        target = schedule.universe.index
+        risk = self.risk_data
+        exposure_dates = risk._exposure_slices._dates
+        specific_dates = risk._specific_slices._dates
+        _ = schedule._date_slices
+        exposure_index = risk.exposure.index
+        specific_index = risk.specific_volatility.index
+        no_exposure = ~target.isin(exposure_index)
+        no_specific = no_exposure if specific_index is exposure_index else ~target.isin(specific_index)
+        missing = no_exposure | no_specific
+        if not missing.any():
+            return schedule, ()
+
+        date_codes = target.codes[0]
+        totals = np.bincount(date_codes, minlength=len(target.levels[0]))
+        gaps = pd.DataFrame(
+            {"exposure": no_exposure[missing], "specific": no_specific[missing]},
+            index=target[missing],
+        )
+        issues = []
+        for date, rows in gaps.groupby(level="dt", sort=True):
+            count = len(rows)
+            total = int(totals[target.levels[0].get_loc(date)])
+            fraction = count / total
+            allowed = count < total and fraction <= policy.missing_asset_fraction_tolerance
+            assets = rows.index.get_level_values("sid")
+            context = {
+                "universe_count": total, "missing_count": count, "missing_fraction": fraction,
+                "exposure_missing_count": int(rows["exposure"].sum()),
+                "specific_missing_count": int(rows["specific"].sum()),
+                "exposure_missing_sample": tuple(map(str, assets[rows["exposure"].to_numpy()][:10])),
+                "specific_missing_sample": tuple(map(str, assets[rows["specific"].to_numpy()][:10])),
+                "tolerance": policy.missing_asset_fraction_tolerance,
+            }
+            if allowed:
+                reason = f"excluded from the optimization universe on {date.date()}"
+            elif date not in exposure_dates or date not in specific_dates:
+                reason = f"risk model has no exact data for {date.date()}"
+            else:
+                reason = f"risk coverage is insufficient on {date.date()}"
+            issues.append(ValidationIssue(
+                field="schedule.risk_coverage",
+                code="missing_risk_assets_dropped" if allowed else "missing_risk_assets",
+                severity=ValidationSeverity.WARNING if allowed else ValidationSeverity.ERROR,
+                message=(f"{reason}: {count}/{total} ({fraction:.4%}), "
+                         f"tolerance {policy.missing_asset_fraction_tolerance:.4%}; "
+                         f"exposure_missing={context['exposure_missing_sample']}, "
+                         f"specific_missing={context['specific_missing_sample']}"),
+                date=date, context=context,
+            ))
+        errors = tuple(issue for issue in issues if issue.severity is ValidationSeverity.ERROR)
+        if errors:
+            return schedule, errors
+        return replace(schedule, universe=schedule.universe.iloc[~missing]), tuple(issues)
+
     def _batch_for_schedule(self, schedule):
         """按实际调仓坐标一次裁剪风险与权重；保留裁剪前的逐日覆盖审计。"""
         target = schedule.universe.index
         risk = self.risk_data
-        # 先验证完整坐标及覆盖；不能先补 NaN 再把缺少股票误当作普通数值缺失。
-        _ = risk._exposure_slices, risk._specific_slices
-        for table in (risk.exposure, risk.specific_volatility):
-            if not target.isin(table.index).all():
-                raise DataAlignmentError("risk model does not cover every requested (dt, sid)")
+        # 调用方已完成风险坐标检查。carry2 可用时负责批量搬运数值。
         exposure = _reindex_rows(risk.exposure, target)
         specific = _reindex_rows(risk.specific_volatility, target)
         aligned_risk = replace(risk, exposure=exposure, specific_volatility=specific)
@@ -104,26 +164,62 @@ class InMemoryDataSource:
             raw_benchmark = raw_benchmark.iloc[:, 0]
         numeric = pd.to_numeric(raw_benchmark, errors="coerce").astype(float)
         aligned_weights = _reindex_rows(numeric, target, fill_value=0.0)
-        weight_slices = _DateSlices(aligned_weights, "sid", "aligned benchmark")
         result = InMemoryDataSource(
-            risk_data=aligned_risk, benchmark=aligned_weights,
+            risk_data=aligned_risk, benchmark=self.benchmark,
             benchmark_policy=self.benchmark_policy,
         )
         result._prepared_schedule = schedule
-        for date in schedule.dates:
-            try:
-                original = self._benchmark_slices._day(date)
-                if isinstance(original, pd.DataFrame):
-                    original = original.iloc[:, 0]
-                weights = weight_slices._day(date)
-                result._benchmark_cache[date] = _align_benchmark(
-                    original, weights.index, self.benchmark_policy,
-                    aligned_values=weights.to_numpy(float),
-                )
-            except (DataAlignmentError, TypeError, ValueError) as exc:
-                # 让预检逐日汇总，某天基准有缺口不能被其他日期的正常权重平均掉。
-                result._benchmark_cache[date] = exc
+        result._benchmark_cache = self._batch_benchmark(schedule, numeric, aligned_weights)
         return result
+
+    def _batch_benchmark(self, schedule, numeric, aligned_weights):
+        """一次标记所有样本外基准，按日期代码归约原始权重及缺口。"""
+        _ = self._benchmark_slices
+        index = numeric.index
+        codes = index.codes[0]
+        n_dates = len(index.levels[0])
+        values = numeric.to_numpy(copy=False)
+        date_codes = index.levels[0].get_indexer(schedule.dates)
+        outside = ~index.isin(schedule.universe.index)
+        requested = np.zeros(n_dates, dtype=bool)
+        requested[date_codes[date_codes >= 0]] = True
+        outside &= requested[codes]
+        finite = np.isfinite(values)
+        totals = np.bincount(codes, weights=values, minlength=n_dates)
+        invalid = np.bincount(codes[~finite], minlength=n_dates) > 0
+        negative = np.bincount(codes[values < 0], minlength=n_dates) > 0
+        missing = np.bincount(codes[outside], weights=values[outside], minlength=n_dates)
+        maximum = np.zeros(n_dates, dtype=float)
+        np.maximum.at(maximum, codes[outside], values[outside])
+        labels = {}
+        if outside.any():
+            for date, sid in index[outside]:
+                labels.setdefault(date, []).append(str(sid))
+        raw_positions = self._benchmark_slices._positions
+        target_positions = schedule._date_slices._positions
+        aligned = aligned_weights.to_numpy(float, copy=False)
+        policy = self.benchmark_policy
+        normalized = np.isclose(totals, 1.0, rtol=0.0, atol=policy.weight_sum_tolerance)
+        cache = {}
+        for date, code in zip(schedule.dates, date_codes):
+            try:
+                if date not in raw_positions:
+                    raise DataAlignmentError(f"benchmark has no exact data for {date.date()}")
+                if invalid[code]:
+                    raise DataAlignmentError("benchmark contains NaN or infinity")
+                if negative[code]:
+                    raise DataAlignmentError("benchmark contains negative weights")
+                if not normalized[code]:
+                    raise DataAlignmentError(
+                        f"raw benchmark must sum to one before coverage handling; observed {totals[code]:.12g}"
+                    )
+                cache[date] = _finish_benchmark(
+                    aligned[target_positions[date]], float(missing[code]),
+                    tuple(labels.get(date, ())), float(maximum[code]), policy,
+                )
+            except DataAlignmentError as exc:
+                cache[date] = exc
+        return cache
 
     def build_problems(
         self,
@@ -135,6 +231,7 @@ class InMemoryDataSource:
         initial_weight: pd.Series,
         independent_initial_weights: Mapping[pd.Timestamp, pd.Series] | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
+        risk_coverage_policy: RiskCoveragePolicy | None = None,
     ) -> tuple[PortfolioProblem, ...]:
         """物化并预对齐所有请求的优化日期。
 
@@ -157,6 +254,8 @@ class InMemoryDataSource:
             独立模式下严格逐日期的期初权重。
         extra_attribute_columns : tuple[str, ...]
             需要物化为额外逐资产属性的 schedule 列。
+        risk_coverage_policy : RiskCoveragePolicy | None
+            每日样本股票风险缺口比例上限；默认严格。
 
         Returns
         -------
@@ -179,6 +278,7 @@ class InMemoryDataSource:
             initial_weight=initial_weight,
             independent_initial_weights=independent_initial_weights,
             extra_attribute_columns=extra_attribute_columns,
+            risk_coverage_policy=risk_coverage_policy,
         )
         prepared.validation.raise_for_errors()
         return tuple(prepared.problem_at(date) for date in prepared.dates)
@@ -191,6 +291,7 @@ class InMemoryDataSource:
         constraints: PortfolioConstraints,
         alpha_spec: AlphaSpec | None,
         initial_weight: pd.Series,
+        risk_coverage_policy: RiskCoveragePolicy | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
     ) -> PortfolioProblem:
         """为低延迟单期路径只物化一次严格同日问题。
@@ -206,6 +307,8 @@ class InMemoryDataSource:
             目标、约束和 alpha 单位配置。
         initial_weight : pandas.Series
             该日交易前实际权重，以 sid 为索引。
+        risk_coverage_policy : RiskCoveragePolicy | None
+            样本股票风险缺口容差；默认严格。基准及持仓仍执行各自的覆盖规则。
         extra_attribute_columns : tuple[str, ...]
             需要物化的额外属性列。
 
@@ -225,7 +328,12 @@ class InMemoryDataSource:
             raise DataAlignmentError(
                 f"build_problem requires exactly one schedule date; observed {len(dates)}"
             )
-        return self.materialize_problem(
+        schedule, issues = self._risk_coverage(schedule, risk_coverage_policy or RiskCoveragePolicy())
+        if issues and not ValidationReport(issues).is_valid:
+            raise DataAlignmentError(issues[0].message)
+        if issues:
+            _check_filtered_bounds(constraints)
+        problem = self.materialize_problem(
             schedule,
             pd.Timestamp(dates[0]),
             0,
@@ -236,6 +344,12 @@ class InMemoryDataSource:
             independent_initial_weights=None,
             extra_attribute_columns=tuple(extra_attribute_columns),
         )
+        if not issues:
+            return problem
+        provenance = problem.data.provenance
+        return problem.with_data(provenance=replace(
+            provenance, metadata={**provenance.metadata, **_risk_gap_metadata(issues[0])},
+        ))
 
     def materialize_problem(
         self,
@@ -299,6 +413,7 @@ class InMemoryDataSource:
         independent_initial_weights: Mapping[pd.Timestamp, pd.Series] | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
         sequence_policy: SequencePolicy | None = None,
+        risk_coverage_policy: RiskCoveragePolicy | None = None,
     ) -> "PreparedPortfolioRun":
         """准备全区间静态输入并预检全部日期，不保存逐日求解模型。
 
@@ -316,6 +431,8 @@ class InMemoryDataSource:
             需要物化的额外属性列。
         sequence_policy : SequencePolicy | None
             首期建仓策略；由 optimize_range 传入。None 保持单期模板原有约束。
+        risk_coverage_policy : RiskCoveragePolicy | None
+            按日计算的风险缺失股票比例上限，默认严格。通过裁剪的日期记录到 validation.warnings。
 
         Returns
         -------
@@ -333,11 +450,19 @@ class InMemoryDataSource:
                 pd.Timestamp(date): value
                 for date, value in independent_initial_weights.items()
             }
-        try:
+        schedule, coverage_issues = self._risk_coverage(
+            schedule, risk_coverage_policy or RiskCoveragePolicy()
+        )
+        coverage_report = ValidationReport(coverage_issues)
+        prepared_source = self
+        if coverage_report.is_valid:
+            if coverage_issues:
+                _check_filtered_bounds(constraints)
             prepared_source = self._batch_for_schedule(schedule)
-        except DataAlignmentError:
-            # 坐标或风险覆盖异常时保留原始输入，后续逐日预检定位并汇总错误；不修补数据。
-            prepared_source = self
+            prepared_source._risk_gaps = {
+                **self._risk_gaps,
+                **{issue.date: _risk_gap_metadata(issue) for issue in coverage_issues},
+            }
         run = PreparedPortfolioRun(
             data_source=prepared_source,
             schedule=schedule,
@@ -347,11 +472,13 @@ class InMemoryDataSource:
             initial_weight=initial_weight,
             independent_initial_weights=normalized_independent,
             extra_attribute_columns=tuple(extra_attribute_columns),
-            validation=ValidationReport(),
+            validation=coverage_report,
             prepare_s=0.0,
             sequence_policy=sequence_policy,
         )
-        issues: list[ValidationIssue] = []
+        if not coverage_report.is_valid:
+            return replace(run, prepare_s=time.perf_counter() - started)
+        issues = list(coverage_issues)
         if progress is not None:
             progress.phase("静态预检", len(run.dates))
         for date in run.dates:
@@ -374,18 +501,10 @@ class InMemoryDataSource:
                 issues.extend(validate_problem(problem).issues)
             if progress is not None:
                 progress.advance()
-        return PreparedPortfolioRun(
-            data_source=prepared_source,
-            schedule=schedule,
-            objective=objective,
-            constraints=constraints,
-            alpha_spec=alpha_spec,
-            initial_weight=initial_weight,
-            independent_initial_weights=normalized_independent,
-            extra_attribute_columns=tuple(extra_attribute_columns),
+        return replace(
+            run,
             validation=ValidationReport(tuple(issues)),
             prepare_s=time.perf_counter() - started,
-            sequence_policy=sequence_policy,
         )
 
     def _materialize_problem(
@@ -425,13 +544,14 @@ class InMemoryDataSource:
                     f"independent initial weights have no exact data for {date.date()}"
                 )
             selected_initial = independent_initial_weights[date]
-        elif position > 0:
-            # 序列预检只需要 shape 正确的占位权重；链式引擎会在实际求解前替换为自然漂移持仓。
-            selected_initial = pd.Series(aligned_benchmark.values, index=assets)
-        aligned_initial = (
-            None if selected_initial is None
-            else _align_initial(selected_initial, assets, constraints.budget, date)
-        )
+        if independent_initial_weights is None and position > 0:
+            # 已按同一资产坐标对齐；链式引擎会用实际漂移持仓替换此占位值。
+            aligned_initial = _check_initial_values(aligned_benchmark.values, constraints.budget)
+        else:
+            aligned_initial = (
+                None if selected_initial is None
+                else _align_initial(selected_initial, assets, constraints.budget, date)
+            )
 
         alpha = None
         if schedule.alpha_column in day:
@@ -457,6 +577,7 @@ class InMemoryDataSource:
             "benchmark_renormalization_factor": aligned_benchmark.renormalization_factor,
             "benchmark_source_date": date,
             "alpha_source_date": date if alpha is not None else None,
+            **self._risk_gaps.get(date, {}),
         }
         data = PortfolioData(
             date=date,
@@ -570,6 +691,22 @@ class PreparedPortfolioRun:
         return problem
 
 
+def _risk_gap_metadata(issue: ValidationIssue) -> dict:
+    return {
+        "risk_missing_asset_count": issue.context["missing_count"],
+        "risk_missing_asset_fraction": issue.context["missing_fraction"],
+    }
+
+
+def _check_filtered_bounds(constraints: PortfolioConstraints) -> None:
+    bounds = constraints.asset_weight
+    if np.ndim(bounds.lower) or np.ndim(bounds.upper):
+        raise DataAlignmentError(
+            "risk coverage filtering requires scalar asset_weight bounds; "
+            "align positional bounds to the filtered universe explicitly"
+        )
+
+
 def _align_initial(
     initial: pd.Series,
     assets: pd.Index,
@@ -580,14 +717,19 @@ def _align_initial(
         raise TypeError("initial_weight must be a pandas Series indexed by sid")
     if initial.index.has_duplicates:
         raise DataAlignmentError("initial weights contain duplicate assets")
-    omitted = initial.loc[~initial.index.isin(assets)]
-    omitted_mass = float(np.abs(omitted.to_numpy(float)).sum())
+    if initial.index.equals(assets):
+        return _check_initial_values(initial.to_numpy(float), budget)
+    inside = _sid_isin(initial.index, assets)
+    omitted_mass = float(np.abs(initial.loc[~inside].to_numpy(float)).sum())
     if omitted_mass > 1e-12:
         raise DataAlignmentError(
             f"optimization universe omits {omitted_mass:.6%} initial holding mass on "
             f"{date.date()}"
         )
-    values = _reindex_rows(initial, assets, fill_value=0.0).to_numpy(float)
+    return _check_initial_values(_reindex_rows(initial, assets, fill_value=0.0).to_numpy(float), budget)
+
+
+def _check_initial_values(values: np.ndarray, budget: float) -> np.ndarray:
     if not np.all(np.isfinite(values)):
         raise DataAlignmentError("initial weights contain NaN or infinity")
     total = float(values.sum())

@@ -1,15 +1,19 @@
+from dataclasses import replace
 from types import SimpleNamespace
 from zipfile import ZipFile
 
 import pandas as pd
+import pytest
 
 from optim import (
     AlphaSpec,
+    BenchmarkCoveragePolicy,
     FactorRiskFrames,
     InMemoryDataSource,
     MaximizeAlpha,
     PortfolioConstraints,
     PortfolioSchedule,
+    RiskCoveragePolicy,
     SequencePolicy,
     SolverPolicy,
     WeightBounds,
@@ -89,3 +93,30 @@ def test_sequence_package_round_trip_and_solve(tmp_path):
     assert len(result.steps) == 2
     assert all(step.result.status.has_solution for step in result.steps)
     assert set(performance_frame(result)["backend"]) == {"highs"}
+
+
+def test_sequence_package_preserves_accepted_coverage_gap(tmp_path):
+    dates, source, schedule = _inputs()
+    source = InMemoryDataSource(
+        risk_data=replace(source.risk_data, exposure=source.risk_data.exposure.drop((dates[0], "b"))),
+        benchmark=source.benchmark,
+        benchmark_policy=BenchmarkCoveragePolicy(
+            action="renormalize_within_tolerance", missing_mass_tolerance=0.5,
+        ),
+    )
+    path = export_tuda2_sequence(
+        tmp_path / "cropped.zip",
+        data_source=_PreparedSource(source, {dates[1]: pd.Series({"a": 0.0})}),
+        schedule=schedule,
+        benchmark="000300.SH",
+        objective=MaximizeAlpha(),
+        constraints=PortfolioConstraints(),
+        alpha_spec=AlphaSpec(),
+        risk_coverage_policy=RiskCoveragePolicy(0.5),
+    )
+    result = load_sequence_package(path).solve(show_progress=False)
+    first = result.result_for_date(dates[0])
+    assert first.status.has_solution
+    assert first.alignment.risk_missing_asset_count == 1
+    assert first.alignment.risk_missing_asset_fraction == 0.5
+    assert first.alignment.benchmark_missing_mass == pytest.approx(0.5)

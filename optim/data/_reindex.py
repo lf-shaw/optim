@@ -7,6 +7,13 @@ import numpy as np
 import pandas as pd
 
 
+def _sid_isin(labels: pd.Index, assets: pd.Index) -> np.ndarray:
+    """唯一字符串坐标走位置查找，其他索引保留 pandas 成员检查语义。"""
+    if assets.is_unique and assets.inferred_type == labels.inferred_type == "string":
+        return assets.get_indexer(labels) >= 0
+    return labels.isin(assets)
+
+
 @lru_cache(maxsize=1)
 def _carry_reindex():
     """只探测一次可选依赖；已安装但损坏的扩展不静默吞掉异常。"""

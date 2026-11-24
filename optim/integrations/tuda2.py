@@ -18,6 +18,7 @@ from ..data import (
     FactorRiskFrames,
     InMemoryDataSource,
     PortfolioSchedule,
+    RiskCoveragePolicy,
     PreparedPortfolioRun,
 )
 from ..portfolio_types import (
@@ -360,6 +361,7 @@ class Tuda2DataSource:
         constraints: PortfolioConstraints,
         alpha_spec: AlphaSpec | None,
         benchmark_policy: BenchmarkCoveragePolicy | None = None,
+        risk_coverage_policy: RiskCoveragePolicy | None = None,
         independent_initial_weights: Mapping[pd.Timestamp, pd.Series] | None = None,
         holding_period_returns: Mapping[pd.Timestamp, pd.Series] | None = None,
         require_holding_returns: bool = True,
@@ -391,6 +393,8 @@ class Tuda2DataSource:
             alpha 单位和尺度。
         benchmark_policy : BenchmarkCoveragePolicy | None
             基准覆盖缺口的显式处理策略。
+        risk_coverage_policy : RiskCoveragePolicy | None
+            每日样本股票风险缺口比例上限；默认严格。
         independent_initial_weights : Mapping[pandas.Timestamp, pandas.Series] | None
             独立模式的逐日期期初权重。
         holding_period_returns : Mapping[pandas.Timestamp, pandas.Series] | None
@@ -438,6 +442,7 @@ class Tuda2DataSource:
             independent_initial_weights=independent_initial_weights,
             extra_attribute_columns=extra_attribute_columns,
             sequence_policy=sequence_policy,
+            risk_coverage_policy=risk_coverage_policy,
         )
         prepared.validation.raise_for_errors()
 
@@ -447,7 +452,7 @@ class Tuda2DataSource:
             if progress is not None:
                 progress.phase("读取持仓收益")
             sids = (
-                effective_schedule.universe.index.get_level_values("sid")
+                prepared.schedule.universe.index.get_level_values("sid")
                 .unique()
                 .astype(str)
                 .tolist()
@@ -469,6 +474,7 @@ class Tuda2DataSource:
         constraints: PortfolioConstraints,
         alpha_spec: AlphaSpec | None,
         benchmark_policy: BenchmarkCoveragePolicy | None = None,
+        risk_coverage_policy: RiskCoveragePolicy | None = None,
         tradable_universe: str | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
     ) -> PortfolioProblem:
@@ -492,6 +498,8 @@ class Tuda2DataSource:
             本次请求的目标、约束及 alpha 单位。
         benchmark_policy : BenchmarkCoveragePolicy | None
             基准覆盖缺口的显式策略。
+        risk_coverage_policy : RiskCoveragePolicy | None
+            单日样本股票风险缺口比例上限；默认严格。
         tradable_universe : str | None
             可选 tuda2 universe 名称，用于附加该日可交易性。
         extra_attribute_columns : tuple[str, ...]
@@ -533,6 +541,7 @@ class Tuda2DataSource:
             constraints=constraints,
             alpha_spec=alpha_spec,
             initial_weight=initial_weight,
+            risk_coverage_policy=risk_coverage_policy,
             extra_attribute_columns=extra_attribute_columns,
         )
 

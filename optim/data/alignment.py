@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
-from ._reindex import _reindex_rows
+from ._reindex import _reindex_rows, _sid_isin
 
 
 class DataAlignmentError(ValueError):
@@ -15,6 +15,23 @@ class DataAlignmentError(ValueError):
 
 class BenchmarkCoverageError(DataAlignmentError):
     """优化样本空间未完整覆盖给定基准时抛出。"""
+
+
+@dataclass(frozen=True)
+class RiskCoveragePolicy:
+    """允许按日移除风险模型没有覆盖的少量样本股票。
+
+    ``missing_asset_fraction_tolerance`` 为缺少敞口或特异风险的股票数除以裁剪前样本数，
+    取值在 [0, 1]，默认零。空样本、缺整日风险以及已有行中的无效值始终报错。
+    基准和实际持仓的覆盖规则分别由各自策略处理。
+    """
+
+    missing_asset_fraction_tolerance: float = 0.0
+
+    def __post_init__(self) -> None:
+        tolerance = self.missing_asset_fraction_tolerance
+        if isinstance(tolerance, (bool, np.bool_)) or not 0.0 <= tolerance <= 1.0:
+            raise ValueError("missing_asset_fraction_tolerance must be in [0, 1]")
 
 
 @dataclass(frozen=True)
@@ -115,8 +132,8 @@ def align_benchmark(
     return _align_benchmark(benchmark, assets, policy)
 
 
-def _align_benchmark(benchmark, assets, policy=None, *, aligned_values=None):
-    """共同执行原始基准审计；批量路径可传入已对齐的日切片，避免再次 reindex。"""
+def _align_benchmark(benchmark, assets, policy=None):
+    """单日基准检查及位置对齐。"""
     policy = BenchmarkCoveragePolicy() if policy is None else policy
     if not isinstance(benchmark, pd.Series):
         raise TypeError("benchmark must be a pandas Series indexed by sid")
@@ -135,16 +152,22 @@ def _align_benchmark(benchmark, assets, policy=None, *, aligned_values=None):
             f"raw benchmark must sum to one before coverage handling; observed {total:.12g}"
         )
 
-    inside = benchmark.index.isin(assets)
-    omitted = numeric.loc[~inside]
-    missing_mass = float(omitted.sum())
-    missing_assets = tuple(str(asset) for asset in omitted.index)
-    maximum_missing = float(omitted.max()) if len(omitted) else 0.0
+    inside = _sid_isin(benchmark.index, assets)
+    omitted = values[~inside]
+    return _finish_benchmark(
+        _reindex_rows(numeric, assets, fill_value=0.0).to_numpy(float),
+        float(omitted.sum()), tuple(map(str, numeric.index[~inside])),
+        float(omitted.max()) if len(omitted) else 0.0, policy,
+    )
+
+
+def _finish_benchmark(aligned, missing_mass, missing_assets, maximum_missing, policy):
+    """单日及批量路径共用的缺口规则与归一化。"""
     if missing_mass > policy.weight_sum_tolerance:
         if policy.action == "error":
             raise BenchmarkCoverageError(
                 f"optimization universe omits {missing_mass:.6%} benchmark mass "
-                f"across {len(omitted)} asset(s); explicit renormalization is disabled"
+                f"across {len(missing_assets)} asset(s); explicit renormalization is disabled"
             )
         if missing_mass > policy.missing_mass_tolerance + policy.weight_sum_tolerance:
             raise BenchmarkCoverageError(
@@ -152,10 +175,6 @@ def _align_benchmark(benchmark, assets, policy=None, *, aligned_values=None):
                 f"the allowed {policy.missing_mass_tolerance:.6%}"
             )
 
-    aligned = (
-        _reindex_rows(numeric, assets, fill_value=0.0).to_numpy(float)
-        if aligned_values is None else aligned_values
-    )
     retained = float(aligned.sum())
     if retained <= 0.0:
         raise BenchmarkCoverageError("optimization universe contains no benchmark weight")

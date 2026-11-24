@@ -4,6 +4,7 @@ from .alignment import (
     BenchmarkCoverageError,
     BenchmarkCoveragePolicy,
     DataAlignmentError,
+    RiskCoveragePolicy,
     align_benchmark,
 )
 from .contracts import FactorRiskFrames, PortfolioSchedule
@@ -18,6 +19,7 @@ __all__ = [
     "InMemoryDataSource",
     "PortfolioSchedule",
     "PreparedPortfolioRun",
+    "RiskCoveragePolicy",
     "align_benchmark",
     "make_portfolio_data",
     "make_factor_risk_model",

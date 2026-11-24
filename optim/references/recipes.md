@@ -466,10 +466,10 @@ SHA256 仅校验完整性，不认证来源。加载后数组只读，修改数�
 
 ---
 
-## R9. 显式容忍极小基准覆盖缺口
+## R9. 显式容忍极小风险及基准覆盖缺口
 
 ```python
-from optim import BenchmarkCoveragePolicy
+from optim import BenchmarkCoveragePolicy, RiskCoveragePolicy
 
 coverage = BenchmarkCoveragePolicy(
     action="renormalize_within_tolerance",
@@ -486,11 +486,16 @@ result = optimizer.optimize(
     constraints=constraints,
     alpha_spec=alpha_spec,
     benchmark_policy=coverage,
+    risk_coverage_policy=RiskCoveragePolicy(missing_asset_fraction_tolerance=0.001),
 )
 
+print(result.alignment.risk_missing_asset_count)
 print(result.alignment.benchmark_missing_mass)
 print(result.alignment.benchmark_renormalization_factor)
 ```
+
+多期时将 `risk_coverage_policy` 传给 `optimize_range`。使用 `InMemoryDataSource` 时在
+构造数据源时配置基准策略。样本比例按日计算，基准权重阈值独立计算，实际持仓遵循原有规则。
 
 ---
 

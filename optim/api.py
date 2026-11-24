@@ -35,6 +35,7 @@ if TYPE_CHECKING:
         BenchmarkCoveragePolicy,
         InMemoryDataSource,
         PortfolioSchedule,
+        RiskCoveragePolicy,
     )
     from .integrations.tuda2 import Tuda2DataSource
     from .portfolio_types import AlphaSpec
@@ -244,6 +245,7 @@ class PortfolioOptimizer:
         not_sellable: Iterable[Any] | None = None,
         weight_overrides: Mapping[Any, float | tuple[float, float]] | None = None,
         benchmark_policy: "BenchmarkCoveragePolicy | None" = None,
+        risk_coverage_policy: "RiskCoveragePolicy | None" = None,
         tradable_universe: str | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
     ) -> OptimizationResult:
@@ -282,6 +284,8 @@ class PortfolioOptimizer:
             单期逐资产精确目标或闭区间覆盖。
         benchmark_policy : BenchmarkCoveragePolicy | None
             数据源处理基准覆盖缺口的显式策略。
+        risk_coverage_policy : RiskCoveragePolicy | None
+            容许缺少敞口或特异风险的样本股票比例；默认严格。基准缺口和实际持仓另行检查。
         tradable_universe : str | None
             数据源可选的可交易域名称。
         extra_attribute_columns : tuple[str, ...]
@@ -332,6 +336,7 @@ class PortfolioOptimizer:
                 constraints=config,
                 alpha_spec=alpha_spec,
                 benchmark_policy=benchmark_policy,
+                risk_coverage_policy=risk_coverage_policy,
                 tradable_universe=tradable_universe,
                 extra_attribute_columns=extra_attribute_columns,
             )
@@ -344,6 +349,7 @@ class PortfolioOptimizer:
                 "initial_weight": initial_weight,
                 "alpha_spec": alpha_spec,
                 "benchmark_policy": benchmark_policy,
+                "risk_coverage_policy": risk_coverage_policy,
                 "tradable_universe": tradable_universe,
             }
             unexpected = [
@@ -408,6 +414,7 @@ class PortfolioOptimizer:
         failure_dump_dir: str | Path | None = None,
         independent_initial_weights=None,
         benchmark_policy: "BenchmarkCoveragePolicy | None" = None,
+        risk_coverage_policy: "RiskCoveragePolicy | None" = None,
         tradable_universe: str | None = None,
         extra_attribute_columns: tuple[str, ...] = (),
     ) -> "PortfolioSequenceResult":
@@ -452,6 +459,8 @@ class PortfolioOptimizer:
             独立模式下按日期提供的期初权重。
         benchmark_policy : BenchmarkCoveragePolicy | None
             外部数据源处理基准覆盖缺口的显式策略；内存源已经绑定该策略。
+        risk_coverage_policy : RiskCoveragePolicy | None
+            每个调仓日容许缺少风险数据的样本股票比例；默认零。
         tradable_universe : str | None
             外部数据源可选的可交易域名称。
         extra_attribute_columns : tuple[str, ...]
@@ -499,6 +508,7 @@ class PortfolioOptimizer:
                 constraints=constraints,
                 alpha_spec=alpha_spec,
                 benchmark_policy=benchmark_policy,
+                risk_coverage_policy=risk_coverage_policy,
                 independent_initial_weights=independent_initial_weights,
                 holding_period_returns=holding_period_returns,
                 require_holding_returns=resolved_policy.mode == "chained",
@@ -530,6 +540,7 @@ class PortfolioOptimizer:
             independent_initial_weights=independent_initial_weights,
             extra_attribute_columns=extra_attribute_columns,
             sequence_policy=resolved_policy,
+            risk_coverage_policy=risk_coverage_policy,
         )
         return self.solve_sequence(
             prepared_run,

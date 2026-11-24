@@ -831,7 +831,7 @@ weights = sequence.to_weight_series()
 
 ---
 
-## 13. 基准覆盖策略
+## 13. 风险和基准覆盖策略
 
 优化样本空间遗漏任何实质性基准权重时，默认直接报错，不会自动归一化。若业务明确允许极小
 缺口，必须显式配置：
@@ -851,6 +851,32 @@ benchmark_policy = BenchmarkCoveragePolicy(
 result.alignment.benchmark_missing_mass
 result.alignment.benchmark_renormalization_factor
 ```
+
+`optimize_range` 和基于 tuda2 的单期 `optimize` 也接受 `risk_coverage_policy`。
+默认要求风险模型覆盖全部样本。允许少量缺行时，可分别配置样本比例和基准权重上限：
+
+```python
+from optim import BenchmarkCoveragePolicy, RiskCoveragePolicy
+
+risk_coverage_policy = RiskCoveragePolicy(missing_asset_fraction_tolerance=0.005)
+benchmark_policy = BenchmarkCoveragePolicy(
+    action="renormalize_within_tolerance", missing_mass_tolerance=0.001,
+)
+```
+
+此例逐日允许最多 0.5% 的样本股票缺敞口或特异风险，同一只股票只计一次。先裁剪这些股票，
+再按原始基准检查裁剪后的样本是否保留足够的基准权重。样本外基准权重合计最多 0.1%，
+获准后才归一化保留部分。对于 `InMemoryDataSource`，构造数据源时传入 `benchmark_policy`，
+调用 `optimize_range` 时传入 `risk_coverage_policy`。这两个数值是示例，独立于换手率和持仓缺失策略。
+
+缺整日数据、无可保留股票或保留行中有无效风险值时仍报错。裁剪后出现样本外实际持仓时继续
+按初始持仓或链式漂移规则处理。配置逐股位置数组上下界时，需先手动对齐到裁剪后的样本；
+链式收益若由用户提供，裁剪过的上期样本需使用带 sid 标签的 Series。已求解步骤可通过
+`result.alignment.risk_missing_asset_count` 和 `risk_missing_asset_fraction` 审计裁剪。
+需要完整预检报告时可查看 `InMemoryDataSource.prepare_run(...).validation`。
+
+多期覆盖检查按批量坐标计算、按日期汇总。风险覆盖超限时汇总各日期的缺失统计后提前返回，
+通过覆盖检查的请求继续执行数值和约束预检。
 
 ---
 

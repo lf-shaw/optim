@@ -19,7 +19,7 @@ import pandas as pd
 
 from .diagnostics import InfeasibilityReport
 from ._progress import _current_progress, _with_progress
-from .data._reindex import _reindex_rows
+from .data._reindex import _reindex_rows, _sid_isin
 from .data._sequence_initial import _first_period_problem
 from .portfolio_types import (
     OptimizationResult,
@@ -489,6 +489,13 @@ def _solve_sequence_impl(
                 "missing close-to-close holding-period returns for "
                 + ", ".join(date.strftime("%Y-%m-%d") for date in missing_dates[:10])
             )
+        if isinstance(problems, PreparedPortfolioRun) and problems.data_source._risk_gaps:
+            for previous, current in zip(dates, dates[1:]):
+                if previous in problems.data_source._risk_gaps and not isinstance(normalized_returns[current], pd.Series):
+                    raise SequenceDataError(
+                        f"holding-period returns for {current.date()} must be indexed by sid "
+                        f"after risk coverage filtered the {previous.date()} universe"
+                    )
 
     steps: list[SequenceStep] = []
     actual_weight: pd.Series | None = None
@@ -924,9 +931,7 @@ def _mark_to_market(
     drifted /= total
     drifted_series = pd.Series(drifted, index=previous_target.index, name="weight")
     aligned = _reindex_rows(drifted_series, current_assets)
-    missing_mass = float(
-        drifted_series.loc[~drifted_series.index.isin(current_assets)].sum()
-    )
+    missing_mass = float(np.abs(drifted[~_sid_isin(previous_target.index, current_assets)]).sum())
     if missing_mass > policy.holding_missing_mass_tolerance:
         raise SequenceDataError(
             f"current optimization assets omit {missing_mass:.6%} of drifted holdings"

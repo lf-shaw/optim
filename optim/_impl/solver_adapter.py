@@ -398,6 +398,8 @@ class SolverAdapter:
             certificate=certificate,
             violations=violations,
             alignment=AlignmentReport(
+                risk_missing_asset_count=int(_metadata_float(metadata, "risk_missing_asset_count", 0.0)),
+                risk_missing_asset_fraction=_metadata_float(metadata, "risk_missing_asset_fraction", 0.0),
                 benchmark_missing_mass=_metadata_float(
                     metadata, "benchmark_missing_mass", 0.0
                 ),

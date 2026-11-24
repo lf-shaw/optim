@@ -1041,12 +1041,18 @@ class AlignmentReport:
         当前资产域中缺失的期初或承接持仓权重；默认为 ``0.0``。
     source_dates : Mapping[str, pandas.Timestamp]
         每类输入实际使用的数据日期；默认为空映射。
+    risk_missing_asset_count : int
+        因缺少同日风险敞口或特异风险而剔除的样本股票数，默认为零。
+    risk_missing_asset_fraction : float
+        上述股票数占裁剪前当日样本数量的比例，默认为零。
     """
 
     benchmark_missing_mass: float = 0.0
     benchmark_renormalization_factor: float = 1.0
     holding_missing_mass: float = 0.0
     source_dates: Mapping[str, pd.Timestamp] = field(default_factory=dict)
+    risk_missing_asset_count: int = 0
+    risk_missing_asset_fraction: float = 0.0
 
     def __post_init__(self) -> None:
         object.__setattr__(

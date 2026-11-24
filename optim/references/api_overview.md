@@ -250,6 +250,11 @@ from optim.integrations.tuda2 import Tuda2DataSource
 
 基准在样本空间外存在权重缺口时默认报错。只有显式传入
 `BenchmarkCoveragePolicy(action="renormalize_within_tolerance", ...)` 才允许阈值内归一化。
+`optimize_range` 和数据源单期 `optimize` 允许显式传入 `RiskCoveragePolicy`。其
+`missing_asset_fraction_tolerance` 是每日缺少敞口或特异风险的股票数占原始样本数的比例，
+默认零。裁剪后的样本仍需通过原始基准的权重覆盖和实际持仓检查。缺整日风险及无效风险值
+仍报错。已求解步骤可从 `result.alignment.risk_missing_asset_count` 和
+`risk_missing_asset_fraction` 读取裁剪统计。
 
 ---
 

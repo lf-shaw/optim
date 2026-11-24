@@ -30,6 +30,7 @@ print(package_path)
 sequence_policy=sequence_policy,
 initial_weight=initial_weight,
 benchmark_policy=benchmark_policy,
+risk_coverage_policy=risk_coverage_policy,
 tradable_universe=tradable_universe,
 extra_attribute_columns=extra_attribute_columns,
 independent_initial_weights=independent_initial_weights,
@@ -43,7 +44,7 @@ Parquet。大于 4 GiB 时支持 ZIP64。
 包中包含以下敏感输入，应只在授权的内部环境传输：
 
 - schedule 中实际消费的 alpha、tradable 及显式额外属性；
-- 已对齐的风险敞口、协方差、特异风险和基准权重；
+- 有效样本的风险敞口、协方差、特异风险，以及原始基准权重；启用风险覆盖容差时另存逐日裁剪统计；
 - 链式漂移使用的区间收益、显式初始持仓或独立模式逐日期持仓；
 - 目标、约束、序列策略、求解策略、风险来源版本和依赖版本。
 

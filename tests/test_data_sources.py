@@ -18,6 +18,7 @@ from optim import (
     PortfolioSchedule,
     PortfolioOptimizer,
     PortfolioValidationError,
+    RiskCoveragePolicy,
     SequencePolicy,
     WeightBounds,
 )
@@ -825,6 +826,29 @@ def test_snapshot_route_matches_original_single_period():
     data = make_portfolio_data(date=date, universe=universe, benchmark=weights, initial_weight=weights, risk_model=source.create_risk_model(date=date), alpha_spec=AlphaSpec())
     observed = optimizer.optimize(data=data, objective=MaximizeAlpha(), constraints=_constraints())
     pd.testing.assert_series_equal(observed.require_weights(), original.require_weights())
+
+
+@pytest.mark.parametrize("multi", [False, True])
+def test_tuda2_risk_coverage_policy_through_public_entrypoints(multi):
+    schedule = _schedule()
+    extra = schedule.universe.xs("b", level="sid", drop_level=False).rename(index={"b": "c"}, level="sid")
+    schedule = replace(schedule, universe=pd.concat([schedule.universe, extra]).sort_index())
+    optimizer = PortfolioOptimizer()
+    kwargs = dict(
+        data_source=Tuda2DataSource(module=_FakeTuda2()), benchmark="000852.SH",
+        objective=MaximizeAlpha(), constraints=_constraints(), alpha_spec=AlphaSpec(),
+        initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
+        risk_coverage_policy=RiskCoveragePolicy(1 / 3),
+    )
+    first = schedule.dates[0]
+    if multi:
+        result = optimizer.optimize_range(schedule=schedule, **kwargs).result_for_date(first)
+    else:
+        result = optimizer.optimize(date=first, universe=schedule.day(first), **kwargs)
+    assert result.status.has_solution
+    assert result.alignment.risk_missing_asset_count == 1
+    assert result.alignment.risk_missing_asset_fraction == 1 / 3
+    assert result.alignment.benchmark_missing_mass == 0
 
 
 def test_single_period_all_dated_inputs():

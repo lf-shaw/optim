@@ -73,6 +73,7 @@ from .data import (
     InMemoryDataSource,
     PortfolioSchedule,
     PreparedPortfolioRun,
+    RiskCoveragePolicy,
     make_portfolio_data,
     make_factor_risk_model,
 )
@@ -111,6 +112,7 @@ __all__ = [
     "PortfolioProblem",
     "PortfolioSchedule",
     "PreparedPortfolioRun",
+    "RiskCoveragePolicy",
     "PortfolioSequenceResult",
     "PortfolioOptimizer",
     "PortfolioValidationError",
