@@ -1301,7 +1301,8 @@ git tag v3.0.1
 - tag 必须严格为 `vX.Y.Z`；
 - `--push` 要求已跟踪工作树和暂存区干净；
 - `HEAD` 必须正好具有发布 tag；
-- wheel 版本、`optim.__version__` 和包内 `LIBRARY.toml` 必须一致；
+- wheel 的 METADATA 版本与 `optim.__version__` 必须一致；
+- wheel 必须包含 AI 任务目录，任务路由须指向有文档的公开 API；
 - wheel 不得包含数值核心 `.py/.pyi/.c/.cpp` 实现文件；
 - LP、QP 和 Factor-QCQP 安装后 smoke 必须通过。
 
@@ -1329,4 +1330,5 @@ optim/LIBRARY.toml
 optim/references/api_overview.md
 optim/references/recipes.md
 optim/references/gotchas.md
+optim/references/task_entries.toml
 ```

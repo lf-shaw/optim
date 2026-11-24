@@ -66,4 +66,5 @@ optim = [
     "py.typed",
     "LIBRARY.toml",
     "references/*.md",
+    "references/task_entries.toml",
 ]

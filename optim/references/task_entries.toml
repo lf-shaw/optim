@@ -1,0 +1,290 @@
+# optim 的 AI 任务目录。
+# 本文件只负责把用户任务导航到公开 API；签名、参数、返回值和完整合同仍以 docstring 为准。
+# 不收录 optim._core、optim._impl、具体数值后端或跨库工作流。
+schema_version = 1
+
+[domains.optimization]
+title = "组合优化"
+description = "选择单期组合优化入口，并区分 canonical 问题与高层业务输入。"
+
+[domains.optimization.tasks.single_period]
+title = "单期组合优化"
+description = "求解一个准确日期的组合优化问题，根据输入是否已经组装为完整问题选择入口。"
+aliases = ["单期优化", "单日组合优化", "组合权重优化"]
+
+[[domains.optimization.tasks.single_period.routes]]
+symbol = "optim.PortfolioOptimizer.solve"
+when = "已经构造完整且严格对齐的 PortfolioProblem，需要走 canonical 单期求解路径时选择。"
+
+[[domains.optimization.tasks.single_period.routes]]
+symbol = "optim.PortfolioOptimizer.optimize"
+when = "持有已对齐 PortfolioData，或希望由公开数据源准备单日数据并同时应用临时交易指令时选择。"
+
+[domains.optimization.tasks.solver_configuration]
+title = "配置求解后端和线程"
+description = "在默认自动路由、指定后端做对照、控制数值线程之间选择。"
+aliases = ["指定求解器", "求解线程数", "自动选择后端"]
+
+[[domains.optimization.tasks.solver_configuration.routes]]
+symbol = "optim.SolverPolicy"
+when = "需要配置主求解的自动路由、显式指定后端或按需开启 LP 预筛时选择。"
+
+[[domains.optimization.tasks.solver_configuration.routes]]
+symbol = "optim.SolverTuning"
+when = "需要选择自动线程预算、使用可用 CPU 上限或指定正整数线程数时选择。"
+
+[domains.data]
+title = "数据准备"
+description = "把带标签的业务表格或批量数据源转换为优化器要求的严格数据合同。"
+
+[domains.data.tasks.prepare_inputs]
+title = "准备优化输入"
+description = "准备单期数据、风险模型或多期内存数据源，确保日期、资产坐标和单位明确。"
+aliases = ["准备组合数据", "对齐优化数据", "构建风险模型"]
+
+[[domains.data.tasks.prepare_inputs.routes]]
+symbol = "optim.make_portfolio_data"
+when = "已有单日 universe、基准、期初权重和可选 alpha，需要按标签对齐并生成 PortfolioData 时选择。"
+
+[[domains.data.tasks.prepare_inputs.routes]]
+symbol = "optim.make_factor_risk_model"
+when = "已有单日因子暴露、因子协方差和特异波动率，需要按资产与因子标签构造 FactorRiskModel 时选择。"
+
+[[domains.data.tasks.prepare_inputs.routes]]
+symbol = "optim.InMemoryDataSource"
+when = "多期风险、基准和相关数据已经批量加载到内存，需要由 optim 严格按日物化和预检时选择。"
+
+[[domains.data.tasks.prepare_inputs.routes]]
+symbol = "optim.integrations.tuda2.Tuda2DataSource"
+when = "使用受支持的 tuda2 数据适配器准备单期或整段多期数据时选择；数据读取必须在逐期求解前完成。"
+
+[[domains.data.tasks.prepare_inputs.routes]]
+symbol = "optim.integrations.tuda2.Tuda2DataSource.create_risk_model"
+when = "只需要 tuda2 的某日风险快照，后续自行组装 PortfolioData 或复用快照时选择。"
+
+[domains.data.tasks.coverage_policy]
+title = "处理风险模型和基准覆盖缺口"
+description = "决定是否逐日剔除缺风险数据的少量样本资产，以及如何处理裁剪后遗漏的基准权重。"
+aliases = ["风险覆盖容差", "基准缺口", "缺少因子敞口", "缺少特异风险", "样本覆盖率"]
+
+[[domains.data.tasks.coverage_policy.routes]]
+symbol = "optim.RiskCoveragePolicy"
+when = "数据源覆盖不全且允许裁剪少量样本时选择。阈值基于当日股票数量，适用于数据源单期 optimize 和多期 optimize_range。"
+
+[[domains.data.tasks.coverage_policy.routes]]
+symbol = "optim.BenchmarkCoveragePolicy"
+when = "业务允许阈值内的基准缺口时选择。阈值基于原始基准遗漏权重，归一化须显式授权。"
+
+[[domains.data.tasks.coverage_policy.routes]]
+symbol = "optim.SequencePolicy"
+when = "缺失涉及链式实际持仓或其持有期收益时，查看持仓与收益的覆盖规则。"
+
+[[domains.data.tasks.coverage_policy.routes]]
+symbol = "optim.InMemoryDataSource.prepare_run"
+when = "已有批量内存数据，希望查看逐日覆盖和静态校验报告，再决定是否启动求解时选择。"
+
+[domains.model]
+title = "目标与约束"
+description = "配置组合优化的业务目标、可行域和风险限制。"
+
+[domains.model.tasks.objective_selection]
+title = "选择优化目标"
+description = "根据 alpha、风险惩罚和跟踪误差需求选择一个明确的目标对象。"
+aliases = ["目标函数", "最大化 alpha", "最小化跟踪误差"]
+
+[[domains.model.tasks.objective_selection.routes]]
+symbol = "optim.MaximizeAlpha"
+when = "需要最大化线性 alpha；未设置跟踪误差上限时为 LP，设置后进入因子风险约束路径。"
+
+[[domains.model.tasks.objective_selection.routes]]
+symbol = "optim.RiskAdjustedAlpha"
+when = "需要在目标中直接惩罚因子和特异方差，并已明确 alpha 与年化风险的尺度关系时选择。"
+
+[[domains.model.tasks.objective_selection.routes]]
+symbol = "optim.MinimizeTrackingError"
+when = "主要目标是最小化相对基准的跟踪误差；不设置 alpha 下限时允许没有 alpha 数据。"
+
+[domains.model.tasks.constraint_configuration]
+title = "配置组合约束"
+description = "配置权重、主动暴露、换手、因子暴露和跟踪误差等静态业务约束。"
+aliases = ["组合约束", "权重限制", "风险约束"]
+
+[[domains.model.tasks.constraint_configuration.routes]]
+symbol = "optim.PortfolioConstraints"
+when = "需要组装静态组合约束，或通过 extra_active、extra_absolute 约束自定义资产属性的主动或绝对敞口时选择。"
+
+[[domains.model.tasks.constraint_configuration.routes]]
+symbol = "optim.WeightBounds"
+when = "需要设置逐资产绝对权重上下界时选择。"
+
+[[domains.model.tasks.constraint_configuration.routes]]
+symbol = "optim.SymmetricBound"
+when = "需要设置逐资产主动权重的对称上下界时选择。"
+
+[[domains.model.tasks.constraint_configuration.routes]]
+symbol = "optim.ExposureBounds"
+when = "需要设置风格或行业主动敞口的通用边界或逐因子覆盖时选择。"
+
+[[domains.model.tasks.constraint_configuration.routes]]
+symbol = "optim.LowerBound"
+when = "需要为持有的基准成分股设置最低合计权重时选择。"
+
+[[domains.model.tasks.constraint_configuration.routes]]
+symbol = "optim.TurnoverLimit"
+when = "需要限制相对期初持仓的完整 L1 换手率时选择；该口径不除以二。"
+
+[[domains.model.tasks.constraint_configuration.routes]]
+symbol = "optim.TrackingErrorLimit"
+when = "需要设置年化小数口径的跟踪误差上限，并已提供基准与风险模型时选择。"
+
+[domains.trading]
+title = "交易限制"
+description = "配置只对当前准确问题生效的逐资产交易指令。"
+
+[domains.trading.tasks.asset_restrictions]
+title = "配置单期交易限制"
+description = "配置黑名单、冻结、单边买卖限制或逐资产权重覆盖，不把当日指令广播到多期研究。"
+aliases = ["黑名单", "冻结持仓", "不可买卖"]
+
+[[domains.trading.tasks.asset_restrictions.routes]]
+symbol = "optim.AssetTradeConstraints"
+when = "需要构造可复用在当前 PortfolioProblem 中的显式逐资产交易指令对象时选择。"
+
+[[domains.trading.tasks.asset_restrictions.routes]]
+symbol = "optim.PortfolioOptimizer.optimize"
+when = "单次调用中直接传入 blacklist、frozen、not_buyable、not_sellable 或 weight_overrides 等便利指令时选择。"
+
+[domains.sequence]
+title = "多期优化"
+description = "准备并求解一段调仓序列，显式管理持仓推进、失败策略和结果导出。"
+
+[domains.sequence.tasks.range_optimization]
+title = "区间与序列优化"
+description = "按多个调仓日期求解组合序列，根据输入是数据源还是完整每日问题选择入口。"
+aliases = ["多期优化", "序列优化", "滚动调仓"]
+
+[[domains.sequence.tasks.range_optimization.routes]]
+symbol = "optim.PortfolioOptimizer.optimize_range"
+when = "已有 PortfolioSchedule 和受支持的数据源，需要统一取数、严格对齐、全区间预检并逐期求解时选择。"
+
+[[domains.sequence.tasks.range_optimization.routes]]
+symbol = "optim.PortfolioOptimizer.solve_sequence"
+when = "已经准备好按日期排序的完整问题序列或 PreparedPortfolioRun，需要直接控制序列求解时选择。"
+
+[domains.sequence.tasks.sequence_policy]
+title = "配置序列持仓与失败策略"
+description = "配置链式或独立求解、失败处理、首期换手和权重保留方式。"
+aliases = ["持仓推进", "序列失败处理", "换手恢复"]
+
+[[domains.sequence.tasks.sequence_policy.routes]]
+symbol = "optim.SequencePolicy"
+when = "需要选择链式或独立模式，并配置失败后停止、持仓处理和输出权重策略时选择。"
+
+[[domains.sequence.tasks.sequence_policy.routes]]
+symbol = "optim.TurnoverRecoveryPolicy"
+when = "链式序列确需在最小换手证据支持时显式放宽换手限制，并接受对应业务语义时选择。"
+
+[domains.diagnostics]
+title = "校验与诊断"
+description = "在求解前聚合静态问题，并在失败后按需运行显式诊断。"
+
+[domains.diagnostics.tasks.validation]
+title = "校验与准备问题"
+description = "在启动数值求解前检查输入合同，必要时生成可重复求解的准备对象。"
+aliases = ["输入校验", "模型校验", "求解前检查"]
+
+[[domains.diagnostics.tasks.validation.routes]]
+symbol = "optim.PortfolioOptimizer.validate"
+when = "只需聚合数据、单位、shape 和静态模型问题，不希望编译或求解时选择。"
+
+[[domains.diagnostics.tasks.validation.routes]]
+symbol = "optim.PortfolioOptimizer.prepare"
+when = "除静态校验外，还需要生成 fingerprint 和短生命周期准备状态供后续准确求解时选择。"
+
+[[domains.diagnostics.tasks.validation.routes]]
+symbol = "optim.PortfolioOptimizer.solve_prepared"
+when = "已用同一优化器准备有效的单期问题，需要按已准备的模型求解时选择。"
+
+[[domains.diagnostics.tasks.validation.routes]]
+symbol = "optim.ValidationReport.raise_for_errors"
+when = "已经取得 ValidationReport，希望在存在 error 时显式切换为异常控制流时选择。"
+
+[domains.diagnostics.tasks.failure_diagnosis]
+title = "诊断失败问题"
+description = "对准确的失败问题或失败结果显式运行诊断，并按需导出可复现输入。"
+aliases = ["不可行诊断", "失败排查", "复现求解问题"]
+
+[[domains.diagnostics.tasks.failure_diagnosis.routes]]
+symbol = "optim.PortfolioOptimizer.diagnose"
+when = "普通求解返回失败状态后，需要分析约束松弛、换手或风险证据时选择；成功结果不可诊断。"
+
+[[domains.diagnostics.tasks.failure_diagnosis.routes]]
+symbol = "optim.PortfolioProblem.with_constraints"
+when = "已取得原问题，需要调整一条约束形成对照问题后重新求解时选择。"
+
+[[domains.diagnostics.tasks.failure_diagnosis.routes]]
+symbol = "optim.export_repro"
+when = "需要把准确问题、实际策略、结果快照和可选诊断报告导出为受控复现包时选择。"
+
+[[domains.diagnostics.tasks.failure_diagnosis.routes]]
+symbol = "optim.load_repro"
+when = "需要从可信的当前格式复现包恢复问题与策略进行独立检查时选择；加载本身不求解。"
+
+[domains.diagnostics.tasks.report_exchange]
+title = "交换诊断报告和查看约束贡献"
+description = "选择简要或完整导出，恢复收到的诊断报告，并将原生约束贡献转换为表格。"
+aliases = ["导出诊断报告", "读取诊断 dump", "贡献表", "原生证书贡献"]
+
+[[domains.diagnostics.tasks.report_exchange.routes]]
+symbol = "optim.InfeasibilityReport.dump"
+when = "需要导出诊断结论供审阅，或明确需要保留完整约束贡献时选择对应的报告模式。"
+
+[[domains.diagnostics.tasks.report_exchange.routes]]
+symbol = "optim.InfeasibilityReport.load"
+when = "收到支持格式的诊断报告，需要恢复报告对象供程序读取时选择。"
+
+[[domains.diagnostics.tasks.report_exchange.routes]]
+symbol = "optim.InfeasibilityReport.contributors_frame"
+when = "报告保留了完整贡献，需要用 DataFrame 按后端或约束组筛选原生证据时选择。"
+
+[domains.diagnostics.tasks.sequence_interruption]
+title = "排查多期优化中断"
+description = "区分特定日期的求解失败与链式持仓推进时的数据错误。"
+aliases = ["序列停止原因", "缺失持仓收益", "导出失败调仓日", "链式优化中断"]
+
+[[domains.diagnostics.tasks.sequence_interruption.routes]]
+symbol = "optim.PortfolioSequenceResult"
+when = "序列返回停止状态，需要查看 stop_reason、stopped_date 或用于进一步诊断的 stopped_problem 时选择。"
+
+[[domains.diagnostics.tasks.sequence_interruption.routes]]
+symbol = "optim.PortfolioSequenceResult.export_stopped_repro"
+when = "多期运行停止后，需要导出停止日期的准确问题、结果和策略用于复现时选择。"
+
+[[domains.diagnostics.tasks.sequence_interruption.routes]]
+symbol = "optim.SequenceDataError.dump"
+when = "链式持仓漂移抛出 SequenceDataError，需要导出缺失收益和关联持仓等上下文时选择。"
+
+[domains.results]
+title = "结果处理"
+description = "依据标准状态处理单期和多期结果，不把普通求解失败误当成异常或可用权重。"
+
+[domains.results.tasks.status_handling]
+title = "处理求解状态与权重"
+description = "先检查标准状态，再读取单期权重或导出多期目标组合。"
+aliases = ["求解状态", "获取优化权重", "序列权重导出"]
+
+[[domains.results.tasks.status_handling.routes]]
+symbol = "optim.SolveStatus"
+when = "需要按统一状态区分有解、不可行、无界、迭代上限和数值失败时选择。"
+
+[[domains.results.tasks.status_handling.routes]]
+symbol = "optim.OptimizationResult.require_weights"
+when = "调用方要求立即取得单期可用权重，并希望无可用解时显式抛出异常时选择。"
+
+[[domains.results.tasks.status_handling.routes]]
+symbol = "optim.PortfolioSequenceResult.to_weight_series"
+when = "多期运行完成后，需要把已保留的逐期目标权重导出为严格 (dt, sid) 索引的 Series 时选择。"
+
+[[domains.results.tasks.status_handling.routes]]
+symbol = "optim.PortfolioSequenceResult.result_for_date"
+when = "需要按日期读取已尝试调仓日的解、约束指标或覆盖审计时选择。"

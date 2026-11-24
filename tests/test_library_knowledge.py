@@ -50,6 +50,52 @@ def test_documented_python_examples_have_valid_syntax():
             ast.parse(code)
 
 
+def _wheel_validator():
+    spec = importlib.util.spec_from_file_location(
+        "optim_wheel_validator", ROOT / "scripts/validate_wheel.py"
+    )
+    validator = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(validator)
+    return validator
+
+
+def test_task_catalog_routes_resolve_public_documented_symbols():
+    validator = _wheel_validator()
+    manifest = tomllib.loads((PACKAGE / "LIBRARY.toml").read_text())
+    catalog = tomllib.loads((ROOT / validator.TASK_CATALOG).read_text())
+    count = validator.validate_task_catalog(catalog, manifest["api"]["modules"], resolve=True)
+    assert count == sum(len(domain["tasks"]) for domain in catalog["domains"].values())
+
+
+def test_wheel_validator_requires_task_catalog(tmp_path):
+    validator = _wheel_validator()
+    wheel = tmp_path / "optim-test.whl"
+    with ZipFile(wheel, "w") as archive:
+        for name in validator.REQUIRED_RESOURCES - {validator.TASK_CATALOG}:
+            archive.writestr(name, "placeholder")
+    with pytest.raises(SystemExit, match="task_entries.toml"):
+        validator.validate(wheel)
+
+
+@pytest.mark.parametrize(
+    ("symbol", "message"),
+    [
+        ("optim._impl.compiler", "公开符号"),
+        ("optim.PortfolioOptimizer.unknown_method", "不可解析"),
+    ],
+)
+def test_task_catalog_rejects_private_or_unresolved_route(symbol, message):
+    validator = _wheel_validator()
+    catalog = {
+        "schema_version": 1,
+        "domains": {"test": {"tasks": {"example": {"routes": [{
+            "symbol": symbol, "when": "验证不存在或私有的路由",
+        }]}}}},
+    }
+    with pytest.raises(SystemExit, match=message):
+        validator.validate_task_catalog(catalog, ["optim"], resolve=True)
+
+
 def test_standalone_optimization_recipe():
     recipe = (PACKAGE / "references/recipes.md").read_text().split("## R1.")[0]
     code = re.search(r"```python\n(.*?)\n```", recipe, re.DOTALL).group(1)
@@ -103,11 +149,7 @@ def test_invalid_asset_alignment_is_not_a_success(sample_lp_problem):
 
 @pytest.mark.parametrize("internal", ["_core", "_impl"])
 def test_wheel_validator_rejects_internal_knowledge_scopes(tmp_path, internal):
-    spec = importlib.util.spec_from_file_location(
-        "optim_wheel_validator", ROOT / "scripts/validate_wheel.py"
-    )
-    validator = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(validator)
+    validator = _wheel_validator()
     wheel = tmp_path / "optim-test.whl"
     with ZipFile(wheel, "w") as archive:
         for name in validator.REQUIRED_RESOURCES:

@@ -75,8 +75,8 @@ python setup.py bdist_wheel
 4. wheel 中没有 .c、.cpp 或 Cython 注解 HTML；
 5. 从空目录安装 wheel 后，LP、QP、factor-QCQP smoke 均可求解；
 6. optim._core.engine.__file__ 指向平台扩展模块，而不是 Python 源码。
-7. `LIBRARY.toml`、`references/api_overview.md`、`recipes.md` 和 `gotchas.md` 已进入 wheel；
-8. wheel 元数据、`optim.__version__` 和 `LIBRARY.toml` 版本一致，首个新版 tag 为 `v3.0.0`。
+7. `LIBRARY.toml`、三份 Markdown 参考及 `references/task_entries.toml` 已进入 wheel；
+8. wheel 的 METADATA 与 `optim.__version__` 版本一致，AI 任务路由能解析到公开接口。
 ```
 
 `build.sh` 会自动执行静态 wheel 内容检查。脱离源码环境的运行时验收可使用
@@ -93,8 +93,8 @@ git tag v3.0.0
 ```
 
 tag 必须严格使用 `vX.Y.Z`。tag 之间的本地构建会自动生成带提交距离和 commit id 的开发
-版本；`--push` 只允许干净工作树且 `HEAD` 正好具有发布 tag，避免上传开发版本。构建阶段还会
-把实际 SCM 版本写入 wheel 内的 `LIBRARY.toml`，源码 catalog 保留 `dynamic` 占位符。
+版本；`--push` 只允许干净工作树且 `HEAD` 正好具有发布 tag，避免上传开发版本。发行版本
+由 wheel 的 METADATA 提供。`LIBRARY.toml` 声明公开知识范围，任务目录的 schema 版本独立维护。
 
 当前 core ABI 由 `CORE_ABI_VERSION` 标识。prepared handle 只允许同一进程、同一 wheel 版本
 短期使用，不可持久化或跨进程传输。

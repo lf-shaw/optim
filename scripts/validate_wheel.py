@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from importlib import import_module
 import re
 import sys
 import tomllib
@@ -10,11 +11,13 @@ from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
 
 
+TASK_CATALOG = "optim/references/task_entries.toml"
 REQUIRED_RESOURCES = {
     "optim/LIBRARY.toml",
     "optim/references/api_overview.md",
     "optim/references/gotchas.md",
     "optim/references/recipes.md",
+    TASK_CATALOG,
     "optim/py.typed",
 }
 ALLOWED_IMPLEMENTATION_PYTHON = {
@@ -44,6 +47,51 @@ REQUIRED_CORE_MODULES = {
 }
 
 
+def validate_task_catalog(
+    catalog: dict, public_modules: list[str], *, resolve: bool = False
+) -> int:
+    """检查任务目录的发布边界；安装态还检查公开路由和文档能否读取。"""
+
+    if catalog.get("schema_version") != 1 or not isinstance(catalog.get("domains"), dict):
+        raise SystemExit("任务目录必须使用 schema_version=1 和 domains 表")
+    scopes = sorted(public_modules, key=len, reverse=True)
+    count = 0
+    for domain in catalog["domains"].values():
+        for task in domain["tasks"].values():
+            routes = task.get("routes")
+            if not isinstance(routes, list) or not routes:
+                raise SystemExit("任务必须至少包含一条路由")
+            seen = set()
+            for route in routes:
+                symbol, condition = route.get("symbol"), route.get("when")
+                if not isinstance(condition, str) or not condition.strip():
+                    raise SystemExit(f"任务路由缺少选择条件: {symbol}")
+                if not isinstance(symbol, str) or any(
+                    not part.isidentifier() or part.startswith("_") for part in symbol.split(".")
+                ):
+                    raise SystemExit(f"任务路由必须使用公开符号: {symbol}")
+                scope = next(
+                    (module for module in scopes if symbol.startswith(module + ".")),
+                    None,
+                )
+                if scope is None or symbol in seen:
+                    raise SystemExit(f"任务路由越过公开范围或重复: {symbol}")
+                seen.add(symbol)
+                if resolve:
+                    owner = import_module(scope)
+                    parts = symbol[len(scope) + 1 :].split(".")
+                    exported = getattr(owner, "__all__", (parts[0],))
+                    value = owner if parts[0] in exported else None
+                    for part in parts:
+                        value = getattr(value, part, None)
+                    if value is None or not getattr(value, "__doc__", None):
+                        raise SystemExit(f"任务路由不可解析或缺少文档: {symbol}")
+            count += 1
+    if not count:
+        raise SystemExit("任务目录为空")
+    return count
+
+
 def validate(path: Path) -> None:
     """检查一个 wheel；发现缺失资源或核心源码泄漏时终止构建。"""
 
@@ -70,6 +118,7 @@ def validate(path: Path) -> None:
         if missing:
             raise SystemExit(f"wheel 缺少必要资源: {missing}")
         library = tomllib.loads(archive.read("optim/LIBRARY.toml").decode("utf-8"))
+        catalog = archive.read(TASK_CATALOG).decode("utf-8")
         metadata_name = next(
             name for name in names if name.endswith(".dist-info/METADATA")
         )
@@ -95,6 +144,7 @@ def validate(path: Path) -> None:
         any(part.startswith("_") for part in name.split(".")[1:]) for name in scopes
     ):
         raise SystemExit("AI 知识范围不得暴露私有 namespace（core/impl）")
+    tasks = validate_task_catalog(tomllib.loads(catalog), library["api"]["modules"])
 
     core_python = {
         name
@@ -142,7 +192,7 @@ def validate(path: Path) -> None:
 
     print(
         f"✅ wheel 校验通过：{len(compiled)} 个 core 扩展，{len(impl_compiled)} 个 impl 扩展，"
-        f"{len(REQUIRED_RESOURCES)} 个公共资源"
+        f"{len(REQUIRED_RESOURCES)} 个公共资源，{tasks} 个 AI 任务"
     )
 
 

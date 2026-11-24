@@ -32,6 +32,7 @@ from optim import (
     WeightBounds,
 )
 from optim._core import engine
+from validate_wheel import TASK_CATALOG, validate_task_catalog
 
 
 def _problem() -> PortfolioProblem:
@@ -118,6 +119,7 @@ def main() -> None:
         "references/api_overview.md",
         "references/gotchas.md",
         "references/recipes.md",
+        TASK_CATALOG.removeprefix("optim/"),
     ):
         if not package_files.joinpath(relative).is_file():
             raise RuntimeError(f"installed wheel misses resource: {relative}")
@@ -125,6 +127,8 @@ def main() -> None:
         manifest = tomllib.load(stream)
     if manifest.get("schema_version") != 2 or "version" in manifest["meta"]:
         raise RuntimeError("installed knowledge manifest must use metadata-only v2")
+    with package_files.joinpath(TASK_CATALOG.removeprefix("optim/")).open("rb") as stream:
+        validate_task_catalog(tomllib.load(stream), manifest["api"]["modules"], resolve=True)
 
     base = _problem()
     problems = {
