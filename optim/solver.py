@@ -506,7 +506,14 @@ class Solver:
             raise ValueError("exposure shape dose not match mu and F")
 
         # 协方差矩阵分解
-        V = np.linalg.cholesky(F)  # shape is (k, k)
+        try:
+            V = np.linalg.cholesky(F)
+        except np.linalg.LinAlgError:
+            values, vectors = np.linalg.eigh(F)
+            scale = max(1.0, float(np.abs(F).max()))
+            if values[0] < -1e-10 * scale:
+                raise ValueError("因子协方差不是半正定矩阵") from None
+            V = vectors * np.sqrt(np.maximum(values, 0.0))
 
         # G 矩阵
         G = E @ V  # shape is (n, k)

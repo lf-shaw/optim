@@ -8,10 +8,9 @@ import pandas as pd
 import numpy as np
 import bottleneck as bn
 
-from tqdm import notebook
+from tqdm.auto import tqdm
 
-import tuda2
-import carry
+from ._data import _panel, benchmark_frame, daily_returns, reindex, risk_frame
 
 from .solver import Solver, ProblemInfeasible
 
@@ -92,7 +91,7 @@ def __validate_constraint_extra_attrs(
                 raise ValueError(f"额外属性 {c} 的约束必须满足下限小于上限 {w}")
 
         if universe is not None and align_to_universe:
-            extra_attrs = carry.utils.reindex(extra_attrs, index=universe.index)
+            extra_attrs = reindex(extra_attrs, index=universe.index)
 
     return extra_attrs
 
@@ -166,7 +165,7 @@ def __align_benchmark_with_universe(
         与 universe 对齐过的 benchmark，weight 为权重，缺失值已填 0
     """
     # 检查 基准 与 universe 的匹配度
-    benchmark = carry.utils.reindex(benchmark, index=universe.index)
+    benchmark = reindex(benchmark.astype(float), index=universe.index)
     avg_weight = benchmark.weight.sum() / length
     if avg_weight < 1 - tolerance:
         raise ValueError(f"基准有效权重为 {avg_weight}，却是比例超过阈值 {tolerance}")
@@ -276,7 +275,7 @@ def __validate_risk_exposure_constraints(
         if v[0] >= v[1]:
             raise TypeError(f"{exposure_type} 的约束 {k} 的条件必须满足下限小于上限")
 
-    exposures = carry.utils.reindex(exposures, index=universe.index)
+    exposures = reindex(exposures, index=universe.index)
     return exposures
 
 
@@ -500,7 +499,7 @@ def optimize(
                 ub[idx] = v[1]
         else:
             cols = constraint_style.keys()
-            exposure_style = styles[cols].to_numpy()  # type: ignore
+            exposure_style = styles[list(cols)].to_numpy()  # type: ignore
             lb, ub = np.ones(len(cols)) * 0.0, np.ones(len(cols)) * 1.0
 
             for i, k in enumerate(cols):
@@ -517,7 +516,7 @@ def optimize(
         cols = None
         if "all" in constraint_industry:
             cols = list(industries.columns)  # type: ignore
-            exposure_industry = industries[cols].to_numpy()  # type: ignore
+            exposure_industry = industries[list(cols)].to_numpy()  # type: ignore
             lb_, ub_ = constraint_industry.pop("all")
             lb, ub = np.ones(len(cols)) * lb_, np.ones(len(cols)) * ub_
 
@@ -528,7 +527,7 @@ def optimize(
                 ub[idx] = v[1]
         else:
             cols = constraint_industry.keys()
-            exposure_industry = industries[cols].to_numpy()  # type: ignore
+            exposure_industry = industries[list(cols)].to_numpy()  # type: ignore
             lb, ub = np.ones(len(cols)) * 0.0, np.ones(len(cols)) * 1.0
             for i, k in enumerate(cols):
                 lb[i] = constraint_industry[k][0]
@@ -693,6 +692,7 @@ def multioptimize(
     weight_tolerance: float = 1e-4,
     turnover_limit_relax_range: tuple[float, int] | None = None,
     show_progress=True,
+    risk_model: str = "cne5",
     **kwargs,
 ):
     """
@@ -780,7 +780,10 @@ def multioptimize(
         第一个参数是单次放松的步长，第二个参数是最大放松的次数，如果设如果第一个参数设置为 0，则直接放弃换手率约束进行求解
 
     show_progress : bool, default is True
-        是否显示进度条，默认为 True，只在 jupyter 环境下有效。
+        在终端或 Jupyter 显示进度条。
+
+    risk_model : {cne5, datayes}, default cne5
+        未手工提供 exposure 时，由 tuda2 一次加载该模型的全部调仓日敞口。
 
     kwargs : dict
         其他参数
@@ -811,17 +814,9 @@ def multioptimize(
     __validate_universe(universe)
 
     # 优化日期列表
-    opt_dts: pd.DatetimeIndex = universe.index.get_level_values("dt").unique()  # type: ignore
-
-    # # 交易日
-    # dts = tuda2.get_trading_days(opt_dts[0], opt_dts[-1])
-
-    # 如果基准是是字符串，提取基准日度权重
-    if isinstance(benchmark, str):
-        benchmark = tuda2.get_index_weight(benchmark, dts=opt_dts, type="daily")
-    elif isinstance(benchmark, pd.Series):
-        benchmark = benchmark.to_frame("weight")
-
+    universe = _panel(universe, "sid", "样本空间")
+    opt_dts = pd.DatetimeIndex(universe.index.unique(level="dt"))
+    benchmark = benchmark_frame(benchmark, opt_dts)
     __validate_benchmark(benchmark)
 
     # 检查 基准 与 universe 的匹配度
@@ -829,56 +824,31 @@ def multioptimize(
         benchmark, universe, len(opt_dts), weight_tolerance
     )
 
-    # 按需读取 barra 数据
-    # 因子暴露度, 将行业因子都展开
-    if constraint_style:
-        constraint_style = {k.lower(): v for k, v in constraint_style.items()}
-
-        # 约定 exposure 中的 行业敞口为 industry 列
-
-        if "exposure" in kwargs:
-            # 参数提供了敞口数据
-            exposure = kwargs.pop("exposure")
-
-            # TODO 检查日期覆盖度
-        else:
-            # 提取
-            exposure = tuda2.get_risk_model(
-                "exposure", since=opt_dts[0], version="cne5"
+    styles = industries = None
+    if constraint_style or constraint_industry:
+        exposure = kwargs.pop("exposure", None)
+        if exposure is None:
+            exposure = risk_frame(
+                "exposure", opt_dts, risk_model,
+                factor_type=None if constraint_style else "industry",
             )
-
-        styles = carry.utils.reindex(exposure, index=universe.index)
-        industry = styles.pop("industry")
-        styles.fillna(0.0, inplace=True)
-
-        # 验证风格因子敞口
-        styles = __validate_risk_exposure_constraints(
-            "风格因子", constraint_style, styles, universe
-        )
-
-    else:
-        styles = None
-        industry = None
-
-    # 行业敞口
-    if constraint_industry:
-        constraint_industry = {k.lower(): v for k, v in constraint_industry.items()}
-        if industry is None:
-            if "exposure" in kwargs:
-                industry = kwargs.pop("exposure")["industry"]
-                # TODO 检查日期覆盖度
-            else:
-                industry = tuda2.get_risk_model(
-                    "exposure", since=opt_dts[0], version="cne5", factor_type="industry"
-                )["industry"]
-            industry = carry.utils.reindex(industry, index=universe.index)
-        industries = pd.get_dummies(industry, dtype=float)
-
-        industries = __validate_risk_exposure_constraints(
-            "行业因子", constraint_industry, industries, universe
-        )
-    else:
-        industries = None
+        else:
+            exposure = _panel(exposure, "sid", "手工敞口", opt_dts)
+        exposure = reindex(exposure, index=universe.index)
+        if constraint_style:
+            constraint_style = {k.lower(): v for k, v in constraint_style.items()}
+            styles = exposure.drop(columns="industry", errors="ignore").fillna(0.0)
+            styles.columns = styles.columns.str.lower()
+            styles = __validate_risk_exposure_constraints(
+                "风格因子", constraint_style, styles, universe,
+            )
+        if constraint_industry:
+            constraint_industry = {k.lower(): v for k, v in constraint_industry.items()}
+            industries = pd.get_dummies(exposure["industry"], dtype=float)
+            industries.columns = industries.columns.str.lower()
+            industries = __validate_risk_exposure_constraints(
+                "行业因子", constraint_industry, industries, universe,
+            )
 
     # 额外属性敞口
     __validate_constraint_extra_attrs(
@@ -903,7 +873,7 @@ def multioptimize(
         constraint_extra_attrs_active is not None
         or constraint_extra_attrs_abs is not None
     ):
-        extra_attrs = carry.utils.reindex(extra_attrs, index=universe.index)
+        extra_attrs = reindex(extra_attrs, index=universe.index)
 
     # 初始持仓
     init_portfolio = __validate_init_portfolio(
@@ -914,60 +884,31 @@ def multioptimize(
     __validate_asset_ub(asset_ub)
     __validate_active_asset_ub(active_ub)
 
-    # 多期优化一定有 rtn
     if len(opt_dts) > 1:
-        # 多期调整时计算初始持仓权重用的收益率
-        if "rtn" in kwargs:
-            rtn = kwargs.pop("rtn")
-            # TODO 检查日期覆盖度
-        else:
-            # 提取整个区间的收盘收益率
-            rtn = tuda2.get_return(
-                since=opt_dts[0],
-                until=opt_dts[-1],
-                freq="D",
-                window=1,
-                shift=False,
-                market_side="close",
-                price_type="vwap",
-                price_window=0,
-            )
-
-        rtn.fillna(0.0, inplace=True)
-        rtn = rtn.iloc[:, 0]  # 取 第一列
-        rtn.name = "rtn"
-        dts = rtn.index.get_level_values("dt").unique()
-
-        # 不同日期的块的起始点和长度
-        idx = carry.utils._generate_index(rtn.index).check_dt_monotonic()
-
+        rtn = daily_returns(
+            opt_dts, kwargs.pop("rtn", None), universe.index.unique(level="sid").tolist(),
+        )
+        periods = rtn.groupby(level="dt", sort=False)
     else:
         rtn = None
-        dts = opt_dts
-
-        # 不同日期的块的起始点和长度
-        idx = carry.utils._generate_index(universe).check_dt_monotonic()
+        periods = [(opt_dts[0], None)]
 
     if show_progress:
-        idx = notebook.tqdm(idx)  # 显示进度条
+        periods = tqdm(periods)
 
     # 保存结果
     opted_weight = {}
 
     # 遍历所有(收益率中的)交易日
-    for i, (start, length) in enumerate(idx):
-        dt = dts[i]
+    for dt, period_return in periods:
 
         # 多期优化时要更新初始持仓
         if rtn is not None:
 
             if init_portfolio is not None:
                 # 丢弃 index 中的 dt
-                rtn_ = rtn.iloc[start : start + length].reset_index("dt", drop=True)
-                rtn_ = rtn_.reindex(init_portfolio.index)
-                rtn_.fillna(0, inplace=True)
-                init_portfolio = init_portfolio * (1 + rtn_)
-                init_portfolio.fillna(0.0, inplace=True)
+                rtn_ = period_return.droplevel("dt").reindex(init_portfolio.index, fill_value=0.0)
+                init_portfolio = (init_portfolio * (1 + rtn_)).fillna(0.0)
 
                 ss = init_portfolio.sum()
                 if ss > 0:
@@ -1127,11 +1068,5 @@ def multioptimize(
 
     # 合并结果
     if opted_weight:
-        opted_weight = pd.DataFrame(opted_weight)
-        opted_weight.columns.name = "dt"
-        opted_weight.sort_index(inplace=True)
-        opted_weight = opted_weight.T.stack()
-        opted_weight.name = "weight"
-        opted_weight = carry.utils.scale_by_dt(opted_weight).weight  # type: ignore
-
-        return opted_weight
+        weight = pd.concat(opted_weight, names=["dt", "sid"]).sort_index().rename("weight")
+        return weight / weight.groupby(level="dt", sort=False).transform("sum")

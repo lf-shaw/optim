@@ -4,71 +4,14 @@ mvo优化封装
 
 import pandas as pd
 import numpy as np
-from tqdm import notebook
-
+from tqdm.auto import tqdm
 import tuda2
-import carry
 
-from .solver import Solver
-
-import gc
-
-# spec_risk, total_risk: 波动率且年化
-# cov : 方差，年化
-
-
-__FACTORS__ = pd.Series(
-    {
-        "beta": 1,
-        "btop": 1,
-        "earnyild": 1,
-        "growth": 1,
-        "leverage": 1,
-        "liquidty": 1,
-        "momentum": 1,
-        "resvol": 1,
-        "size": 1,
-        "sizenl": 1,
-        "传媒": 2,
-        "电力设备": 2,
-        "电子": 2,
-        "房地产": 2,
-        "纺织服饰": 2,
-        "非银金融": 2,
-        "钢铁": 2,
-        "公用事业": 2,
-        "国防军工": 2,
-        "环保": 2,
-        "机械设备": 2,
-        "基础化工": 2,
-        "计算机": 2,
-        "家用电器": 2,
-        "建筑材料": 2,
-        "建筑装饰": 2,
-        "交通运输": 2,
-        "煤炭": 2,
-        "美容护理": 2,
-        "农林牧渔": 2,
-        "汽车": 2,
-        "轻工制造": 2,
-        "商贸零售": 2,
-        "社会服务": 2,
-        "石油石化": 2,
-        "食品饮料": 2,
-        "通信": 2,
-        "医药生物": 2,
-        "银行": 2,
-        "有色金属": 2,
-        "综合": 2,
-        "country": 3,
-    }
+from ._data import (
+    _panel, benchmark_frame, covariance_day, daily_returns, quadratic_exposure,
+    reindex, risk_frame,
 )
-
-# 因子列表，对于对齐数据使用
-STYLE_list = __FACTORS__[__FACTORS__ == 1].sort_index().index.to_list()
-INDUSTRY_list = __FACTORS__[__FACTORS__ == 2].sort_index().index.to_list()
-COUNTRY_list = ["country"]
-ALL_RM_list = COUNTRY_list + STYLE_list + INDUSTRY_list
+from .solver import ProblemInfeasible, Solver
 
 
 def __check_df(df, name):
@@ -89,65 +32,26 @@ def __check_df(df, name):
     assert df.index.names == ["dt", "sid"], "{0} 的 index 必须是 [dt, sid]".format(name)
 
 
-def __gen_style_industry_constraint(constraint_dic, _type="factor"):
-    """
-    用来设置 风格 或 行业的字典约束
-    """
-
-    #  风格约束 或 行业约束
-    if _type == "factor":
-        factors = STYLE_list
-    elif _type == "industry":
-        factors = INDUSTRY_list
-
-    d_cons_factor = {}
-    if constraint_dic is None:
-        lb = None
-        ub = None
-    else:
-        assert isinstance(constraint_dic, dict), "额外约束必须是 dict 形式"
-
-        constraint_dic = {k.lower(): v for k, v in constraint_dic.items()}
-
-        if "all" in constraint_dic:
-            all_constraint_factor = constraint_dic.pop("all")
-        else:
-            all_constraint_factor = (-10, 10)
-
-        # 判断是否是合法的因子名称 或 行业名称
-        k_list = list(constraint_dic.keys())
-        for k in k_list:
-            if k not in factors:
-                print(
-                    f"{k} 不是合法的 {_type} 名称, 与大小写无关，优化继续，忽略 {k} 的 {_type}约束"
-                )
-                constraint_dic.pop(k)
-
-        # 生成约束字典
-        for r in factors:
-            d_cons_factor[r] = all_constraint_factor
-
-        # 更新单独约束
-        d_cons_factor.update(constraint_dic)
-        lb = []
-        ub = []
-        for k, v in d_cons_factor.items():
-            lb.append(v[0])
-            ub.append(v[1])
-        lb = np.array(lb) * 1.0
-        ub = np.array(ub) * 1.0
-
-    return lb, ub
+def __gen_style_industry_constraint(constraints, factors):
+    """按当天有效因子顺序生成约束界。"""
+    if constraints is None or not len(factors):
+        return None, None
+    if not isinstance(constraints, dict):
+        raise TypeError("敞口约束必须为 dict")
+    entries = {name.lower(): pair for name, pair in constraints.items()}
+    bounds = np.asarray([entries.get(name.lower(), entries.get("all", (-10, 10))) for name in factors], dtype=float)
+    return bounds[:, 0], bounds[:, 1]
 
 
 def __optimize(
     dt,
     universe,
     factor_cov,
+    factor_types,
     ub=1.0,
     init_portfolio=None,
-    constraint_factor=(None, None),
-    constraint_industry=(None, None),
+    constraint_factor=None,
+    constraint_industry=None,
     black_list=None,
     freeze_list=None,
     customized_weight=None,
@@ -178,20 +82,21 @@ def __optimize(
         因子协方差矩阵
     """
 
-    # 取当天数据
+    factors, F = covariance_day(factor_cov, dt)
     universe_dt = universe.xs(dt)
-
-    alpha_dt = universe_dt["alpha"].values
-    benchmark_dt = universe_dt["weight"].values
-    # 协方差矩阵
-    factor_cov_dt = factor_cov.xs(dt)[ALL_RM_list].loc[ALL_RM_list]
-    F = factor_cov_dt.values
-
-    spec_risk_dt = universe_dt["spec_risk"]
-    D = spec_risk_dt.values
-
-    exposure_dt = universe_dt[ALL_RM_list]
-    E = exposure_dt.values
+    missing_factors = factors.difference(universe_dt.columns)
+    if len(missing_factors):
+        raise ValueError(f"{dt.date()} 缺少有效因子敞口 {missing_factors.tolist()[:10]}")
+    universe_dt = universe_dt.dropna(subset=["alpha", "spec_risk", "industry", *factors])
+    if universe_dt.empty:
+        raise ValueError(f"{dt.date()} 没有同时具备敞口和特异风险的股票")
+    alpha_dt = universe_dt["alpha"].to_numpy(float)
+    benchmark_dt = universe_dt["weight"].to_numpy(float)
+    D = universe_dt["spec_risk"].to_numpy(float)
+    exposure_dt = universe_dt.loc[:, factors]
+    E = exposure_dt.to_numpy(float)
+    if not np.isfinite(E).all() or not np.isfinite(D).all() or (D < 0).any():
+        raise ValueError(f"{dt.date()} 风险敞口或特异波动率无效")
 
     if init_portfolio is None:
         init_portfolio_dt = None
@@ -203,7 +108,7 @@ def __optimize(
         x0 = init_portfolio_dt.values
 
     # 1 建立 Solver, 给定alpha和初始值
-    s = Solver(mu=alpha_dt, x0=x0, is_linear_obj=False)
+    s = Solver(mu=alpha_dt, x0=x0, is_linear_obj=gamma is not None)
 
     # 2 设置benchmark
     s.set_benchmark(benchmark_dt)
@@ -211,19 +116,11 @@ def __optimize(
     # 3 设置风险约束
     s.set_risk_constaint(F, D, E, gamma, lambda_F=ra_comm, lambda_D=ra_spec)
 
-    # 4 行业约束
-    if constraint_industry[0] is not None:
-        exposure_industry = universe_dt[INDUSTRY_list].values
-        s.set_exposure_constraint(
-            exposure_industry, constraint_industry[0], constraint_industry[1]
-        )
-
-    # 5 风格约束
-    if constraint_factor[0] is not None:
-        exposure_style = universe_dt[STYLE_list].values
-        s.set_exposure_constraint(
-            exposure_style, constraint_factor[0], constraint_factor[1]
-        )
+    for constraints, kind in [(constraint_industry, "industry"), (constraint_factor, "style")]:
+        names = [name for name in factors if factor_types[name] == kind]
+        lower, upper = __gen_style_industry_constraint(constraints, names)
+        if lower is not None:
+            s.set_exposure_constraint(universe_dt[names].to_numpy(float), lower, upper)
 
     # 6 换手率约束
     if turnover_limit is not None:
@@ -399,6 +296,7 @@ def multioptimize(
     active_ub=None,
     total_active_ub=None,
     show_progress=True,
+    risk_model="cne5",
 ):
     """
     调用 mosek 进行多期组合优化，按照时间先后顺序串行执行。
@@ -510,44 +408,29 @@ def multioptimize(
         个股总主动权重，None表示不设置
 
     show_progress : bool
-        是否显示进度条，默认为 True，只在 jupyter 环境下有效。
+        是否在终端或 Jupyter 显示进度条。
+
+    risk_model : {cne5, datayes}, default cne5
+        tuda2 风险模型。gamma 使用年化小数，例如 0.06 表示 6%。
 
     Returns
     -------
     Series
         优化之后的权重 weight，index 为 [dt, sid]
     """
-    if dts is not None:
-        dts = pd.to_datetime(dts)
-        dts = dts.sort_values()
-        dts = dts.drop_duplicates()
-        dts_bench = benchmark.index.get_level_values("dt").unique()
+    universe = _panel(universe, "sid", "样本空间")
+    if dts is None:
+        original = universe if isinstance(benchmark, str) else benchmark
+        dts = original.index.unique(level="dt")
+    dts = pd.DatetimeIndex(pd.to_datetime(dts)).sort_values().unique()
+    universe = _panel(universe, "sid", "样本空间", dts).loc[dts]
+    benchmark = benchmark_frame(benchmark, dts)
 
-        assert set(dts).issubset(set(dts_bench)), "优化日期必须是基准日期的子集"
-        benchmark = benchmark.loc[dts]
-    else:
-        dts = benchmark.index.get_level_values("dt").unique()
-        dts = dts.sort_values()
-    dts = list(dts)
-
-    universe = universe.loc[dts]
-
-    # universe 需要的列
+    schema = tuda2.get_risk_model_schema(model=risk_model)
+    exposure = quadratic_exposure(risk_frame("exposure", dts, risk_model), schema)
+    factor_cov = risk_frame("cov", dts, risk_model)
+    spec_risk = risk_frame("spec_risk", dts, risk_model)[["spec_risk"]].astype(float)
     to_concats = []
-
-    # 读取 barra 数据
-    # 因子暴露度, 将行业与国家因子都展开
-    exposure = tuda2.get_rm_data("exposure", dts=dts, rm_type="SJ")
-    industries = pd.get_dummies(exposure["industry"])
-    exposure = carry.utils.reindex(exposure, industries)
-    exposure["country"] = 1
-
-    # 因子收益率协方差矩阵
-    factor_cov = tuda2.get_rm_data("cov", dts=dts, rm_type="SJ")
-
-    # 特异波动率对角阵
-    spec_risk = tuda2.get_rm_data("spec_risk", dts=dts, rm_type="SJ")
-    spec_risk.dropna(inplace=True)
 
     if "alpha" in universe:
         alpha1 = universe["alpha"]
@@ -555,7 +438,9 @@ def multioptimize(
     elif "score" in universe:
         alpha1 = 0.05 * spec_risk["spec_risk"] * universe["score"]
         alpha1.name = "alpha"
-    to_concats.append(alpha1)
+    else:
+        raise ValueError("样本空间必须包含 alpha 或 score")
+    to_concats.append(alpha1.astype(float))
 
     to_concats.extend([exposure, benchmark, spec_risk])
 
@@ -568,103 +453,61 @@ def multioptimize(
     assert "weight" in benchmark, "基准必须包含 weight 列"
 
     # 合并数据
-    universe = carry.utils.reindex(*to_concats, index=universe.index)
+    universe = reindex(*to_concats, index=universe.index)
     # 基准权重用0补齐
     universe["weight"] = universe["weight"].fillna(0)
 
-    universe.dropna(inplace=True)
-    universe.index = universe.index.remove_unused_levels()
 
     # 3、初始持仓,只有第一期
+    if isinstance(init_portfolio, pd.Series):
+        init_portfolio = init_portfolio.rename("weight")
+        if not isinstance(init_portfolio.index, pd.MultiIndex):
+            init_portfolio = pd.concat({dts[0]: init_portfolio}, names=["dt", "sid"])
+        init_portfolio = init_portfolio.to_frame()
     if init_portfolio is not None:
-        init_portfolio = init_portfolio.loc[dts[0] : dts[0]]
+        init_portfolio = _panel(init_portfolio, "sid", "初始持仓", dts[:1]).loc[dts[:1]]
 
     if ub is not None:
         assert 0.0 < ub <= 1.0, "个股权重上限必须位于 (0, 1] 之间"
 
-    begt = dts[0]
-    prices = tuda2.get_prices(begt, dts[-1], fields=["close", "adj_factor"])
-
-    # 多期调整时计算初始持仓规模用
-    rtn = prices.loc[dts].close.unstack().pct_change()
-
-    # 保存结果
-    opted_weight = []
-
-    # 显示进度条
-    if show_progress:
-        dts = notebook.tqdm(dts)
-
-    # 行业与风格约束每一期都一样
-    # 行业约束
-    lb_industry, up_industry = __gen_style_industry_constraint(
-        constraint_industry, "industry"
+    # 只在链式多期需要区间收益，并保留调仓间的所有交易日。
+    returns = (
+        daily_returns(dts, sids=universe.index.unique(level="sid").tolist())
+        if use_pre_portfolio and len(dts) > 1 else None
     )
-
-    # 风格约束
-    lb_style, up_style = __gen_style_industry_constraint(constraint_factor, "factor")
-
-    # 对每一个日期
+    opted_weight = {}
     opted_daily = None
-    for dt in dts:
-        # print(dt)
-        # 如果使用上一期的优化结果
+    previous_date = None
+    for dt in tqdm(dts) if show_progress else dts:
+        current_initial = current_freeze = current_turnover = None
         if use_pre_portfolio:
             if opted_daily is not None:
-                # 为了保留 index 中的 dt，使用字符串时间 loc
-                dt_str = dt.strftime("%Y-%m-%d")
-
-                portfolio = (
-                    opted_daily.reset_index("dt", drop=True)["weight"]
-                    * (1 + rtn.loc[dt_str])
-                ).dropna()
-
-                # 归一化
-                portfolio = portfolio / portfolio.sum()
-                __init_portfolio = pd.DataFrame(portfolio, columns=["weight"])
-
-                # 更改日期为当前
-                __init_portfolio["dt"] = dt
-                __init_portfolio.set_index("dt", append=True, inplace=True)
-                __init_portfolio.index = __init_portfolio.index.swaplevel()
-
-                __turnover_limit = turnover_limit
-                __freeze_list = None  # 冻结清单只在第一期有效
-
-            # 处理第一期, 冻结清单只在第一期有效
-            else:
-                # 不提供初始持仓时忽略换手率控制
-                if init_portfolio is None:
-                    # 首次不控制换手率
-                    __turnover_limit = None
-                    __init_portfolio = None
-                    __freeze_list = None
-
-                else:
-                    # 否则，也只使用第一期的初始持仓
-                    __init_portfolio = init_portfolio[dt:dt].copy()
-
-                    __turnover_limit = turnover_limit
-                    __freeze_list = freeze_list
-
-        # 否则一直无换手率约束，无冻结清单约束
-        else:
-            __turnover_limit = None
-            __init_portfolio = None
-            __freeze_list = None
+                interval = returns.loc[previous_date:dt]
+                interval = interval[interval.index.get_level_values("dt") > previous_date]
+                growth = (1.0 + interval).groupby(level="sid", sort=False).prod()
+                portfolio = opted_daily * growth.reindex(opted_daily.index, fill_value=1.0)
+                portfolio = (portfolio / portfolio.sum()).rename("weight")
+                current_initial = pd.concat({dt: portfolio}, names=["dt", "sid"]).to_frame()
+                current_turnover = turnover_limit
+            elif previous_date is None and init_portfolio is not None:
+                current_initial = init_portfolio
+                current_turnover = turnover_limit
+                current_freeze = freeze_list
+        previous_date = dt
 
         try:
             out = __optimize(
                 dt,
                 universe,
                 factor_cov,
-                init_portfolio=__init_portfolio,
-                constraint_factor=(lb_style, up_style),
-                constraint_industry=(lb_industry, up_industry),
+                schema["factor_types"],
+                init_portfolio=current_initial,
+                constraint_factor=constraint_factor,
+                constraint_industry=constraint_industry,
                 black_list=black_list,
-                freeze_list=__freeze_list,
+                freeze_list=current_freeze,
                 customized_weight=customized_weight,
-                turnover_limit=__turnover_limit,
+                turnover_limit=current_turnover,
                 ra_comm=ra_comm,
                 ra_spec=ra_spec,
                 gamma=gamma,
@@ -674,23 +517,13 @@ def multioptimize(
                 total_active_ub=total_active_ub,
             )
 
-        except Exception as e:
+        except ProblemInfeasible as exc:
             out = None
-            print(f"{dt} sth is wrong: {e}")
+            print(f"{dt.date()} 问题不可行：{exc}")
 
-        # 有结果返回时
+        opted_daily = out
         if out is not None:
-            opted_daily = out.reset_index()
-            opted_daily.columns = ["sid", "weight"]
-            opted_daily["dt"] = dt
-            opted_daily.set_index(["dt", "sid"], inplace=True)
-            opted_weight.append(opted_daily)
-        else:
-            opted_daily = None
+            opted_weight[dt] = out
 
-    # 合并结果
     if opted_weight:
-        opted_weight = pd.concat(opted_weight, sort=True)
-        opted_weight.sort_index(inplace=True)
-
-        return opted_weight["weight"]
+        return pd.concat(opted_weight, names=["dt", "sid"]).sort_index().rename("weight")

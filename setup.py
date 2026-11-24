@@ -6,6 +6,7 @@ from setuptools import setup, Command
 from setuptools.command.build_py import build_py as build_py_orig
 from setuptools.command.build_ext import build_ext as build_ext_orig
 from Cython.Build import cythonize
+from mypy.stubgen import main as generate_stubs
 
 
 # ----------------------------
@@ -24,7 +25,7 @@ class GenerateStubsCommand(Command):
 
     def run(self):
         # 生成 stubs
-        os.system("stubgen --no-import --include-docstrings ./optim -o ./stubs")
+        generate_stubs(["--no-import", "--include-docstrings", "./optim", "-o", "./stubs"])
 
         # 复制存根文件到源码目录
         stubs_dir = Path("./stubs/optim")
@@ -84,7 +85,7 @@ class CustomBuildExt(build_ext_orig):
 # ----------------------------
 setup(
     name="optim",
-    version="2.0.2",
+    version="2.0.3",
     ext_modules=cythonize(
         "optim/*.py",
         exclude=["optim/__init__.py"],
@@ -108,10 +109,12 @@ setup(
     },
     python_requires=">=3.10",
     install_requires=[
-        "pandas",
-        "numpy",
-        "mosek",
-        "bottleneck",
-        "tqdm",
+        "pandas>=2.2",
+        "numpy>=2.0,<3",
+        "mosek>=11.2,<12",
+        "bottleneck>=1.4",
+        "tqdm>=4.66",
+        "carry2>=2.0.2,<3",
+        "tuda2[fizzdb]>=2.0.40,<3",
     ],
 )
