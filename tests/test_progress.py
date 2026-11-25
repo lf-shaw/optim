@@ -2,6 +2,8 @@
 
 import builtins
 from dataclasses import replace
+import re
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -9,6 +11,8 @@ import pytest
 
 from optim import PortfolioOptimizer, SolveStatus
 from optim import _progress
+from optim import _notebook_progress
+from optim.portfolio_types import SequencePolicy
 from optim.data import FactorRiskFrames, InMemoryDataSource, PortfolioSchedule
 
 
@@ -187,7 +191,7 @@ def test_real_tqdm_smoke(sample_lp_problem, capsys):
     final_lines = [line.rsplit("\r", 1)[-1] for line in capsys.readouterr().err.split("\n")]
     for label in ("序列预检", "静态预检", "逐期求解（求解完成）"):
         line, = [line for line in final_lines if line.startswith(label)]
-        assert "s" in line
+        assert re.search(r"\[\d{2}:\d{2}", line)
     assert final_lines[-2].startswith("总耗时 ")
 
 
@@ -204,3 +208,115 @@ def test_progress_closes_on_precheck_failure(sample_lp_problem, bars):
     assert [bar.labels[0] for bar in bars] == ["序列预检", "静态预检"]
     assert bars[-1].labels[-1] == "静态预检（已中断）"
     assert _progress._current_progress() is None
+
+
+@pytest.fixture
+def notebook_card(monkeypatch):
+    widget = SimpleNamespace(value="")
+    created = []
+
+    def create(counts):
+        created.append(widget)
+        return _notebook_progress._NotebookProgress(widget, counts)
+
+    monkeypatch.setattr(_progress, "_load_notebook", create)
+    return widget, created
+
+
+def test_notebook_stage_card_shows_progress_only_for_counted_active_phase(
+    monkeypatch, notebook_card
+):
+    widget, created = notebook_card
+    clock = [0.0]
+    monkeypatch.setattr(_progress, "perf_counter", lambda: clock[0])
+    monkeypatch.setattr(_notebook_progress, "perf_counter", lambda: clock[0])
+    display = _progress._Progress()
+    display.plan("取数", "静态预检", "读取持仓收益", "逐期求解")
+    display.phase("取数")
+    assert '<span class="orp-spinner"' in widget.value and "<progress" not in widget.value
+    assert widget.value.count('class="orp-step orp-pending"') == 3
+    clock[0] = 2.22
+    display.phase("静态预检", 1)
+    display.advance()
+    clock[0] = 11.13
+    display.phase("读取持仓收益")
+    assert "2.22 s" in widget.value and "1/1 期 · 8.91 s" in widget.value
+    assert "<progress" not in widget.value
+    clock[0] = 17.78
+    display.phase("序列预检")
+    clock[0] = 17.80
+    display.phase("逐期求解", 2, solving=True)
+    display.date(pd.Timestamp("2026-01-02"))
+    clock[0] = 418.13
+    display.advance(solved=True, recovered=True)
+    assert 'value="1" max="2"' in widget.value
+    assert "已耗时 06:40" in widget.value and "预计剩余 06:40" in widget.value
+    assert "400.33" not in widget.value
+    display.date(pd.Timestamp("2026-01-05"))
+    display.advance(solved=False, held=True)
+    display.finish("求解完成")
+    display.close()
+    assert len(created) == 1
+    assert "<progress" not in widget.value and '<span class="orp-spinner"' not in widget.value
+    assert "运行结束，有未求解期" in widget.value
+    assert "有解 1 期 · 无解 1 期 · 沿用旧仓 1 期 · 其中换手恢复 1 期" in widget.value
+    assert "首个无解日 2026-01-05 · 最后有解日 2026-01-02" in widget.value
+    assert "1/1 期 · 8.93 s" in widget.value
+
+
+@pytest.mark.parametrize(
+    ("exception", "expected_label", "state"),
+    [(RuntimeError, "运行出错", "error"), (KeyboardInterrupt, "已中断", "warning")],
+)
+def test_notebook_preserves_completed_and_pending_stages_on_error(
+    exception, expected_label, state, notebook_card
+):
+    widget, _ = notebook_card
+
+    @_progress._with_progress
+    def fail(*, show_progress=False):
+        display = _progress._current_progress()
+        display.plan("取数", "数据对齐", "逐期求解")
+        display.phase("取数")
+        display.phase("数据对齐")
+        raise exception("<查看异常>")
+
+    with pytest.raises(exception):
+        fail(show_progress=True)
+    assert f'class="orp-step orp-{state}"' in widget.value
+    assert 'class="orp-step orp-done"' in widget.value
+    assert 'class="orp-step orp-pending"' in widget.value
+    assert f"{expected_label} · 总耗时" in widget.value
+    assert "断点 数据对齐" in widget.value and "&lt;查看异常&gt;" in widget.value
+    assert "<progress" not in widget.value
+
+
+@pytest.mark.parametrize("on_failure", ["stop", "hold"])
+def test_notebook_tallies_actual_sequence_outcomes(sample_lp_problem, monkeypatch, notebook_card, on_failure):
+    widget, created = notebook_card
+    optimizer = PortfolioOptimizer()
+    native = optimizer.solve(sample_lp_problem)
+    later = pd.Timestamp("2026-01-05")
+    second = replace(
+        sample_lp_problem,
+        data=replace(
+            sample_lp_problem.data, date=later,
+            risk_model=replace(sample_lp_problem.data.risk_model, asof=later),
+        ),
+    )
+    attempts = iter([native, replace(native, status=SolveStatus.INFEASIBLE, weights=None)])
+    monkeypatch.setattr(optimizer, "_solve_prevalidated", lambda _: next(attempts))
+    optimizer.solve_sequence(
+        [sample_lp_problem, second],
+        holding_period_returns={later: np.zeros(len(second.data.assets))},
+        sequence_policy=SequencePolicy(on_failure=on_failure),
+        show_progress=True,
+    )
+    assert len(created) == 1
+    assert "已处理 2 / 2 期 · 有解 1 期 · 无解 1 期" in widget.value
+    assert "首个无解日 2026-01-05 · 最后有解日 2026-01-02" in widget.value
+    if on_failure == "stop":
+        assert "已停止 · 总耗时" in widget.value
+        assert "沿用旧仓 0 期" in widget.value and "status=infeasible" in widget.value
+    else:
+        assert "运行结束，有未求解期" in widget.value and "沿用旧仓 1 期" in widget.value

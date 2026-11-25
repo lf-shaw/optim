@@ -417,6 +417,8 @@ def _solve_sequence_impl(
 
     progress = _current_progress()
     if progress is not None:
+        precheck = "序列预检" if isinstance(problems, PreparedPortfolioRun) else "静态预检"
+        progress.plan(precheck, "逐期求解")
         progress.phase("序列预检")
 
     policy = SequencePolicy() if sequence_policy is None else sequence_policy
@@ -504,7 +506,7 @@ def _solve_sequence_impl(
     stopped_problem: PortfolioProblem | None = None
 
     if progress is not None:
-        progress.phase("逐期求解", len(dates))
+        progress.phase("逐期求解", len(dates), solving=True)
 
     for position in range(len(dates)):
         if progress is not None:
@@ -650,7 +652,11 @@ def _solve_sequence_impl(
             )
         )
         if progress is not None:
-            progress.advance()
+            progress.advance(
+                solved=result.status.has_solution,
+                held=not result.status.has_solution and stopped_date is None,
+                recovered=recovered,
+            )
         if stopped_date is not None:
             break
 
@@ -663,7 +669,9 @@ def _solve_sequence_impl(
         progress.finish(
             "求解完成"
             if stopped_date is None
-            else f"求解已停止：{stopped_date.date()} {steps[-1].result.status.value}"
+            else f"求解已停止：{stopped_date.date()} {steps[-1].result.status.value}",
+            state="done" if stopped_date is None else "stopped",
+            detail=stop_reason or "",
         )
     return PortfolioSequenceResult(
         steps=tuple(steps),

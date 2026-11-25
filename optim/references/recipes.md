@@ -246,8 +246,9 @@ for step in sequence.steps:
 ```
 
 长区间可在 `optimize_range` 或 `solve_sequence` 调用中指定 `show_progress=True`。
-需要可选依赖 `optim[progress]`，默认关闭。数据准备、预检与求解分别显示并保留各自耗时，
-结束时另列总耗时。提前停止或异常退出时保留已经显示的阶段及实际处理期数。
+默认关闭。Jupyter 中使用 ipywidgets 显示阶段图，终端可安装 `optim[progress]` 显示 tqdm
+文字进度。各阶段保留各自耗时，结束时显示总耗时和有解期数。停止或异常仍保留断点和实际
+处理期数。
 
 若希望生产机在缺失持仓收益时留下现场，两个多期入口均可传入
 `failure_dump_dir="tmp/sequence_failures"`（默认 None）。捕获 SequenceDataError 后，

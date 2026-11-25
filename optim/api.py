@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any, Iterable, Mapping
 import pandas as pd
 
 from .model import compile_problem
-from ._progress import _with_progress
+from ._progress import _current_progress, _with_progress
 from ._impl.solver_adapter import SolverAdapter
 from ._core import NumericalThreadScope, numerical_thread_scope
 from .portfolio_types import (
@@ -449,9 +449,8 @@ class PortfolioOptimizer:
         sequence_policy : SequencePolicy | None
             持仓漂移、失败和输出策略；``None`` 使用默认策略。
         show_progress : bool
-            默认 False。True 使用 tqdm.auto 分行显示取数、对齐、预检和逐期求解，需安装
-            optim[progress]。各阶段保留耗时，结束时另列总耗时。已知期数的阶段显示计数和预计
-            剩余时间。异常或提前停止仍保留已经显示的各行。
+            默认 False。True 在支持 ipywidgets 的 Jupyter 内原位显示阶段图和求解结果；
+            终端使用 tqdm（可安装 optim[progress]）。结束或停止时保留阶段耗时和实际处理期数。
         failure_dump_dir : str | pathlib.Path | None
             默认 None；指定后在持仓漂移数据异常时自动导出压缩上下文，异常仍抛出。
             不导出风险矩阵，不自动诊断或修改缺失收益。路径见异常 dump_path。
@@ -493,7 +492,16 @@ class PortfolioOptimizer:
 
         from .data import InMemoryDataSource
 
-        if not isinstance(data_source, InMemoryDataSource):
+        external_source = not isinstance(data_source, InMemoryDataSource)
+        progress = _current_progress()
+        if progress is not None:
+            stages = ["取数"] if external_source else []
+            stages.extend(("数据对齐", "静态预检"))
+            if external_source and resolved_policy.mode == "chained" and holding_period_returns is None:
+                stages.append("读取持仓收益")
+            progress.plan(*stages, "逐期求解")
+
+        if external_source:
             if benchmark is None:
                 raise ValueError("external data_source requires benchmark")
             prepared = data_source.prepare_sequence(
@@ -570,9 +578,9 @@ class PortfolioOptimizer:
         sequence_policy : SequencePolicy | None
             多期状态推进策略；``None`` 使用默认值。
         show_progress : bool
-            默认 False；True 使用 tqdm.auto 显示预检及逐期求解进度，需安装
-            optim[progress]。各阶段独占一行，保留当前日期、已完成期数及耗时；
-            运行结束后显示总耗时，异常或提前停止仍保留已显示各行。
+            默认 False。True 在支持 ipywidgets 的 Jupyter 内显示预检及逐期求解阶段图，
+            终端使用 tqdm（可安装 optim[progress]）。结束或停止时保留各阶段耗时、实际处理
+            及有解期数。
         failure_dump_dir : str | pathlib.Path | None
             默认 None，不写文件。指定目录后，仅漂移数据异常自动导出关键上下文；异常
             保留 partial_result、previous_weight、holding_return，支持手动 dump(path)。

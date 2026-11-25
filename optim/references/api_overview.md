@@ -209,10 +209,10 @@ $$
 路径不排序。失败日期不生成权重，`output_weights="none"` 时明确报错。
 
 `optimizer.optimize_range(..., show_progress=True)` 和 `optimizer.solve_sequence(..., show_progress=True)`
-开启可选 tqdm.auto 进度条（安装 `optim[progress]`），默认关闭，不属于 SequencePolicy。
-各阶段单独占一行并保留最终耗时，结束时另列总耗时。取数和对齐显示阶段名称及耗时；按日
-预检与求解显示当前日期、已处理期数和预计剩余时间。计数包含已完成的失败尝试；提前停止或
-异常退出仍保留已显示的行和实际计数。
+启用可选进度显示，默认关闭。Jupyter 内核存在 ipywidgets 时使用横向阶段图；终端可安装
+`optim[progress]` 使用 tqdm。按日预检与求解显示当前日期、已处理期数和预计剩余时间。
+完成时保留各阶段及总耗时、处理和有解期数、沿用旧仓和换手恢复期数。提前停止或发生异常
+时，保留进度和断点信息。
 
 多期入口的 `failure_dump_dir=None` 默认不写文件。指定目录后，持仓漂移数据错误会导出
 压缩 JSON，上层仍抛出 SequenceDataError；异常的 date/previous_date、evidence DataFrame、
