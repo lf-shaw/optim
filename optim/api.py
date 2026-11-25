@@ -18,6 +18,7 @@ from ._progress import _current_progress, _with_progress
 from ._impl.solver_adapter import SolverAdapter
 from ._core import NumericalThreadScope, numerical_thread_scope
 from .portfolio_types import (
+    AlphaSpec,
     AssetTradeConstraints,
     OptimizationResult,
     PortfolioConstraints,
@@ -38,8 +39,10 @@ if TYPE_CHECKING:
         RiskCoveragePolicy,
     )
     from .integrations.tuda2 import Tuda2DataSource
-    from .portfolio_types import AlphaSpec
     from .sequence import PortfolioSequenceResult
+
+
+_DEFAULT_ALPHA_SPEC = AlphaSpec()
 
 
 @dataclass(frozen=True)
@@ -237,7 +240,7 @@ class PortfolioOptimizer:
         initial_weight: pd.Series | None = None,
         objective: PortfolioObjective,
         constraints: PortfolioConstraints | None = None,
-        alpha_spec: "AlphaSpec | None" = None,
+        alpha_spec: AlphaSpec | None = _DEFAULT_ALPHA_SPEC,
         asset_trade: AssetTradeConstraints | None = None,
         blacklist: Iterable[Any] | None = None,
         frozen: Iterable[Any] | None = None,
@@ -274,7 +277,8 @@ class PortfolioOptimizer:
         constraints : PortfolioConstraints | None
             可行域配置；``None`` 使用默认约束。
         alpha_spec : AlphaSpec | None
-            使用数据源物化 alpha 时的单位和尺度；直接传 ``data`` 时单位已经包含在数据中。
+            数据源模式的 alpha 单位和尺度，默认为 ``AlphaSpec()``，即标准化得分、尺度 1。
+            该声明不变换输入数值。直接传 ``data`` 时使用其已有的 alpha_spec。
         asset_trade : AssetTradeConstraints | None
             已构造的单期交易指令。不能与下面的便捷名单同时传入，也不能与
             ``constraints.asset_trade`` 重复。
@@ -347,7 +351,7 @@ class PortfolioOptimizer:
                 "universe": universe,
                 "benchmark": benchmark,
                 "initial_weight": initial_weight,
-                "alpha_spec": alpha_spec,
+                "alpha_spec": None if alpha_spec is _DEFAULT_ALPHA_SPEC else alpha_spec,
                 "benchmark_policy": benchmark_policy,
                 "risk_coverage_policy": risk_coverage_policy,
                 "tradable_universe": tradable_universe,
@@ -405,7 +409,7 @@ class PortfolioOptimizer:
         schedule: "PortfolioSchedule",
         objective: "PortfolioObjective",
         constraints: "PortfolioConstraints",
-        alpha_spec: "AlphaSpec | None",
+        alpha_spec: AlphaSpec | None = _DEFAULT_ALPHA_SPEC,
         initial_weight: pd.Series | None = None,
         benchmark: str | pd.Series | None = None,
         holding_period_returns=None,
@@ -435,7 +439,8 @@ class PortfolioOptimizer:
         constraints : PortfolioConstraints
             各日期共享的静态约束；不得包含非空单期交易名单。
         alpha_spec : AlphaSpec | None
-            alpha 单位和尺度；alpha 目标必须提供。
+            alpha 单位和尺度，默认为 ``AlphaSpec()``，即标准化得分、尺度 1。
+            其他单位或尺度可显式指定。只有无需 alpha 的目标才允许显式传 ``None``。
         initial_weight : pandas.Series | None
             链式首日实际持仓。默认首期免换手时可省略，将首日基准中的可交易部分归一化
             作为初始持仓；无正权重的可交易基准成分时报错。此时 asset_trade 必须为 None，

@@ -169,6 +169,8 @@ assets 标签的 FactorRiskModel。可供多个组合复用，由 make_portfolio
 
 `PortfolioSchedule.universe` 必须使用名称严格为 `("dt", "sid")` 的唯一 `MultiIndex`。
 风险模型、基准和 alpha 必须与每个调仓日严格同日，不会用前一个可用日期补齐。
+通过数据源调用 `optimize` 或 `optimize_range` 时，`alpha_spec` 默认采用标准化得分、
+尺度 1。可显式声明其他尺度，输入得分本身原样参与优化。
 
 链式模式在日期 $t$ 求解前，先将上一期目标组合按区间 close-to-close 收益自然漂移：
 

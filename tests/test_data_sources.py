@@ -584,15 +584,22 @@ def test_early_return_fetch_does_not_allow_pruned_assets_to_cover_a_date():
         assemble_close_returns(frame, dates, ["a"], filter_sids=True)
 
 
-def test_optimize_range_reuses_the_same_strict_memory_path():
+def test_optimize_range_reuses_the_same_strict_memory_path(monkeypatch):
     dates = pd.to_datetime(["2026-01-02", "2026-01-05"])
     source = InMemoryDataSource(risk_data=_frames(), benchmark=_benchmark())
-    result = PortfolioOptimizer().optimize_range(
+    optimizer = PortfolioOptimizer()
+    native = optimizer._solve_prevalidated
+
+    def solve(problem):
+        assert problem.data.alpha_spec == AlphaSpec()
+        return native(problem)
+
+    monkeypatch.setattr(optimizer, "_solve_prevalidated", solve)
+    result = optimizer.optimize_range(
         data_source=source,
         schedule=_schedule(),
         objective=MaximizeAlpha(),
         constraints=_constraints(),
-        alpha_spec=AlphaSpec(),
         initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
         holding_period_returns={dates[1]: pd.Series(0.0, index=["a", "b"])},
         sequence_policy=SequencePolicy(output_weights="none"),
@@ -1017,3 +1024,30 @@ def test_optimizer_single_facade_requires_exactly_one_data_entry():
             data_source=Tuda2DataSource(module=_FakeTuda2()),
             **common,
         )
+
+
+@pytest.mark.parametrize("options", [{}, {"alpha_spec": AlphaSpec(units="decimal_return", scale=0.01)}])
+def test_tuda2_single_facade_alpha_spec_default_and_override(options):
+    date = pd.Timestamp("2026-01-02")
+    result = PortfolioOptimizer().optimize(
+        data_source=Tuda2DataSource(module=_FakeTuda2()),
+        date=date,
+        universe=_schedule().day(date),
+        benchmark="000852.SH",
+        initial_weight=pd.Series({"a": 0.5, "b": 0.5}),
+        objective=MaximizeAlpha(),
+        constraints=_constraints(),
+        **options,
+    )
+    assert result.status.has_solution
+    assert result.problem.data.alpha_spec == options.get("alpha_spec", AlphaSpec())
+
+
+def test_single_facade_respects_alpha_spec_on_existing_portfolio_data(sample_lp_problem):
+    spec = AlphaSpec(units="decimal_return", scale=0.01)
+    data = replace(sample_lp_problem.data, alpha_spec=spec)
+    result = PortfolioOptimizer().optimize(
+        data=data, objective=sample_lp_problem.objective, constraints=sample_lp_problem.constraints,
+    )
+    assert result.status.has_solution
+    assert result.problem.data.alpha_spec is spec

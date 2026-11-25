@@ -578,10 +578,12 @@ schedule = PortfolioSchedule(
 `benchmark` 接受指数代码或以 `(dt, sid)` 为索引的逐日权重 Series。自定义权重必须
 覆盖所有调仓日期，不广播单期权重、不前向填充；传入 Series 时跳过指数权重取数。
 使用已绑定基准的 `InMemoryDataSource` 时，不再指定 `benchmark`。
+通过数据源调用 `optimize` 或 `optimize_range` 时，省略 `alpha_spec` 即使用
+`AlphaSpec(units="standardized_score", scale=1.0)`。该参数声明单位和尺度，输入的
+数值原样用于优化。直接传入 `PortfolioData` 时沿用该对象已有的声明。
 
 ```python
 from optim import (
-    AlphaSpec,
     MaximizeAlpha,
     PortfolioOptimizer,
     SequencePolicy,
@@ -594,7 +596,6 @@ sequence = PortfolioOptimizer().optimize_range(
     benchmark="000852.SH",
     objective=MaximizeAlpha(),
     constraints=constraints,
-    alpha_spec=AlphaSpec(),
     initial_weight=first_day_weight,
     sequence_policy=SequencePolicy(
         mode="chained",

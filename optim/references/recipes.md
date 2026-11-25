@@ -183,7 +183,7 @@ result = optimizer.optimize(
 ## R3. 通过 tuda2 求解单个交易日
 
 ```python
-from optim import AlphaSpec, MaximizeAlpha, PortfolioOptimizer
+from optim import MaximizeAlpha, PortfolioOptimizer
 from optim.integrations.tuda2 import Tuda2DataSource
 
 result = PortfolioOptimizer().optimize(
@@ -197,11 +197,11 @@ result = PortfolioOptimizer().optimize(
     initial_weight=pretrade_weight,
     objective=MaximizeAlpha(),
     constraints=constraints,
-    alpha_spec=AlphaSpec(),
 )
 ```
 
-该入口只取指定日期，不读取持仓漂移收益。
+该入口只取指定日期。数据源入口的 `alpha_spec` 默认是 `AlphaSpec()`，即标准化得分、
+尺度 1。输入 alpha 数值原样用于优化；其他单位或尺度可以显式传入。
 
 ---
 
@@ -211,7 +211,6 @@ result = PortfolioOptimizer().optimize(
 import pandas as pd
 
 from optim import (
-    AlphaSpec,
     MaximizeAlpha,
     PortfolioOptimizer,
     PortfolioSchedule,
@@ -232,7 +231,6 @@ sequence = PortfolioOptimizer().optimize_range(
     benchmark="000852.SH",
     objective=MaximizeAlpha(),
     constraints=constraints,
-    alpha_spec=AlphaSpec(),
     initial_weight=first_day_weight,
     sequence_policy=SequencePolicy(
         mode="chained",
