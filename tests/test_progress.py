@@ -157,7 +157,7 @@ def test_range_keeps_each_progress_stage_and_prints_one_total(sample_lp_problem,
         show_progress=True,
     )
     assert result.steps[0].result.status.has_solution
-    assert [bar.labels[0] for bar in bars] == ["数据对齐", "静态预检", "序列预检", "逐期求解"]
+    assert [bar.labels[0] for bar in bars] == ["组装", "静态预检", "逐期求解"]
     assert all(bar.closed == 1 for bar in bars)
     assert capsys.readouterr().err.count("总耗时") == 1
 
@@ -231,17 +231,17 @@ def test_notebook_stage_card_shows_progress_only_for_counted_active_phase(
     monkeypatch.setattr(_progress, "perf_counter", lambda: clock[0])
     monkeypatch.setattr(_notebook_progress, "perf_counter", lambda: clock[0])
     display = _progress._Progress()
-    display.plan("取数", "静态预检", "读取持仓收益", "逐期求解")
+    display.plan("取数", "组装", "静态预检", "逐期求解")
     display.phase("取数")
     assert '<span class="orp-spinner"' in widget.value and "<progress" not in widget.value
     assert widget.value.count('class="orp-step orp-pending"') == 3
     clock[0] = 2.22
+    display.phase("组装")
+    assert "2.22 s" in widget.value
+    assert "<progress" not in widget.value
+    clock[0] = 8.87
     display.phase("静态预检", 1)
     display.advance()
-    clock[0] = 11.13
-    display.phase("读取持仓收益")
-    assert "2.22 s" in widget.value and "1/1 期 · 8.91 s" in widget.value
-    assert "<progress" not in widget.value
     clock[0] = 17.78
     display.phase("序列预检")
     clock[0] = 17.80
@@ -276,9 +276,9 @@ def test_notebook_preserves_completed_and_pending_stages_on_error(
     @_progress._with_progress
     def fail(*, show_progress=False):
         display = _progress._current_progress()
-        display.plan("取数", "数据对齐", "逐期求解")
+        display.plan("取数", "组装", "逐期求解")
         display.phase("取数")
-        display.phase("数据对齐")
+        display.phase("组装")
         raise exception("<查看异常>")
 
     with pytest.raises(exception):
@@ -287,7 +287,7 @@ def test_notebook_preserves_completed_and_pending_stages_on_error(
     assert 'class="orp-step orp-done"' in widget.value
     assert 'class="orp-step orp-pending"' in widget.value
     assert f"{expected_label} · 总耗时" in widget.value
-    assert "断点 数据对齐" in widget.value and "&lt;查看异常&gt;" in widget.value
+    assert "断点 组装" in widget.value and "&lt;查看异常&gt;" in widget.value
     assert "<progress" not in widget.value
 
 

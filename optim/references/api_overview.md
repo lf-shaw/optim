@@ -212,7 +212,8 @@ $$
 
 `optimizer.optimize_range(..., show_progress=True)` 和 `optimizer.solve_sequence(..., show_progress=True)`
 启用可选进度显示，默认关闭。Jupyter 内核存在 ipywidgets 时使用横向阶段图；终端可安装
-`optim[progress]` 使用 tqdm。按日预检与求解显示当前日期、已处理期数和预计剩余时间。
+`optim[progress]` 使用 tqdm。阶段按取数、组装、预检和求解显示。原始收益在取数阶段读取，
+按调仓区间对齐和复合计入组装。按日预检与求解显示当前日期、已处理期数和预计剩余时间。
 完成时保留各阶段及总耗时、处理和有解期数、沿用旧仓和换手恢复期数。提前停止或发生异常
 时，保留进度和断点信息。
 

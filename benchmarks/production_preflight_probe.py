@@ -77,7 +77,8 @@ def _benchmark_prepare(source, schedule, request, mode, *, expand_risk=None):
             finally:
                 samples["expand_cropped_exposure"].append(perf_counter() - start)
 
-        return source._prepare_run(schedule, **request, expand_risk=timed_expand)
+        run = source._assemble_run(schedule, **request, expand_risk=timed_expand)
+        return source._preflight_run(run)
 
     with scope, ExitStack() as stack:
         if hasattr(InMemoryDataSource, "_risk_coverage"):

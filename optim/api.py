@@ -449,7 +449,7 @@ class PortfolioOptimizer:
         sequence_policy : SequencePolicy | None
             持仓漂移、失败和输出策略；``None`` 使用默认策略。
         show_progress : bool
-            默认 False。True 在支持 ipywidgets 的 Jupyter 内原位显示阶段图和求解结果；
+            默认 False。True 在支持 ipywidgets 的 Jupyter 内显示取数、组装、预检及求解；
             终端使用 tqdm（可安装 optim[progress]）。结束或停止时保留阶段耗时和实际处理期数。
         failure_dump_dir : str | pathlib.Path | None
             默认 None；指定后在持仓漂移数据异常时自动导出压缩上下文，异常仍抛出。
@@ -495,11 +495,8 @@ class PortfolioOptimizer:
         external_source = not isinstance(data_source, InMemoryDataSource)
         progress = _current_progress()
         if progress is not None:
-            stages = ["取数"] if external_source else []
-            stages.extend(("数据对齐", "静态预检"))
-            if external_source and resolved_policy.mode == "chained" and holding_period_returns is None:
-                stages.append("读取持仓收益")
-            progress.plan(*stages, "逐期求解")
+            stages = ("组装", "静态预检", "逐期求解")
+            progress.plan(*(("取数", *stages) if external_source else stages))
 
         if external_source:
             if benchmark is None:

@@ -472,24 +472,25 @@ class InMemoryDataSource:
             轻量惰性物化清单及全区间聚合校验报告。
         """
 
-        return self._prepare_run(
+        run = self._assemble_run(
             schedule, objective=objective, constraints=constraints, alpha_spec=alpha_spec,
             initial_weight=initial_weight, independent_initial_weights=independent_initial_weights,
             extra_attribute_columns=extra_attribute_columns, sequence_policy=sequence_policy,
             risk_coverage_policy=risk_coverage_policy,
         )
+        return self._preflight_run(run)
 
-    def _prepare_run(
+    def _assemble_run(
         self, schedule, *, objective, constraints, alpha_spec, initial_weight,
         independent_initial_weights, extra_attribute_columns, sequence_policy,
         risk_coverage_policy, expand_risk=None,
     ) -> "PreparedPortfolioRun":
-        """共用预检流程，允许数据适配层在风险坐标裁剪后展开敞口。"""
+        """批量组装以保留样本坐标，允许数据适配层随后组装有效持仓收益。"""
 
         started = time.perf_counter()
         progress = _current_progress()
         if progress is not None:
-            progress.phase("数据对齐")
+            progress.phase("组装")
         normalized_independent = None
         if independent_initial_weights is not None:
             normalized_independent = {
@@ -522,10 +523,17 @@ class InMemoryDataSource:
             prepare_s=0.0,
             sequence_policy=sequence_policy,
         )
-        if not coverage_report.is_valid:
-            return replace(run, prepare_s=time.perf_counter() - started)
-        issues = list(coverage_issues)
-        prepared_source._prepared_columns = _ScheduleColumns(schedule, extra_attribute_columns)
+        if coverage_report.is_valid:
+            prepared_source._prepared_columns = _ScheduleColumns(schedule, extra_attribute_columns)
+        return replace(run, prepare_s=time.perf_counter() - started)
+
+    def _preflight_run(self, run: "PreparedPortfolioRun") -> "PreparedPortfolioRun":
+        """在首期求解前校验所有已组装的日期，汇总具体输入错误。"""
+        if not run.validation.is_valid:
+            return run
+        started = time.perf_counter()
+        progress = _current_progress()
+        issues = list(run.validation.issues)
         if progress is not None:
             progress.phase("静态预检", len(run.dates))
         for position, date in enumerate(run.dates):
@@ -547,17 +555,17 @@ class InMemoryDataSource:
             else:
                 issues.extend(_validate_inputs(
                     date, inputs.assets,
-                    alpha_values=inputs.alpha, alpha_spec=alpha_spec,
+                    alpha_values=inputs.alpha, alpha_spec=run.alpha_spec,
                     benchmark_values=inputs.benchmark.values, initial_values=inputs.initial,
                     tradable_values=inputs.tradable, extra_attributes=inputs.extra,
-                    risk_model=inputs.risk, objective=objective, constraints=effective_constraints,
+                    risk_model=inputs.risk, objective=run.objective, constraints=effective_constraints,
                 ).issues)
             if progress is not None:
                 progress.advance()
         return replace(
             run,
             validation=ValidationReport(tuple(issues)),
-            prepare_s=time.perf_counter() - started,
+            prepare_s=run.prepare_s + (time.perf_counter() - started),
         )
 
     def _prepared_inputs(

@@ -46,8 +46,9 @@ _STYLE = """
 
 _SYMBOLS = {"pending": "○", "done": "✓", "warning": "!", "error": "×"}
 _SHORT_LABELS = {
-    "数据对齐": "对齐",
-    "读取持仓收益": "读取收益",
+    "静态预检": "预检",
+    "序列预检": "预检",
+    "逐期求解": "求解",
 }
 
 
@@ -88,7 +89,7 @@ class _NotebookProgress:
     def phase(self, label: str, total: int | None) -> None:
         now = perf_counter()
         self._end_phase(now, "done")
-        # 序列核验可能在收益读取之后执行，耗时仍累计在预检节点里。
+        # 序列核验承接静态预检，耗时累计在同一个节点。
         node = "静态预检" if label == "序列预检" and "静态预检" in self._stages else label
         stage = self._stages.setdefault(node, _Stage())
         stage.status = "active"

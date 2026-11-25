@@ -83,6 +83,8 @@ class _Progress:
         if self._notebook is not None:
             self._notebook.phase(label, total)
             return
+        if label == "序列预检" and self._label == "静态预检":
+            return
         self._close_phase()
         self._label = label
         self._bar = self._tqdm(

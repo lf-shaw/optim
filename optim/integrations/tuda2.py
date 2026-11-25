@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from time import perf_counter
+
 from dataclasses import dataclass, replace
 from functools import cached_property
 from importlib import import_module
@@ -31,10 +33,10 @@ from ..portfolio_types import (
     SequencePolicy,
 )
 from ..data.contracts import _single_date_values
-from ..data._date_slices import _DateSlices
 from ..data._reindex import _reindex_rows
 from ..data._tradable import _as_tradable
 from ..data.manual import _check_risk
+from ._close_returns import assemble_close_returns
 
 
 class Tuda2UnavailableError(ImportError):
@@ -301,11 +303,14 @@ class Tuda2DataSource:
             返回标签、值列、日期覆盖或收益数值无效。
         """
 
-        module = self._module()
         requested = pd.DatetimeIndex(pd.to_datetime(dates)).sort_values().unique()
         if len(requested) < 2:
             return {}
-        daily_returns = module.get_return(
+        return assemble_close_returns(self._read_daily_returns(requested, sids), requested, sids)
+
+    def _read_daily_returns(self, requested: pd.DatetimeIndex, sids: list[str] | None) -> pd.DataFrame:
+        """批量读取原始 C2C 日收益，按调仓范围限定 I/O。"""
+        return self._module().get_return(
             since=requested[0],
             until=requested[-1],
             sids=sids,
@@ -316,60 +321,6 @@ class Tuda2DataSource:
             price_type="vwap",
             price_window=0,
         )
-        if not isinstance(daily_returns, pd.DataFrame):
-            raise TypeError("tuda2.get_return must return a pandas DataFrame")
-        if not isinstance(daily_returns.index, pd.MultiIndex) or tuple(
-            daily_returns.index.names
-        ) != (
-            "dt",
-            "sid",
-        ):
-            raise ValueError("tuda2 returns must use a (dt, sid) MultiIndex")
-        if daily_returns.index.has_duplicates:
-            raise ValueError("tuda2 returns contain duplicate (dt, sid) rows")
-        value_column = "m0" if "m0" in daily_returns.columns else None
-        if value_column is None and daily_returns.shape[1] == 1:
-            value_column = str(daily_returns.columns[0])
-        if value_column is None:
-            raise ValueError(
-                "tuda2 daily close returns do not contain one unambiguous value column"
-            )
-        values = daily_returns[value_column]
-        day_slices = _DateSlices(values, "sid", "tuda2 returns")
-        days = day_slices._dates
-        ends = days.get_indexer(requested[1:])
-        starts = days.searchsorted(requested[:-1], side="right")
-        if np.any(ends < starts):
-            bad = requested[1:][ends < starts][0]
-            raise ValueError(f"tuda2 daily close returns do not reach rebalance date {bad.date()}")
-        assets = (
-            pd.Index(sids, name="sid") if sids is not None
-            else values.index.unique(level="sid").sort_values()
-        )
-        # 校验原始日度数据；缺失按区间保留给持仓漂移策略处理。
-        observations = values.to_numpy(float, na_value=np.nan)
-        invalid = np.isfinite(observations) & (observations < -1.0)
-        if invalid.any():
-            invalid_assets = values.index[invalid].get_level_values("sid")
-            if sids is None or invalid_assets.isin(assets).any():
-                raise ValueError("tuda2 daily return below -100% is invalid")
-        if np.array_equal(starts, ends):
-            # 每个区间只含一个收益日时直接切片，避免构造日期 × 股票宽表。
-            return {
-                date: pd.Series(
-                    (1.0 + day_slices._day(date).reindex(assets).to_numpy(float, na_value=np.nan)) - 1.0,
-                    index=assets, name="close_to_close_return",
-                )
-                for date in requested[1:]
-            }
-        daily = values.unstack("sid").reindex(index=days, columns=assets).to_numpy(float, na_value=np.nan)
-        return {
-            date: pd.Series(
-                np.prod(1.0 + daily[start:end + 1], axis=0) - 1.0,
-                index=assets, name="close_to_close_return",
-            )
-            for date, start, end in zip(requested[1:], starts, ends)
-        }
 
     def prepare_sequence(
         self,
@@ -451,12 +402,17 @@ class Tuda2DataSource:
         )
         dates = effective_schedule.dates
         loaded = self._load(dates=dates, benchmark=benchmark, expand_risk=False)
+        returns = holding_period_returns
+        daily_input = None
+        if require_holding_returns and returns is None and len(dates) > 1:
+            fetched_sids = effective_schedule.universe.index.unique(level="sid").astype(str).tolist()
+            daily_input = fetched_sids, self._read_daily_returns(dates, fetched_sids)
         memory_source = InMemoryDataSource(
             risk_data=loaded.risk_data,
             benchmark=loaded.benchmark,
             benchmark_policy=benchmark_policy,
         )
-        prepared = memory_source._prepare_run(
+        prepared = memory_source._assemble_run(
             effective_schedule,
             objective=objective,
             constraints=constraints,
@@ -469,13 +425,21 @@ class Tuda2DataSource:
             expand_risk=self._expand_risk_frames,
         )
         prepared.validation.raise_for_errors()
-
-        returns = holding_period_returns
-        if require_holding_returns and returns is None:
-            if progress is not None:
-                progress.phase("读取持仓收益")
-            sids = prepared.schedule.universe.index.unique(level="sid").astype(str).tolist()
-            returns = self.load_close_to_close_returns(dates=dates, sids=sids)
+        if daily_input is not None:
+            fetched_sids, raw_returns = daily_input
+            started = perf_counter()
+            sids = fetched_sids
+            if prepared.schedule is not effective_schedule:
+                sids = prepared.schedule.universe.index.unique(level="sid").astype(str).tolist()
+            returns = assemble_close_returns(
+                raw_returns, dates, sids, filter_sids=len(sids) < len(fetched_sids),
+            )
+            del daily_input, raw_returns
+            prepared = replace(prepared, prepare_s=prepared.prepare_s + (perf_counter() - started))
+        elif require_holding_returns and returns is None:
+            returns = {}
+        prepared = memory_source._preflight_run(prepared)
+        prepared.validation.raise_for_errors()
         return Tuda2PreparedSequence(
             run=prepared,
             holding_period_returns=returns,

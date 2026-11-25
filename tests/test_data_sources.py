@@ -547,6 +547,43 @@ def test_tuda2_daily_close_returns_are_compounded_and_preserve_missing():
     assert return_calls[0][4:] == ("D", False, 1, "close", "vwap", 0)
 
 
+@pytest.mark.parametrize("positions", [[0, 1, 2, 3], [0, 2, 3]])
+def test_return_positional_path_matches_label_alignment_for_sparse_rows(positions):
+    from optim.integrations._close_returns import assemble_close_returns
+
+    dates = pd.bdate_range("2026-01-02", periods=4)
+    rows = pd.MultiIndex.from_product([dates, ["a", "b", "c"]], names=["dt", "sid"])
+    frame = pd.DataFrame(
+        {"m0": np.array([0.0, 0.0, 0.0, 0.05, 0.0, -0.1, 0.1, 0.0, 0.3, -1.0, np.nan, 0.4],
+                        dtype=np.float32)},
+        index=rows,
+    ).drop((dates[2], "b"))
+    requested = dates[positions]
+    assets = ["b", "a", "absent"]
+    actual = assemble_close_returns(frame, requested, assets)
+    reference = assemble_close_returns(frame.iloc[::-1], requested, assets)
+    assert actual.keys() == reference.keys()
+    for date in actual:
+        pd.testing.assert_series_equal(actual[date], reference[date], check_exact=True)
+    assert actual[dates[-1]].loc["a"] == -1.0
+    assert np.isnan(actual[dates[-1]].loc["absent"])
+    duplicate = pd.concat([frame.iloc[:1], frame])
+    with pytest.raises(ValueError, match="duplicate"):
+        assemble_close_returns(duplicate, requested, assets)
+
+
+def test_early_return_fetch_does_not_allow_pruned_assets_to_cover_a_date():
+    from optim.integrations._close_returns import assemble_close_returns
+
+    dates = pd.to_datetime(["2026-01-02", "2026-01-05"])
+    frame = pd.DataFrame(
+        {"m0": [0.0, 0.02]},
+        index=pd.MultiIndex.from_tuples([(dates[0], "a"), (dates[1], "pruned")], names=["dt", "sid"]),
+    )
+    with pytest.raises(ValueError, match="do not reach rebalance date 2026-01-05"):
+        assemble_close_returns(frame, dates, ["a"], filter_sids=True)
+
+
 def test_optimize_range_reuses_the_same_strict_memory_path():
     dates = pd.to_datetime(["2026-01-02", "2026-01-05"])
     source = InMemoryDataSource(risk_data=_frames(), benchmark=_benchmark())
@@ -660,13 +697,18 @@ def test_tuda2_rejects_invalid_tradability(bad):
         Tuda2DataSource(module=InvalidFlags())._attach_tradability(_schedule(), "test")
 
 
-def test_tuda2_range_stops_after_full_preflight_before_returns_or_solver():
+def test_tuda2_range_fetches_returns_before_preflight_but_never_solves_invalid_input(monkeypatch):
     dates = tuple(pd.bdate_range("2026-01-02", periods=4).strftime("%Y-%m-%d"))
     missing = pd.Timestamp(dates[2])
     fake = _MissingMiddleBenchmarkTuda2(missing)
+    optimizer = PortfolioOptimizer()
+    monkeypatch.setattr(
+        optimizer, "_solve_prevalidated",
+        lambda _: pytest.fail("预检失败后不应调用求解器"),
+    )
 
     with pytest.raises(PortfolioValidationError) as caught:
-        PortfolioOptimizer().optimize_range(
+        optimizer.optimize_range(
             data_source=Tuda2DataSource(module=fake),
             schedule=_schedule(dates),
             benchmark="000852.SH",
@@ -676,8 +718,7 @@ def test_tuda2_range_stops_after_full_preflight_before_returns_or_solver():
             alpha_spec=AlphaSpec(),
         )
     assert any(issue.date == missing for issue in caught.value.report.errors)
-    assert not [call for call in fake.calls if call[0] == "returns"]
-    # The entire malformed range was still fetched in one call per data type.
+    assert len([call for call in fake.calls if call[0] == "returns"]) == 1
     assert len([call for call in fake.calls if call[0:2] == ("risk", "exposure")]) == 1
 
 
