@@ -124,7 +124,8 @@ close-to-close 收益复合并归一化，然后再计算 turnover。当前不�
 ## 14. 指数调整日的换手率恢复必须显式授权
 
 基准换仓可能使 5% 换手率与其他约束结构性冲突。默认 `on_failure="stop"`，不会自动放宽。
-需要时配置 `TurnoverRecoveryPolicy(max_turnover=...)`；恢复只对当日生效，下一期恢复原上限。
+需要时配置 `TurnoverRecoveryPolicy(max_turnover=...)`，值为买入和卖出的权重变化合计上限。
+恢复只对当日生效，下一期恢复原上限。
 
 ---
 

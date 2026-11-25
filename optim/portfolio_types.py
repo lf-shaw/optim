@@ -1261,7 +1261,9 @@ class TurnoverRecoveryPolicy:
     Attributes
     ----------
     max_turnover : float
-        用户授权的换手率硬上限；恢复过程不得超过该值。
+        用户授权的双边换手率硬上限，使用小数权重，与 :class:`TurnoverLimit` 口径一致。
+        双边换手率为买入与卖出权重变化的绝对值之和。``0.20`` 表示双边合计最多 20%；
+        调仓前后组合总权重相同的情况下，买入和卖出各最多 10%。
     buffer : float
         在诊断得到的最小可行换手率之上增加的数值缓冲；默认为 ``1e-5``。
     require_turnover_only : bool

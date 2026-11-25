@@ -194,6 +194,8 @@ $$
 检查 `holding_missing_mass_tolerance`。默认零容忍，设置正阈值后自动剔除阈值内的样本外
 持仓并归一化剩余权重，超限时报错。
 两项统计分别见 `result.alignment.holding_missing_return_mass` 和 `holding_missing_mass`。
+换手恢复的 `max_turnover` 是双边换手上限，使用与 `TurnoverLimit` 相同的小数口径。
+`0.20` 表示买入和卖出的权重变化合计最多 20%；组合总权重固定时，两边各最多 10%。
 显式启用换手恢复后，后端数值错误只有在
 最小换手率下界证明原上限冲突时才允许进入恢复。
 

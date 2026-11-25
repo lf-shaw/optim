@@ -1099,11 +1099,15 @@ from optim import SequencePolicy, TurnoverRecoveryPolicy
 sequence_policy = SequencePolicy(
     on_failure="stop",
     turnover_recovery=TurnoverRecoveryPolicy(
-        max_turnover=0.20,
+        max_turnover=0.20,  # 双边换手最多 20%，即买入与卖出的权重变化合计
         buffer=1e-5,
     ),
 )
 ```
+
+恢复的 `max_turnover` 与日常 `TurnoverLimit` 都按双边换手率计量，为
+$\sum_i |w_i-w_i^\mathrm{pre}|$。调仓前后组合总权重相同时，双边上限 20% 对应买入和
+卖出各最多 10%。
 
 恢复满足以下原则：
 

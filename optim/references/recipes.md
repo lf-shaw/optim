@@ -320,7 +320,7 @@ from optim import SequencePolicy, TurnoverRecoveryPolicy
 policy = SequencePolicy(
     on_failure="stop",
     turnover_recovery=TurnoverRecoveryPolicy(
-        max_turnover=0.20,
+        max_turnover=0.20,  # 双边合计最多 20%，与 TurnoverLimit 同口径
         buffer=1e-5,
     ),
 )
